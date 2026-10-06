@@ -117,21 +117,18 @@ function following() { return moments.scrollHeight - moments.scrollTop - moments
 async function reading() {
   let seen = null;
   for (;;) {
-    let response;
+    let read;
+    // Every way a read can fail, out of reach, refused, or cut off partway, says so and reads again.
     try {
-      response = await asked(seen === null ? "/conversation/moments" : `/conversation/moments?seen=${seen}`);
-    } catch {
-      say("reading", "hands is out of reach; trying again…", true);
+      const response = await asked(seen === null ? "/conversation/moments" : `/conversation/moments?seen=${seen}`);
+      if (response.status === 401) { say("reading", "Open this page from the address `hands phone` prints.", true); return; }
+      if (!response.ok) throw new Error(await response.text());
+      read = await response.json();
+    } catch (error) {
+      say("reading", error instanceof TypeError ? "hands is out of reach; trying again…" : `hands could not read the conversation: ${error.message}`, true);
       await new Promise(done => setTimeout(done, AGAIN_MS));
       continue;
     }
-    if (response.status === 401) { say("reading", "Open this page from the address `hands phone` prints.", true); return; }
-    if (!response.ok) {
-      say("reading", `hands could not read the conversation: ${await response.text()}`, true);
-      await new Promise(done => setTimeout(done, AGAIN_MS));
-      continue;
-    }
-    const read = await response.json();
     const followed = seen === null || following();
     // Every read redraws the conversation whole; a tool call the reader opened stays open across it.
     const opened = new Set([...moments.querySelectorAll("details[open]")].map(details => details.dataset.call));

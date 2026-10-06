@@ -92,6 +92,23 @@ async def test_a_tool_call_that_failed_says_why(page: Page) -> None:
     assert [moment["text"] for moment in body["moments"]] == ["{}\nfailed: no such session"]
 
 
+async def test_a_tool_call_cut_off_says_so(page: Page) -> None:
+    started = asyncio.Event()
+
+    async def stalled() -> dict[str, object]:
+        started.set()
+        await asyncio.Event().wait()
+        return {}
+
+    call = asyncio.ensure_future(audited(tool(stalled), page.log.record).body())
+    await started.wait()
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    body = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
+    assert [moment["text"] for moment in body["moments"]] == ["{}\ncancelled"]
+
+
 async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page: Page) -> None:
     page.log.record(Transcribed("what time is it"))
     first = await (await page.client.get("/conversation/moments", headers=KEYED)).json()

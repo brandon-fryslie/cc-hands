@@ -41,7 +41,7 @@ class Moment:
 @dataclass(frozen=True)
 class Recalled:
     """The newest moments that hold every word asked for, oldest first, and what the reading took: the log's lines, those
-    that were not JSON, the time of the oldest line read (None for an empty log), the moments they held, and how many of
+    that were not JSON objects, the time of the oldest line read (None for an empty log), the moments they held, and how many of
     those held every word."""
 
     moments: tuple[Moment, ...]
@@ -74,7 +74,7 @@ def recall(directory: Path, words: Iterable[str], most: int) -> Recalled:
 
 
 class Reading:
-    """The log's lines as entries, one at a time, counting the lines, the ones that were not JSON, and the oldest time."""
+    """The log's lines as entries, one at a time, counting the lines, the ones that were not JSON objects, and the oldest time."""
 
     def __init__(self) -> None:
         self.lines = 0
@@ -85,11 +85,15 @@ class Reading:
         for line in lines:
             self.lines += 1
             try:
-                entry = cast(Mapping[str, object], json.loads(line))
+                parsed: object = json.loads(line)
             except json.JSONDecodeError:
                 # The fragment a write that failed partway leaves, ended by the next line.
+                parsed = None
+            if not isinstance(parsed, dict):
+                # Every line the log writes is an object: anything else is no line of its.
                 self.unreadable += 1
                 continue
+            entry = cast(Mapping[str, object], parsed)
             if self.since is None and isinstance(at := entry.get("at"), str):
                 self.since = datetime.fromisoformat(at)
             yield entry
@@ -151,8 +155,8 @@ class Moments:
                                 self._add(_Said(datetime.fromisoformat(at), "answered", f"{verb} in", session, f"{self._asked.pop(request)}{told}"))
                         case _:
                             pass
-            case {"type": "WideEvent", "event": "tool.run", "at": str(at), "error": object() as error, "facts": {"tool": str(tool), "called": {"arguments": object() as arguments, "result": object() as result}}}:
-                self._add(_Said(datetime.fromisoformat(at), "called", f"called {tool}", None, _call(arguments, result, error)))
+            case {"type": "WideEvent", "event": "tool.run", "at": str(at), "outcome": str(outcome), "error": object() as error, "facts": {"tool": str(tool), "called": {"arguments": object() as arguments, "result": object() as result}}}:
+                self._add(_Said(datetime.fromisoformat(at), "called", f"called {tool}", None, _call(arguments, outcome, result, error)))
             case {"type": "Transcribed", "at": str(at), "text": str(text)}:
                 self._add(_Said(datetime.fromisoformat(at), "heard", "user", None, text))
             # A turn hands ended without a word said nothing.
@@ -199,11 +203,13 @@ def _spoken(session: str, projects: Mapping[str, Path], names: Mapping[str, str]
             return identifier(cwd, names.get(session))
 
 
-def _call(arguments: object, result: object, error: object) -> str:
-    """What a tool was given, and what it handed back, or why it failed."""
+def _call(arguments: object, outcome: str, result: object, error: object) -> str:
+    """What a tool was given, and what it handed back, why it failed, or that it was cut off before it could."""
     given = json.dumps(arguments, ensure_ascii=False)
-    match error:
-        case str(why):
+    match outcome, error:
+        case "cancelled", _:
+            return f"{given}\ncancelled"
+        case _, str(why):
             return f"{given}\nfailed: {why}"
         case _:
             return f"{given}\n{json.dumps(result, ensure_ascii=False)}"

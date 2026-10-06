@@ -56,14 +56,20 @@ class Conversation:
             return self._moments.changes, self._moments.moments()
 
     def _catch_up(self) -> None:
-        while True:
-            lines, offset = past(self._directory, self._offset)
-            for entry in self._reading.entries(lines):
-                self._moments.take(entry)
-            # A segment read to its end that a later one follows goes on at the later one; one that does not is the end.
-            moved, self._offset = offset != self._offset, offset
-            if not moved:
-                return
+        try:
+            while True:
+                lines, offset = past(self._directory, self._offset)
+                for entry in self._reading.entries(lines):
+                    self._moments.take(entry)
+                # A segment read to its end that a later one follows goes on at the later one; one that does not is the end.
+                moved, self._offset = offset != self._offset, offset
+                if not moved:
+                    return
+        except Exception:
+            # [LAW:no-silent-failure] a line the fold cannot take fails the read that met it, and the fold begins again at
+            # the log's start, so no line taken before it is taken twice by the next read.
+            self._moments, self._reading, self._offset = Moments(NEWEST), Reading(), 0
+            raise
 
 
 def parse_seen(query: str | None) -> int | None:

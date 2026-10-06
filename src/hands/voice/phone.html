@@ -57,8 +57,9 @@
   <p id="count" aria-hidden="true"></p>
 </div>
 <button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
-<!-- The whole conversation, tools and all, with a box to type in: the address carries the key on as this one does. -->
-<a id="conversation" href="/conversation">Conversation</a>
+<!-- The whole conversation, tools and all, with a box to type in: the address carries the key on as this one does. A
+     page of its own, so a call on this one goes on while it is read. -->
+<a id="conversation" href="/conversation" target="_blank" rel="noopener">Conversation</a>
 <!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
 <section id="transcript" aria-label="Transcript" hidden></section>
 <audio id="out" autoplay playsinline></audio>

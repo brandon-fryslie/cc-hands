@@ -127,10 +127,12 @@ def test_a_torn_line_is_counted_and_the_lines_after_it_are_read(tmp_path: Path) 
     AuditLog(home.audit, clock=lambda: MORNING).record(Transcribed("before"))
     with segment(home.audit, 0).open("a", encoding="utf-8") as torn:
         torn.write('{"at": "2026-10-03T00:00:00.000+00:00", "level": "in\n')
+        # JSON, but no line the log writes.
+        torn.write("[1]\n")
     AuditLog(home.audit, clock=lambda: MORNING).record(Transcribed("after"))
     found = recall(home.audit, [], 20)
     assert [moment.text for moment in found.moments] == ["before", "after"]
-    assert (found.lines, found.unreadable) == (3, 1)
+    assert (found.lines, found.unreadable) == (4, 2)
 
 
 async def test_a_session_goes_by_the_name_its_judging_found_it_with(tmp_path: Path) -> None:
