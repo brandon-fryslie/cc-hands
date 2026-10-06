@@ -81,14 +81,19 @@ class Heard_:
 @pytest.fixture
 async def tap(socket_path: Path) -> AsyncIterator[Heard_]:
     heard = Heard_()
-    server = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=lambda: 999.0)
+    tapped = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=lambda: 999.0)
     yield heard
-    server.close()
+    await tapped.close()
+
+
+def encoded(lines: Sequence[Mapping[str, object]]) -> bytes:
+    """Lines as a fritter writes them to its copy."""
+    return b"".join(json.dumps(line).encode() + b"\n" for line in lines)
 
 
 async def copy(path: Path, lines: Sequence[Mapping[str, object]], raw: bytes = b"") -> None:
     _, writer = await asyncio.open_unix_connection(str(path))
-    writer.write(b"".join(json.dumps(line).encode() + b"\n" for line in lines) + raw)
+    writer.write(encoded(lines) + raw)
     await writer.drain()
     writer.close()
 
@@ -193,15 +198,25 @@ async def test_a_line_out_of_its_order_ends_the_copy_as_broken_and_the_exchange_
 def fed(lines: Sequence[Mapping[str, object]]) -> asyncio.StreamReader:
     """A copy whose lines so far have come, and whose next has not: its reading waits on it."""
     reader = asyncio.StreamReader()
-    reader.feed_data(b"".join(json.dumps(line).encode() + b"\n" for line in lines))
+    reader.feed_data(encoded(lines))
     return reader
+
+
+async def text_heard(heard: Heard_) -> None:
+    async def heard_text() -> None:
+        while not any(isinstance(observed, Heard) and isinstance(observed.event, TextDelta) for observed in heard.observed):
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(heard_text(), 5)
+
+
+CANCELLED = Garbled("hands stopped reading the copy: cancelled, as hands stopped")
 
 
 async def test_a_copy_cancelled_mid_reply_ends_its_exchange_once_and_stays_cancelled() -> None:
     heard = Heard_()
     reading = asyncio.create_task(_copy(fed([request_line(), HEAD, *CHUNKS[:3]]), heard.observe, heard.entries.append, lambda: 999.0))
-    while not any(isinstance(observed, Heard) and isinstance(observed.event, TextDelta) for observed in heard.observed):
-        await asyncio.sleep(0)
+    await text_heard(heard)
     reading.cancel()
     with pytest.raises(asyncio.CancelledError):
         await reading
@@ -210,10 +225,24 @@ async def test_a_copy_cancelled_mid_reply_ends_its_exchange_once_and_stays_cance
     exchanged = heard.exchanged()
     assert exchanged.exchange == sent.exchange
     reply = exchanged.reply
-    assert isinstance(reply, Reached) and reply.body == Garbled("hands stopped reading the copy: cancelled, as hands stopped")
+    assert isinstance(reply, Reached) and reply.body == CANCELLED
 
 
-async def test_a_reply_reader_that_fails_ends_its_exchange_once_and_its_error_goes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_copy_still_coming_when_the_tap_closes_has_ended_its_exchange_once_the_close_returns(socket_path: Path) -> None:
+    heard = Heard_()
+    tap = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=lambda: 999.0)
+    _, writer = await asyncio.open_unix_connection(str(socket_path))
+    writer.write(encoded([request_line(), HEAD, *CHUNKS[:3]]))
+    await writer.drain()
+    await text_heard(heard)
+
+    await tap.close()
+    reply = heard.exchanged().reply
+    assert isinstance(reply, Reached) and reply.body == CANCELLED
+    writer.close()
+
+
+async def test_a_reply_reader_that_fails_ends_its_reached_exchange_once_and_its_error_goes_on(monkeypatch: pytest.MonkeyPatch) -> None:
     def failing(*_: object) -> object:
         raise RuntimeError("the reader broke")
 
@@ -221,7 +250,8 @@ async def test_a_reply_reader_that_fails_ends_its_exchange_once_and_its_error_go
     heard = Heard_()
     with pytest.raises(RuntimeError, match="the reader broke"):
         await _copy(fed([request_line(), HEAD]), heard.observe, heard.entries.append, lambda: 999.0)
-    assert heard.exchanged().reply == Uncopied("hands stopped reading the copy: RuntimeError: the reader broke", 999.0)
+    # The head had come: its status is the API's answer, whatever became of hands' reading of the rest.
+    assert heard.exchanged().reply == Reached(200, 100.5, 100.5, 0, Garbled("hands stopped reading the copy: RuntimeError: the reader broke"))
 
 
 async def test_the_socket_is_the_user_s_alone(tap: Heard_, socket_path: Path) -> None:

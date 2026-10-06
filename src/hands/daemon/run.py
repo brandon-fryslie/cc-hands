@@ -269,7 +269,7 @@ async def run(
                 sessions.hear(move)
 
         tap = await serve_tap(home.wire, tapped, record, clock=time.time)
-        held.callback(tap.close)
+        held.push_async_callback(tap.close)
         run_start.heard(tap=home.wire)
         display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, record)
         held.push_async_callback(display.cleanup)
