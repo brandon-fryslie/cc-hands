@@ -134,7 +134,7 @@ def wire_name(tool: Tool) -> str:
 _UNNAMED = ModelFailed(ErrorCategory.UNKNOWN)
 
 # What each turn's event counts: the model's round trips on the wire, and the calls its replies made.
-COUNTS = ("round_trips", "tools")
+COUNTS = ("round_trips", "tools", "refused")
 
 
 @dataclass
@@ -197,9 +197,11 @@ class _Turn:
     # The permission whose question the user has heard to its end: what they say next answers it while it is open. Only a
     # question heard can be answered, so a yes said over the brain's words, or over a question cut off, allows nothing.
     heard: Asked | None = None
-    # The permissions the user was asked and refused with no word of the turn's said since, which hands says at its end:
-    # a refusal met with silence would pass for the work done.
+    # The permissions the user heard asked and that were refused with no word of the turn's said since, each once, which
+    # hands says at its end: a refusal met with silence would pass for the work done.
     unacknowledged: list[Permission] = field(default_factory=list[Permission])
+    # How many permissions the user heard asked were refused, whoever spoke to them after.
+    refused: int = 0
     # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
     stopped: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
@@ -432,9 +434,7 @@ class BrainStage(FrameProcessor):
             # [LAW:single-enforcer] a refusal the user heard asked is never left to silence, whatever the model did after it.
             refusals = tuple(brain_refused(permission) for permission in turn.unacknowledged)
             annotate(refusals=refusals)
-            for refusal in refusals:
-                # Kept out of the context: the brain never said it.
-                await self.push_frame(TTSSpeakFrame(refusal, append_to_context=False))
+            await self._unsaid(refusals)
             for readback in turn.readbacks:
                 # Said by hands, since the model that would have said it was not asked to go on.
                 await self.push_frame(TTSSpeakFrame(readback))
@@ -488,7 +488,7 @@ class BrainStage(FrameProcessor):
             transcribed_ms=None if released is None else _ms(arrived - released),
             queued_ms=_ms(taken - arrived),
         )
-        count(round_trips=len(turn.exchanges), tools=len(turn.tools))
+        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused)
         self._spans.ended(turn.tools)
         for call, ran in turn.tools.items():
             # A call whose result never left ran until the turn ended without it.
@@ -537,8 +537,12 @@ class BrainStage(FrameProcessor):
                     await self.push_frame(Mark(partial(turn.hear, asked)))
                     # One question at a time, so what the user answers is the question they heard last.
                     await asyncio.wait({asked.decision})
-                    if isinstance(asked.decision.result(), Deny):
-                        turn.unacknowledged.append(permission)
+                    # Owed only for a question the user heard to its end: one cut off or never reached they cannot take
+                    # for the work done. Said once, however often the brain asked it again in silence.
+                    if turn.heard is asked and isinstance(asked.decision.result(), Deny):
+                        turn.refused += 1
+                        if permission not in turn.unacknowledged:
+                            turn.unacknowledged.append(permission)
                     await self._reply(turn, True)
                 case Asked():
                     # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.

@@ -30,7 +30,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import running
-from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered, Untaken
+from hands.brain.process import NOBODY, SPOKEN_OVER, UNANSWERED, Asked, BrainAnswered, Untaken
 from hands.core.effects import Allow, Deny
 from hands.core import place
 from hands.core.place import Modality
@@ -624,7 +624,7 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     events = [entry for entry in rig.recorded if isinstance(entry, WideEvent)]
-    assert (turn.outcome, turn.counts) == ("ok", {"round_trips": 2, "tools": 1})
+    assert (turn.outcome, turn.counts) == ("ok", {"round_trips": 2, "tools": 1, "refused": 0})
     # Two seconds from letting go to the first word: 0.4 transcribing, none waiting behind another turn, and the rest
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": ASKED, "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
@@ -664,7 +664,7 @@ async def test_a_turn_stopped_mid_way_still_says_what_it_did(rig: Rig) -> None:
     rig.asking.cancel()
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
-    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1}, (exchange,))
+    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1, "refused": 0}, (exchange,))
     [call] = [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "tool.call"]
     assert (call.outcome, call.parent_id) == ("cancelled", turn.span_id)
 
@@ -718,7 +718,7 @@ async def test_a_turn_the_brain_failed_is_a_failed_event_saying_why(rig: Rig) ->
     [turn] = turns(rig.recorded)
     assert (turn.outcome, turn.error) == ("failed", "the brain's turn ended in error: server_error: API Error: 529 Overloaded")
     # Nothing was said, so there is no wait to a first word: absent, not zero.
-    assert (turn.facts["waited_ms"], turn.counts) == (None, {"round_trips": 0, "tools": 0})
+    assert (turn.facts["waited_ms"], turn.counts) == (None, {"round_trips": 0, "tools": 0, "refused": 0})
 
 
 async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
@@ -1250,18 +1250,25 @@ async def test_anything_but_a_plain_yes_refuses_the_permission_and_hands_the_bra
     assert rig.brain.asked == [heard("make the notes say hello"), heard("thanks")]
 
 
-async def refuse_the_edit(rig: Rig) -> str:
-    """A turn whose permission to edit the notes the user hears asked and refuses; the request that carries the refusal."""
-    await rig.say({"role": "user", "content": "make the notes say hello"})
-    exchange, _ = rig.request()
-    rig.stream(exchange, "I'll write it.")
-    asked = rig.brain.permit("Edit", {"file_path": "/Users/bmf/notes.txt"})
-    await rig.until(lambda: "May I use Edit on notes.txt? Say yes to allow it." in rig.out.said())
+async def refuse(rig: Rig, tool: str, input: dict[str, object], question: str) -> str:
+    """The brain asks `question` for a permission, which the user hears to its end and refuses; the request that carries
+    the refusal."""
+    asked = rig.brain.permit(tool, input)
+    before = rig.out.said().count(question)
+    await rig.until(lambda: rig.out.said().count(question) > before)
     rig.context.add_message({"role": "user", "content": "no"})
     await rig.worker.queue_frame(LLMContextFrame(rig.context))
     await rig.until(lambda: not asked.open)
     after, _ = rig.request()
     return after
+
+
+async def refuse_the_edit(rig: Rig) -> str:
+    """A turn whose permission to edit the notes the user hears asked and refuses; the request that carries the refusal."""
+    await rig.say({"role": "user", "content": "make the notes say hello"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll write it.")
+    return await refuse(rig, "Edit", {"file_path": "/Users/bmf/notes.txt"}, "May I use Edit on notes.txt? Say yes to allow it.")
 
 
 async def test_a_refusal_the_brain_says_nothing_after_is_said_by_hands_so_silence_never_passes_for_it_done(rig: Rig) -> None:
@@ -1272,7 +1279,7 @@ async def test_a_refusal_the_brain_says_nothing_after_is_said_by_hands_so_silenc
     assert rig.out.said()[-1] == "I did not use Edit on notes.txt, so that is not done."
     assert acknowledgements(rig) == ["I did not use Edit on notes.txt, so that is not done."]
     [turn] = turns(rig.recorded)
-    assert turn.facts["refusals"] == ("I did not use Edit on notes.txt, so that is not done.",)
+    assert (turn.facts["refusals"], turn.counts["refused"]) == (("I did not use Edit on notes.txt, so that is not done.",), 1)
 
 
 async def test_a_refusal_the_brain_speaks_to_is_not_said_again_by_hands(rig: Rig) -> None:
@@ -1283,7 +1290,55 @@ async def test_a_refusal_the_brain_speaks_to_is_not_said_again_by_hands(rig: Rig
     assert rig.out.said()[-1] == "Okay, I left the notes alone."
     assert acknowledgements(rig) == []
     [turn] = turns(rig.recorded)
-    assert turn.facts["refusals"] == ()
+    assert (turn.facts["refusals"], turn.counts["refused"]) == ((), 1)
+
+
+async def test_a_refusal_the_user_speaks_over_is_left_to_the_turn_they_begin(rig: Rig) -> None:
+    after = await refuse_the_edit(rig)
+    rig.stream(after, "  ")
+    await rig.until(lambda: "  " in rig.out.said())
+    await rig.interrupt()
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    assert acknowledgements(rig) == []
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["refusals"], turn.counts["refused"], turn.facts["interrupted"]) == ((), 1, True)
+
+
+async def test_a_permission_asked_and_refused_again_in_silence_is_said_once(rig: Rig) -> None:
+    after = await refuse_the_edit(rig)
+    rig.stream(after, "  ")
+    after = await refuse(rig, "Edit", {"file_path": "/Users/bmf/notes.txt"}, "May I use Edit on notes.txt? Say yes to allow it.")
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    assert acknowledgements(rig) == ["I did not use Edit on notes.txt, so that is not done."]
+    [turn] = turns(rig.recorded)
+    assert turn.counts["refused"] == 2
+
+
+async def test_a_refused_command_is_named_by_its_opening_words(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "build it"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "On it.")
+    await refuse(rig, "Bash", {"command": "make build && " * 40 + "rm -rf ~/x"}, f"May I use Bash to run {'make build && ' * 40}rm -rf ~/x? Say yes to allow it.")
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    assert acknowledgements(rig) == ["I did not use Bash to run make build && make build && and so on, so that is not done."]
+
+
+async def test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said(rig: Rig) -> None:
+    rig.out.holding = True
+    await rig.say({"role": "user", "content": "make the notes say hello"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll write it.")
+    asked = rig.brain.permit("Edit", {"file_path": "/Users/bmf/notes.txt"})
+    await rig.until(lambda: "May I use Edit on notes.txt? Say yes to allow it." in rig.out.said())
+    asked.settle(Deny(UNANSWERED))
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    assert acknowledgements(rig) == []
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["refusals"], turn.counts["refused"]) == ((), 0)
 
 
 async def test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked(rig: Rig) -> None:
