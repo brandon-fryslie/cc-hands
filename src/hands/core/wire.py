@@ -160,6 +160,12 @@ def tool_names(body: object) -> tuple[str, ...]:
     return tuple(name for tool in _mappings(tools) if isinstance(name := tool.get("name"), str))
 
 
+def streams(body: object) -> bool:
+    """Whether a messages request asks for its reply as a stream: Claude Code's main turns do, all but the one it asks
+    again whole after a stream that broke before any block of it finished (2.1.289)."""
+    return isinstance(body, Mapping) and cast(Mapping[str, object], body).get("stream") is True
+
+
 def _since_reply(messages: Sequence[object]) -> int:
     """Where the messages after the model's last reply begin."""
     replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]

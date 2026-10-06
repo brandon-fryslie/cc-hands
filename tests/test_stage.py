@@ -36,7 +36,7 @@ from hands.core import place
 from hands.core.place import Modality
 from hands.core.session import Permission
 from hands.brain.mcp import CallSpans
-from hands.brain.stage import INTERRUPTED, SILENT, BrainStage, HandsAsked, UserAsked
+from hands.brain.stage import INTERRUPTED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -46,18 +46,22 @@ from hands.core.wire import (
     BlockStopped,
     Exchanged,
     Fork,
+    Garbled,
     Heard,
     Hold,
     Kind,
     MainTurn,
+    Reached,
     Route,
     Send,
     Sent,
+    StreamError,
     Tail,
     TextDelta,
     Unknown,
     Unreached,
     UsageLimitReached,
+    unstreamed,
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Entry
@@ -236,11 +240,12 @@ class Rig:
         await self.worker.queue_frame(LLMContextFrame(self.context))
         await self.until(lambda: len(self.brain.asked) > asked)
 
-    def request(self, body: object = None, kind: Kind = MainTurn(None), session: SessionId | None = BRAIN) -> tuple[str, Route]:
-        """A request leaving on the wire: the stage hears it and decides where it goes."""
+    def request(self, body: dict[str, object] | None = None, kind: Kind = MainTurn(None), session: SessionId | None = BRAIN) -> tuple[str, Route]:
+        """A request leaving on the wire, asking for a stream as the brain's do unless its body says not: the stage hears it
+        and decides where it goes."""
         self.exchanges += 1
         exchange = f"x{self.exchanges}"
-        sent = Sent(exchange, session, kind, body or {"messages": [{"role": "user", "content": "hi"}]})
+        sent = Sent(exchange, session, kind, {"stream": True, **(body or {"messages": [{"role": "user", "content": "hi"}]})})
         self.stage.hear(sent)
         route = self.stage.route(sent)
         # The span apart: where the request goes is what each test asserts, and what trace it is in is a few tests' own.
@@ -1068,6 +1073,88 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
         ),
         heard("thanks"),
     ]
+
+
+def broken_then_asked_again(rig: Rig, heard: Sequence[str], retried: str) -> tuple[str, str]:
+    """A reply the API breaks once `heard` has streamed, before its text block finishes, and the request Claude Code asks it
+    again with, without a stream, answered `retried` whole (2.1.289): each told as the proxy tells it."""
+    broken, _ = rig.request()
+    rig.stage.hear(Heard(broken, BlockStarted(0, {"type": "text", "text": ""})))
+    rig.stream(broken, *heard)
+    overloaded = {"type": "overloaded_error", "message": "Overloaded"}
+    rig.stage.hear(Heard(broken, StreamError(overloaded)))
+    reply = Reached(200, 0.0, 0.0, 9, Garbled(f"the API sent an error mid-stream: {json.dumps(overloaded)}"))
+    rig.stage.hear(Exchanged(broken, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
+    retry, _ = rig.request({"stream": False, "messages": [{"role": "user", "content": "hi"}]})
+    message: dict[str, object] = {"type": "message", "id": "msg_1", "role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": retried}], "stop_reason": "end_turn", "usage": {}}
+    events = unstreamed(json.dumps(message).encode())
+    assert isinstance(events, tuple)
+    for event in events:
+        rig.stage.hear(Heard(retry, event))
+    return broken, retry
+
+
+async def test_a_reply_asked_again_that_opens_as_the_broken_one_did_goes_on_from_where_the_user_stopped_hearing_it(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    broken, retry = broken_then_asked_again(rig, ("Lighthouses stand ", "on rocky"), "Lighthouses stand on rocky coasts.")
+    await rig.until(lambda: len(rig.out.said()) == 3)
+    rig.brain.end()
+    await rig.until(lambda: len(turns(rig.recorded)) == 1)
+    assert rig.out.said() == ["Lighthouses stand ", "on rocky", " coasts."]
+    [turn] = turns(rig.recorded)
+    assert turn.facts["text"] == "Lighthouses stand on rocky coasts."
+    assert turn.facts["exchanges"] == (broken, retry)
+    # [LAW:nothing-unseen] the break, what of it was heard, and that the reply asked again said it once.
+    assert turn.facts["broken"] == (Broken(retry, "Lighthouses stand on rocky", repeated=True),)
+    # What the user heard is all in the brain's history, as the reply asked again: there is nothing to tell it.
+    await rig.say({"role": "user", "content": "go on"})
+    assert rig.brain.asked[1:] == [heard("go on")]
+    rig.brain.end()
+
+
+async def test_a_reply_asked_again_that_opens_otherwise_is_said_whole_and_the_brain_told_what_the_user_heard_of_the_broken_one(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    _, retry = broken_then_asked_again(rig, ("Lighthouses stand ", "on rocky"), "Most lighthouses stand on rocky coasts.")
+    await rig.until(lambda: len(rig.out.said()) == 3)
+    rig.brain.end()
+    await rig.until(lambda: len(turns(rig.recorded)) == 1)
+    # A text block of its own after the broken one, as the brain's next words after a finished block are.
+    assert rig.out.said() == ["Lighthouses stand ", "on rocky", "\n\nMost lighthouses stand on rocky coasts."]
+    assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, "Lighthouses stand on rocky"),)
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    rig.brain.end()
+    await rig.say({"role": "user", "content": "thanks"})
+    note = '[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "Lighthouses stand on rocky". Say nothing about this unless the user asks.'
+    # Told once: the turn after it broke nothing.
+    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?"), heard("thanks")]
+
+
+async def test_a_reply_broken_before_it_said_a_word_is_asked_again_with_nothing_to_tell(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    _, retry = broken_then_asked_again(rig, (), "Lighthouses stand on rocky coasts.")
+    await rig.until(lambda: len(rig.out.said()) == 1)
+    rig.brain.end()
+    await rig.until(lambda: len(turns(rig.recorded)) == 1)
+    assert rig.out.said() == ["Lighthouses stand on rocky coasts."]
+    assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, ""),)
+    await rig.say({"role": "user", "content": "go on"})
+    assert rig.brain.asked[1:] == [heard("go on")]
+    rig.brain.end()
+
+
+async def test_a_turn_that_fails_after_a_reply_was_asked_again_tells_the_brain_all_the_user_heard_of_it(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    _, retry = broken_then_asked_again(rig, ("Lighthouses stand ", "on rocky"), "Most lighthouses stand on rocky coasts.")
+    await rig.until(lambda: len(rig.out.said()) == 3)
+    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, "Lighthouses stand on rocky"),)
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    # The turn's failure says all of it, the broken reply's words with the rest: one note, not one more for the break.
+    spoken = "Lighthouses stand on rocky\n\nMost lighthouses stand on rocky coasts."
+    note = f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.'
+    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?")]
+    rig.brain.end()
 
 
 async def test_what_the_user_heard_of_a_broken_turn_is_told_with_the_first_turn_the_brain_takes(rig: Rig) -> None:
