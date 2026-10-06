@@ -154,12 +154,20 @@ class OwnModel:
         """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
         a start on it could not reach its model: weighed here as `edited` weighs an edit by hand, so a choice by voice is
         refused while the user is there to hear why, never written to be refused after."""
+        model = model.strip()
+        # A model is named by its id; one with a space is a name as said aloud, which no backend serves. Only here, where a
+        # name said aloud enters: a model named in the file by hand may be a local server's path, spaces and all.
+        if any(character.isspace() for character in model):
+            raise Rejected(f"{model!r} has a space in it; a model is named by its id, such as {ANTHROPIC_MODEL}")
         held = _readable(self._home, _held(self._home))
-        now = _settings(self._home, held)
-        edited = _with_model(held, model.strip())
+        edited = _with_model(held, model)
         chosen = _settings(self._home, edited)
-        if chosen == now:
-            raise Rejected(f"{self._home.config} names {model} already")
+        if chosen == self._running.config:
+            raise Rejected(f"hands runs on {model} already")
+        if chosen == _settings(self._home, held):
+            # The file names it, and the run is not on it: a save `edited` refused, which bytes written again would not
+            # take, since they are the bytes it refused.
+            raise Rejected(f"{self._home.config} names {model} already, but hands was refused it when it was saved; `hands restart` starts on it")
         self._reachable(chosen)
         return partial(_keep, self._home, held, edited)
 
@@ -260,24 +268,16 @@ def _llm(table: Mapping[str, object]) -> LLM:
             url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
             if url.endswith("/v1"):
                 raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
-            return Anthropic(url=url, model=_model(table, ANTHROPIC_MODEL))
+            return Anthropic(url=url, model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
         case "openai":
             _known(table, "[llm] for openai", ("backend", "model", "url"))
-            return OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL), model=_model(table, OPENAI_MODEL))
+            return OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL), model=_text(table, "[llm]", "model", OPENAI_MODEL))
         case "claude":
             # A url would be ignored, its requests going through hands' proxy to Anthropic's API, so it is refused.
             _known(table, "[llm] for claude", ("backend", "model"))
-            return Claude(model=_model(table, ANTHROPIC_MODEL))
+            return Claude(model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
         case _:
             raise Rejected(f"[llm] backend {backend!r} is not one of: anthropic, openai, claude")
-
-
-def _model(table: Mapping[str, object], default: str) -> str:
-    model = _text(table, "[llm]", "model", default)
-    # A model is named by its id; one with a space is a name said aloud, such as a choice by voice taken as heard.
-    if any(character.isspace() for character in model):
-        raise Rejected(f"[llm] model {model!r} has a space in it; a model is named by its id, such as {ANTHROPIC_MODEL}")
-    return model
 
 
 def _table(top: Mapping[str, object], name: str) -> Mapping[str, object]:

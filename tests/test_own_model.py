@@ -4,21 +4,24 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pipecat.frames.frames import InterruptionFrame, TTSSpeakFrame
 from pipecat.processors.filters.identity_filter import IdentityFilter
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.frames.frames import Frame
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Running, running
 from hands.daemon import config
 from hands.daemon.config import Claude, Config, OpenAI
-from hands.sessions.audit import SettingsEdited
+from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.voice.player import Marks, Player
+from hands.voice.player import Mark, Marks, Player
 from hands.voice.tool import Tool, silent
-from hands.voice.tools import model_tools
+from hands.sessions.wide import WideEvent
+from hands.voice.tools import Called, audited, model_tools
 from test_playback import Heard
 
 SPOKEN_FILE = """# hands, by hand
@@ -62,7 +65,7 @@ def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_
     ("model", "said"),
     [
         ("claude opus", "has a space in it"),
-        ("claude-sonnet-5", "names claude-sonnet-5 already"),
+        ("claude-sonnet-5", "hands runs on claude-sonnet-5 already"),
         ("", "should be a non-empty string"),
     ],
 )
@@ -74,9 +77,18 @@ def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_p
     assert home.config.read_text() == SPOKEN_FILE
 
 
-def test_a_model_with_a_space_in_the_file_is_refused_as_any_bad_setting_is() -> None:
-    with pytest.raises(Rejected, match="has a space in it"):
-        config.parse('[llm]\nmodel = "claude opus"\n')
+def test_a_model_named_by_hand_may_be_a_local_servers_path_with_a_space_in_it() -> None:
+    assert config.parse('[llm]\nbackend = "openai"\nmodel = "/models/ML Models/qwen3"\n').llm == OpenAI(model="/models/ML Models/qwen3")
+
+
+def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_the_restart_that_takes_it(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text(SPOKEN_FILE)
+    own = _own(home)
+    # Saved by hand while the run went on, as an edit `edited` refused leaves the file.
+    home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5", "claude-opus-5-5"))
+    with pytest.raises(Rejected, match="names claude-opus-5-5 already, but hands was refused it.*hands restart"):
+        own.weigh(" claude-opus-5-5 ")
 
 
 def test_a_model_a_start_could_not_reach_is_refused_before_it_is_written(tmp_path: Path) -> None:
@@ -157,10 +169,33 @@ async def test_a_line_heard_to_its_end_is_said_so() -> None:
         assert await asyncio.wait_for(player.heard("Switching."), 2.0) is True
 
 
+class Unfinished(FrameProcessor):
+    """An output transport whose speaker never finishes what it is handed: it passes on every frame but a mark."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        match frame:
+            case Mark():
+                pass
+            case _:
+                await self.push_frame(frame, direction)
+
+
+async def test_a_line_is_heard_once_the_output_passes_its_mark_on_whatever_takes_it_after() -> None:
+    player = Player(lambda _entry: None)
+    # No Marks behind the output: a barge-in empties its queue, so what counts is the output's push, seen in order.
+    speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
+    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+        hearing = asyncio.create_task(player.heard("Switching."))
+        await heard.until(1, Mark)
+        await run.worker.queue_frame(InterruptionFrame())
+        assert await asyncio.wait_for(hearing, 2.0) is True
+
+
 async def test_a_line_cut_off_by_a_barge_in_is_said_so() -> None:
     player = Player(lambda _entry: None)
-    # No marks are played, so the line is never heard to its end: only a barge-in can settle it.
-    speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
+    # The mark is never passed on, so the line is never heard to its end: only a barge-in can settle it.
+    speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
     async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
         hearing = asyncio.create_task(player.heard("Switching."))
         await heard.until(1, TTSSpeakFrame)
@@ -195,7 +230,7 @@ async def test_use_model_refused_says_nothing_and_switches_nothing_and_the_model
 async def test_use_model_cut_off_before_its_line_is_heard_switches_nothing() -> None:
     own, player = FakeOwn(), Player(lambda _entry: None)
     tools = _tools(own, player)
-    speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
+    speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
     async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
         call = asyncio.ensure_future(tools["use_model"].body(model="claude-opus-5-5"))
         await heard.until(1, TTSSpeakFrame)
@@ -208,3 +243,32 @@ async def test_use_model_cut_off_before_its_line_is_heard_switches_nothing() -> 
 async def test_model_in_use_is_the_model_hands_runs_on() -> None:
     tools = _tools(FakeOwn(), Player(lambda _entry: None))
     assert await tools["model_in_use"].body() == {"running_on": "claude-sonnet-5"}
+
+
+async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the_one_switched_to() -> None:
+    recorded: list[Entry] = []
+    def audited_tools(player: Player) -> dict[str, Tool]:
+        return {tool.name: audited(tool, recorded.append) for tool in model_tools(FakeOwn(), player)}
+
+    tools = audited_tools(player := Player(lambda _entry: None))
+    async with spoken(player):
+        await tools["model_in_use"].body()
+        await tools["use_model"].body(model="claude-opus-5-5")
+    # A player of its own: its lines stand in one pipeline.
+    tools = audited_tools(player := Player(lambda _entry: None))
+    speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
+    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+        call = asyncio.ensure_future(tools["use_model"].body(model="claude-opus-5-5"))
+        await heard.until(1, TTSSpeakFrame)
+        await run.worker.queue_frame(InterruptionFrame())
+        await asyncio.wait_for(call, 2.0)
+    events = [entry for entry in recorded if isinstance(entry, WideEvent)]
+    assert [(event.outcome, cast(Called, event.facts["called"]).result) for event in events] == [
+        ("ok", {"running_on": "claude-sonnet-5"}),
+        ("ok", {"said": "Switching to claude-opus-5-5. I'll be back in a few seconds.", "running_on": "claude-sonnet-5", "switching_to": "claude-opus-5-5"}),
+        ("failed", {"error": "The user spoke over hands saying it would switch to claude-opus-5-5, so it did not switch. Ask whether they still want it."}),
+    ]
+
+
+def test_use_model_runs_on_through_a_barge_in_so_the_model_is_told_it_did_not_switch() -> None:
+    assert _tools(FakeOwn(), Player(lambda _entry: None))["use_model"].completes

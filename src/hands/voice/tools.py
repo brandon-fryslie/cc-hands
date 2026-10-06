@@ -1004,7 +1004,8 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
             return {"error": str(error)}
         return {"said": line, "running_on": own.running(), "switching_to": model.strip()}
 
-    return [tool(model_in_use), tool(use_model, then="silence")]
+    # Completes through a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
+    return [tool(model_in_use), tool(use_model, then="silence", completes=True)]
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
