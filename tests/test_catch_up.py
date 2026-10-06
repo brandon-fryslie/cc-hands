@@ -102,7 +102,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
 
 
 async def test_what_a_hook_said_happened_is_caught_up_on_whether_or_not_it_was_said(tmp_path: Path) -> None:
-    """A kind set off is told only when asked for: here, its long text and a call's input bounded as a closing's least share."""
+    """A kind set off is told only when asked for: each kind once a session, counted, its long text bounded."""
     home = Home(tmp_path)
     long = "x" * (CATCH_UP_LEAST * 2)
     written(
