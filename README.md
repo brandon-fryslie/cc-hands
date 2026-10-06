@@ -93,8 +93,9 @@ is not, what does it; it exits 0 only when every step is done.
    hands smoke
    ```
 
-   The first time, Claude Code may ask whether to trust `~/.hands/smoke`; the run then
-   stops at `joined` and shows that question. Run `claude` there once, accept, and run
+   The first time, Claude Code asks its first-run questions there: its login, a theme,
+   whether to trust `~/.hands/smoke`. The run then stops at the part the question held up
+   and shows the question. Run `claude` in `~/.hands/smoke` once, answer them, and run
    the smoke test again.
 
 ## The intermediary
