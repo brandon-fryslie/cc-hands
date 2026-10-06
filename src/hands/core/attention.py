@@ -31,17 +31,30 @@ Switch = Literal["on", "off"]
 @dataclass(frozen=True)
 class Attention:
     """What hands says unprompted, by kind: each turn a session finishes, the focused session's progress as it works,
-    and a session ending. Quiet holds all of it, whatever its level, until the user lets hands talk again, and leaves
-    the levels as they were set, so talking again is back to them.
+    a session ending, and each Claude Code hook hands only passes on (hands.core.occurrences), named after its hook.
+    Quiet holds all of it, whatever its level, until the user lets hands talk again, and leaves the levels as they were
+    set, so talking again is back to them.
 
-    The defaults are how hands spoke before any of it was set: every finished turn told was too much to sit through with
-    several sessions (the user's decision, 2026-09-26), and the focused session is heard step by step.
+    Every finished turn told was too much to sit through with several sessions (the user's decision, 2026-09-26), and
+    the focused session's steps, said as it took them, told them nothing they could use (2026-10-05). A hook is heard
+    only once the user sets it to be: `clear` is the SessionStart a /clear fires, never a session's first.
     """
 
     finished: Level = "off"
-    progress: Level = "full"
+    progress: Level = "off"
     ended: Switch = "on"
     quiet: Switch = "off"
+    permission_denied: Level = "off"
+    subagent_start: Level = "off"
+    subagent_stop: Level = "off"
+    task_completed: Level = "off"
+    config_change: Level = "off"
+    pre_compact: Level = "off"
+    clear: Level = "off"
+
+
+# Each kind as the user and the model name it: Attention's fields, which a test holds this to.
+Kind = Literal["finished", "progress", "ended", "quiet", "permission_denied", "subagent_start", "subagent_stop", "task_completed", "config_change", "pre_compact", "clear"]
 
 
 # What decided how a finished turn reaches the user. Told as it finishes, how much of it, and why: finished turns are
@@ -115,3 +128,18 @@ def ended_route(attention: Attention) -> EndedRoute:
             return "note"
         case _, "off":
             return "note"
+
+
+def occurrence_route(attention: Attention, overlay: Overlay, level: Level) -> Route:
+    """How something a session's hook said reaches the user, `level` being how its kind is set: said for any session,
+    focused or not, unless it is muted or hands is quiet."""
+    # [LAW:dataflow-not-control-flow] a table over the settings and the overlay, every row type-checked.
+    match attention.quiet, overlay, level:
+        case "on", _, _:
+            return "note"
+        case "off", "muted", _:
+            return "note"
+        case "off", "normal" | "watched", "off":
+            return "note"
+        case "off", "normal" | "watched", ("brief" | "full") as amount:
+            return amount

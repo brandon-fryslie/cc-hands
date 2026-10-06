@@ -1,10 +1,13 @@
 """catch_up reads what the user missed out of the audit log: every session that finished while they were away."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from hands.core.sentences import cut
-from hands.core.effects import Effect, SessionGone, Summarise
+from hands.core.effects import Effect, SessionGone, Summarise, Tell
+from hands.core.occurrences import AutoDenied, Cleared, SubagentStopped
 from hands.core.events import Joined, Tick
 from hands.core.session import Membership, PromptId, SessionId
 from hands.sessions.audit import Announced, AuditLog, Entry, Replied, Transcribed
@@ -53,7 +56,7 @@ async def catch_up(sessions: Sessions, home: Home, minutes: int = 0) -> object:
     return await catch_up_tool(sessions, home, lambda: BACK).body(minutes=minutes)
 
 
-NOTHING: dict[str, object] = {"since_minutes_ago": None, "unreadable_lines": 0, "finished": [], "ended": [], "announced": []}
+NOTHING: dict[str, object] = {"since_minutes_ago": None, "unreadable_lines": 0, "finished": [], "ended": [], "occurred": [], "announced": []}
 
 
 async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finished(tmp_path: Path) -> None:
@@ -90,11 +93,36 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
             {"session": "deploy", "turns": 1, "closing": "Deployed."},
         ],
         "ended": ["scratch"],
+        "occurred": [],
         "announced": [{"text": "hands could not reach the model.", "times": 2}],
     }
     # [LAW:nothing-unseen] the call's event carries where the window opened.
     [event] = called
     assert isinstance(event, WideEvent) and event.facts == {"tool": "catch_up", "called": Called({"minutes": 0}, result)}
+
+
+async def test_what_a_hook_said_happened_is_caught_up_on_whether_or_not_it_was_said(tmp_path: Path) -> None:
+    """A kind set off is told only when asked for: each kind once a session, counted, its long text bounded."""
+    home = Home(tmp_path)
+    long = "x" * (CATCH_UP_LEAST * 2)
+    written(
+        home,
+        [
+            (LEFT, Transcribed("back in a bit")),
+            (LEFT + timedelta(minutes=1), applied(Tell(SessionId("docs"), AutoDenied("Bash", "[Data Exfiltration]", {"command": long})))),
+            (LEFT + timedelta(minutes=2), applied(Tell(SessionId("docs"), SubagentStopped("Plan", "first")))),
+            (LEFT + timedelta(minutes=2), applied(Tell(SessionId("docs"), SubagentStopped("Explore", long)))),
+            (LEFT + timedelta(minutes=3), applied(Tell(SessionId("docs"), Cleared()))),
+            (BACK, Transcribed("what did I miss")),
+        ],
+    )
+    result = cast(dict[str, object], await catch_up(await sessions_of("docs"), home))
+    assert result["occurred"] == [
+        {"session": "docs", "times": 1, "type": "AutoDenied", "tool": "Bash", "reason": "[Data Exfiltration]", "input": cut(json.dumps({"command": long}), CATCH_UP_LEAST)},
+        # Counted by kind, with the newest said.
+        {"session": "docs", "times": 2, "type": "SubagentStopped", "agent_type": "Explore", "closing": cut(long, CATCH_UP_LEAST)},
+        {"session": "docs", "times": 1, "type": "Cleared"},
+    ]
 
 
 async def test_minutes_reaches_back_past_what_the_user_said(tmp_path: Path) -> None:

@@ -287,10 +287,15 @@ without a restart; a skill added to the plugin reaches a session on `/reload-plu
 `/hands:attention`, which you can also say to hands in your own words ("stop telling
 me when sessions finish", "be quiet for a while"), sets what hands says without being
 asked: each finished turn (`finished off|brief|full`), the focused session's steps as it
-works (`progress off|brief|full`), and a session ending (`ended on|off`). `quiet on`
+works (`progress off|brief|full`), and a session ending (`ended on|off`). Claude Code's
+other hooks each have a kind too, `off|brief|full`, named after the hook:
+`permission_denied` (auto mode refused a call), `subagent_start`, `subagent_stop`,
+`task_completed`, `config_change`, `pre_compact`, and `clear` (a `/clear`, never a
+session's first start). Brief says what happened; full adds what the hook says of it,
+such as the subagent's report or the reason auto mode gave. `quiet on`
 holds all of it until `quiet off`, and leaves the rest as it was set. With no
-arguments it says what is set. Finished turns are off until you turn them on; while they
-are off, only the turns of a session you asked hands to watch are told as they finish,
+arguments it says what is set. Everything but `ended` is off until you turn it on; while
+finished turns are off, only the turns of a session you asked hands to watch are told as they finish,
 and any session's last turn is told when you ask for it. Permission requests, questions
 asked in a dialog, and plans are spoken whatever is set. Settings last across restarts
 and take effect from the next thing hands would have said.

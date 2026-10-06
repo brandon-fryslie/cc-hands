@@ -12,6 +12,7 @@ from typing import Literal
 from hands.core.attention import Amount
 from hands.core.effects import DeadlineNear, Expired, Narrate, Note, SessionGone, Speak
 from hands.core.narration import Segment
+from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Held, Opened, PromptId, RequestId, Session, SessionId, ids
 from hands.core.turn import AgentId, AgentTask
@@ -73,7 +74,16 @@ class Working:
     doings: tuple[Doing, ...]
 
 
-Pending = Speak | Narrate | Note | Finished | Unread | SessionGone | Briefing | Working
+@dataclass(frozen=True)
+class Mentioned:
+    """Something a session's hook said happened, said as written, as much of it as its kind is set to say."""
+
+    session: SessionId
+    occurrence: Occurrence
+    amount: Amount
+
+
+Pending = Speak | Narrate | Note | Finished | Unread | SessionGone | Briefing | Working | Mentioned
 
 # How soon a pending thing is told, soonest first. "known" goes into the model's context and is never spoken, so it
 # costs the user nothing to have it first, and what is spoken after it is said knowing it. "blocking" is something a
@@ -91,7 +101,7 @@ def priority(pending: Pending) -> Priority:
             return "blocking"
         case Finished() | Unread():
             return "result"
-        case SessionGone() | Working():
+        case SessionGone() | Working() | Mentioned():
             return "fyi"
 
 
@@ -169,7 +179,7 @@ def _story(pending: Pending, at: int) -> SessionId | int:
             return session
         case Narrate(moment=moment):
             return moment.session
-        case Finished(session=session) | Unread(session=session) | SessionGone(session=session) | Working(session=session):
+        case Finished(session=session) | Unread(session=session) | SessionGone(session=session) | Working(session=session) | Mentioned(session=session):
             return session
         case Note() | Briefing():
             return at

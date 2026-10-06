@@ -106,6 +106,11 @@ def cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:head]}\n[{len(text) - limit} characters left out]\n{text[len(text) - (limit - head) :]}"
 
 
+def bounded(text: str, limit: int) -> str:
+    """The text whole up to `limit` characters, and cut there, saying so, past it."""
+    return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
+
+
 def _item(due: Due, text_limit: int) -> str:
     text = cut(due.text, text_limit)
     parts = "".join(f"\n- {id}: {sentence}" for id, sentence in due.parts)

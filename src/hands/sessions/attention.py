@@ -3,17 +3,19 @@
 The plugin's `/hands:attention` skill runs this module through the plugin's launcher, on the installed hands' own
 interpreter, and it imports only the standard library and hands' data modules:
 
-    hooks/python -m hands.sessions.attention [finished|progress|ended|quiet LEVEL]...
+    hooks/python -m hands.sessions.attention [KIND LEVEL]...
 
-With no argument it says what is set. The daemon reads the file at every finished turn, every burst of progress, and
-every session ending, and holds no copy [LAW:one-source-of-truth], so a change is heard from the next one on.
+KIND is a field of hands.core.attention.Attention. With no argument it says what is set. The daemon reads the file at
+every finished turn, every burst of progress, every session ending, and every hook it passes on, and holds no copy
+[LAW:one-source-of-truth], so a change is heard from the next one on. The file holds only the kinds the user set, so
+a kind never set follows its default as hands' defaults change.
 """
 
 import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, replace
+from dataclasses import replace
 from typing import cast, get_args, get_type_hints
 
 from hands.core.attention import Attention, Level, Switch
@@ -25,24 +27,37 @@ from hands.sessions.payload import Rejected
 _LEVELS: Mapping[str, tuple[str, ...]] = {name: get_args(hint) for name, hint in get_type_hints(Attention).items()}
 
 
+# The kinds the user set, each at its level: what the file holds.
+Settings = Mapping[str, Level | Switch]
+
+
 def attention(home: Home) -> Attention:
     """What is set; a kind never set, or a file never written, is at its default."""
+    return replace(Attention(), **_set(home))
+
+
+def _set(home: Home) -> Settings:
     try:
         written = home.attention.read_bytes()
     except FileNotFoundError:
-        return Attention()
+        return {}
     try:
         read = json.loads(written)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise Rejected(f"{home.attention} is not JSON: {error}") from error
     if not isinstance(read, dict):
         raise Rejected(f"{home.attention} says {written!r}, which is no setting of what hands says unprompted")
-    return changed(Attention(), [(str(kind), str(level)) for kind, level in cast(dict[object, object], read).items()])
+    return _settings([(str(kind), str(level)) for kind, level in cast(dict[object, object], read).items()])
 
 
 def changed(attention: Attention, changes: Sequence[tuple[str, str]]) -> Attention:
-    """`attention` with each (kind, level) in `changes` set, in order, read as a person says it: "On" is on, and a kind
-    with levels turned on is all of it."""
+    """`attention` with each (kind, level) in `changes` set, in order."""
+    return replace(attention, **_settings(changes))
+
+
+def _settings(changes: Sequence[tuple[str, str]]) -> Settings:
+    """Each (kind, level) in `changes`, in order, read as a person says it: "On" is on, and a kind with levels turned on
+    is all of it."""
     # [LAW:parse-dont-validate] the one place a kind and its level are read, by the CLI, the voice tool, and the file.
     settings: dict[str, Level | Switch] = {}
     for kind, level in changes:
@@ -54,12 +69,12 @@ def changed(attention: Attention, changes: Sequence[tuple[str, str]]) -> Attenti
         if said not in allowed:
             raise Rejected(f"{level!r} is no level of {kind}; it is one of {', '.join(allowed)}")
         settings[kind] = said  # pyright: ignore[reportArgumentType]  (held to the kind's Literal just above)
-    return replace(attention, **settings)
+    return settings
 
 
-def set_attention(home: Home, to: Attention) -> None:
+def set_attention(home: Home, settings: Settings) -> None:
     # [LAW:no-ambient-temporal-coupling] replaced whole, so the daemon never reads half a file.
-    replace_whole(home.attention, json.dumps(asdict(to)) + "\n", 0o644)
+    replace_whole(home.attention, json.dumps(dict(settings)) + "\n", 0o644)
 
 
 def asked(home: Home, changes: Sequence[tuple[str, str]]) -> Attention:
@@ -67,19 +82,42 @@ def asked(home: Home, changes: Sequence[tuple[str, str]]) -> Attention:
     writes nothing, so a question never lands over a change made meanwhile [LAW:single-enforcer]."""
     if not changes:
         return attention(home)
-    to = changed(_in_effect(home), changes)
-    set_attention(home, to)
-    return to
+    settings: dict[str, Level | Switch] = {**_in_effect(home), **_settings(changes)}
+    set_attention(home, settings)
+    return replace(Attention(), **settings)
 
 
-def _in_effect(home: Home) -> Attention:
+def _in_effect(home: Home) -> Settings:
     """What is set as the daemon acts on it: a file that cannot be read is in effect as the defaults, so a change is made
     to them and replaces it, and the readback, which says every setting, says what is set now. A file only a change can
     mend would leave the user unable to quiet hands by voice."""
     try:
-        return attention(home)
+        return _set(home)
     except Rejected:
-        return Attention()
+        return {}
+
+
+# Each hook kind as the readback names it, in the order it says them.
+_HOOKS: Mapping[str, str] = {
+    "permission_denied": "auto mode's refusals",
+    "subagent_start": "subagents starting",
+    "subagent_stop": "subagents finishing",
+    "task_completed": "tasks completed",
+    "config_change": "settings changing",
+    "pre_compact": "compaction",
+    "clear": "a session cleared",
+}
+
+
+_HOW: Mapping[str, str] = {"brief": "briefly", "full": "in full"}
+
+
+def _hooks(attention: Attention) -> list[tuple[str, str]]:
+    return [(kind, getattr(attention, kind)) for kind in _HOOKS]
+
+
+def _listed(parts: Sequence[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
 def described(attention: Attention) -> str:
@@ -95,11 +133,13 @@ def described(attention: Attention) -> str:
         "full": "I tell each step the focused session takes.",
     }[attention.progress]
     ended = {"on": "I say when a session ends.", "off": "I don't say when a session ends."}[attention.ended]
+    told = [f"{_HOOKS[kind]} {_HOW[level]}" for kind, level in _hooks(attention) if level != "off"]
+    hooks = f"Of Claude Code's other events, I tell {_listed(told)}." if told else "I tell none of Claude Code's other events."
     quiet = {
         "on": "I'm keeping quiet for now: none of that is said until you let me talk again, and you can ask for any of it.",
         "off": "",
     }[attention.quiet]
-    return " ".join(part for part in (finished, progress, ended, quiet, "What needs your answer is always said.") if part)
+    return " ".join(part for part in (finished, progress, ended, hooks, quiet, "What needs your answer is always said.") if part)
 
 
 def main(argv: Sequence[str]) -> int:

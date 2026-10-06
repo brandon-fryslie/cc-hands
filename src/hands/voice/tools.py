@@ -7,6 +7,7 @@ adapter over the bodies, hands' MCP server another.
 
 import asyncio
 import functools
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -31,7 +32,7 @@ from hands.core.progress import Doing, said
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
-from hands.core.attention import Attention, Overlay, Spoken, Withheld
+from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
@@ -772,15 +773,29 @@ CATCH_UP_CLOSINGS = 12000
 CATCH_UP_LEAST = 150
 
 
+def _shown(value: object) -> object:
+    """A field of an occurrence as catch_up hands it on: text, or a call's input, bounded as a closing's least share is."""
+    match value:
+        case str():
+            return cut(value, CATCH_UP_LEAST)
+        case dict():
+            return cut(json.dumps(value, ensure_ascii=False), CATCH_UP_LEAST)
+        case _:
+            return value
+
+
 def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -> Tool:
     async def catch_up(minutes: int = 0) -> Result:
         """What the user missed: every session that finished work while they were away and the newest words each closed
-        a turn with, the sessions that ended, and what hands announced.
+        a turn with, the sessions that ended, what their hooks said happened, and what hands announced.
 
         Call this when the user asks what they missed, what happened while they were away, or what went on in the last
         while. Sum it up the way a colleague would after a break: each session that finished in a sentence, by name, then
         any that ended. Leave nothing out of `finished`: the user is asking because they heard none of it. `turns` is
-        how many turns a session finished; read_session reads what each did, when they want more of one.
+        how many turns a session finished; read_session reads what each did, when they want more of one. `occurred` is
+        what sessions' hooks said happened, each kind once a session with how many `times` and the newest one's
+        fields, by its type: AutoDenied, auto mode refusing a call; SubagentStarted and SubagentStopped; TaskCompleted;
+        ConfigChanged, its settings or skills changing; Compacting; Cleared, a /clear.
 
         Args:
             minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since they last spoke to you before this.
@@ -804,6 +819,10 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
                 for done in missed.finished
             ],
             "ended": [spoken_name(sessions, session) for session in missed.ended],
+            "occurred": [
+                {"session": spoken_name(sessions, happened.session), "times": happened.times, **{key: _shown(value) for key, value in happened.newest.items()}}
+                for happened in missed.occurred
+            ],
             "announced": [{"text": said.text, "times": said.times} for said in missed.announced],
         }
 
@@ -811,7 +830,7 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
 
 
 class Change(TypedDict):
-    kind: Literal["finished", "progress", "ended", "quiet"]
+    kind: Kind
     level: Literal["off", "brief", "full", "on"]
 
 
@@ -825,6 +844,10 @@ def attention_tool(home: Home) -> Tool:
         - progress: the focused session's steps as it works. off says none; brief says what it says it is doing; full
           says each step.
         - ended: a session ending, on or off.
+        - Claude Code's hooks, each off, brief (what happened), or full (and what the hook says of it), and off until
+          set: permission_denied, auto mode refusing a call; subagent_start and subagent_stop, a subagent the session
+          started starting and finishing; task_completed, a task on its list marked done; config_change, its settings
+          or skills changing; pre_compact, its context about to be compacted; clear, a /clear.
         - quiet: on holds everything above, whatever its level, until it is off again, and leaves the levels as they
           were. "Be quiet for a while" is quiet on; "you can talk again" is quiet off.
         What a session asks, a permission, a question, or a plan, is said whatever is set: it needs an answer.

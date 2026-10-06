@@ -9,11 +9,13 @@ from pathlib import PurePath
 from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak
-from hands.core.pending import Briefing, Finished, News, Pending, Unread, Working, went_on
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak, Tell
+from hands.core.occurrences import route as occurrence_route, said as occurrence_said
+from hands.core.pending import Briefing, Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
+from hands.core.sentences import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
@@ -155,11 +157,6 @@ def sent(saying: Saying, telling: Telling, utterances: tuple[Utterance, ...]) ->
             return notes
 
 
-def bounded(text: str, limit: int) -> str:
-    """The text whole up to `limit` characters, and cut there, saying so, past it."""
-    return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
-
-
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
 # the focus, and its overlay, each read as it is.
 Attending = Callable[[SessionId], Awaitable[tuple[Attention, bool, Overlay]]]
@@ -186,14 +183,29 @@ async def relay(
                 # [LAW:nothing-unseen] which way progress went, and what decided it.
                 utterance.annotate(attention=attention, focused=focused, overlay=overlay, route=route)
                 _routed(route, heard, utterance, play, working)
+            case Tell(session=session, occurrence=occurrence):
+                attention, _, overlay = await attending(session)
+                route = occurrence_route(attention, overlay, occurrence)
+                # [LAW:nothing-unseen] whether it was said, how much of it, and what was set that decided it.
+                utterance.annotate(attention=attention, overlay=overlay, route=route)
+                await _mentioned(route, Tell(session, occurrence), utterance, queue_frame)
             case Speak() | Narrate() | Note():
                 await queue_frame(Unprompted(heard, (utterance,)))
 
 
 def _teller(heard: Heard) -> SessionId:
     match heard:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Note(fact=ModeChanged(session=session)) | Progress(session=session):
+        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Note(fact=ModeChanged(session=session)) | Progress(session=session) | Tell(session=session):
             return session
+
+
+async def _mentioned(route: Route, told: Tell, utterance: Utterance, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
+    match route:
+        case "brief" | "full":
+            await queue_frame(Unprompted(Mentioned(told.session, told.occurrence, route), (utterance,)))
+        case "note":
+            # [LAW:one-source-of-truth] the utterance's event in the audit log holds it, for catch_up and the log to tell.
+            utterance.settle("noted")
 
 
 def _routed(route: Route, progress: Progress, utterance: Utterance, play: Callable[[Progress, Amount, Utterance], None], working: Callable[[], None]) -> None:
@@ -230,6 +242,9 @@ def frames(pending: Pending, telling: Telling, names: Names) -> Saying:
             return AsWritten(TTSSpeakFrame(f"The session {names(session)} is gone."))
         case Briefing(note=note), _:
             return Known((LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False),))
+        case Mentioned(session=session, occurrence=occurrence, amount=amount), _:
+            # Said as written: what the hook said, worded here, with nothing for a model to add.
+            return AsWritten(TTSSpeakFrame(occurrence_said(occurrence, names(session), amount)))
         case Working(session=session, of=of, doings=doings), _:
             # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add. Kept out of
             # a pushed context, which keeps every message it is given and would take one every few seconds a session

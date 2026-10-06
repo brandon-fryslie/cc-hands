@@ -32,14 +32,19 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_
     # MessageDisplay is posted to the daemon with no shim: tests/test_display.py.
     assert list(hooks) == [*SUBSCRIBED, "MessageDisplay"]
     command = {"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python", "args": ["-m", "hands.sessions.shim"]}
+    background = {"async": True}
     for event in SUBSCRIBED:
         entries = hooks[event]
         declared = {
             "PermissionRequest": {"timeout": PERMISSION_HOOK_TIMEOUT_SECONDS},
-            "PostToolUse": {"async": True},
-            "PostToolUseFailure": {"async": True},
+            "PostToolUse": background,
+            "PostToolUseFailure": background,
+            # Only passed on, so nothing in the session waits on what hands makes of them.
+            **{passed: background for passed in ("PermissionDenied", "SubagentStart", "SubagentStop", "TaskCompleted", "ConfigChange", "PreCompact")},
         }.get(event, {})
-        assert entries == [{"hooks": [{**command, **declared}]}]
+        # Claude Code's internal agents fire the subagent hooks under the empty name, which ".+" never matches.
+        matched = {"matcher": ".+"} if event in ("SubagentStart", "SubagentStop") else {}
+        assert entries == [{**matched, "hooks": [{**command, **declared}]}]
 
 
 def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:

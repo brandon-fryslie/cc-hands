@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.events import SessionEvent
+from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
 from hands.core.turn import AgentTask
@@ -205,7 +206,16 @@ class Progress:
     written: str
 
 
-Heard = Speak | Narrate | Note | Progress
+@dataclass(frozen=True)
+class Tell:
+    """Something a session's hook said happened, for the user to hear as its kind is set: how is decided where the
+    settings and the session's overlay are read, not here."""
+
+    session: SessionId
+    occurrence: Occurrence
+
+
+Heard = Speak | Narrate | Note | Progress | Tell
 
 
 @dataclass(frozen=True)

@@ -47,15 +47,21 @@ DISPLAY_URL = f"http://{DISPLAY_HOST}:{DISPLAY_PORT}{DISPLAY_PATH}"
 # hung costs lines of narration and never the agent's speed (measured on 2.1.280).
 DISPLAY_TIMEOUT_SECONDS = 2
 
-SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd")
+# The hooks whose occurrences hands only passes on (hands.core.occurrences), as the user sets each to be said.
+PASSED_ON = ("PermissionDenied", "SubagentStart", "SubagentStop", "TaskCompleted", "ConfigChange", "PreCompact")
+SUBSCRIBED = ("SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd", *PASSED_ON)
 
 # [LAW:dataflow-not-control-flow] what each hook declares beyond its command, as a table; the rest take Claude Code's defaults.
 _DECLARED_TIMEOUTS: Mapping[str, int] = {"PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS}
 # [LAW:dataflow-not-control-flow] how long the shim waits on the daemon for each hook that waits on it.
 _WAITS: Mapping[str, float] = {**_DECLARED_TIMEOUTS, "Stop": STOP_POST_TIMEOUT_SECONDS}
-# Fired for every tool call, so they run in the background and never hold the agent up. They are how the
-# daemon learns that a tool it was asked about ran after all: its dialog was answered at the keyboard.
-_IN_BACKGROUND = frozenset({"PostToolUse", "PostToolUseFailure"})
+# Run in the background, so they never hold the agent up: the tool hooks fire for every call, and are how the daemon
+# learns that a tool it was asked about ran after all, its dialog answered at the keyboard; what is only passed on
+# waits on nothing hands could say back.
+_IN_BACKGROUND = frozenset({"PostToolUse", "PostToolUseFailure", *PASSED_ON})
+# Claude Code's own internal agents (prompt suggestions, /btw) fire the subagent hooks under an empty agent type, which
+# a matcher that matches no empty string keeps out: they are no subagent the session started.
+_MATCHERS: Mapping[str, str] = {"SubagentStart": ".+", "SubagentStop": ".+"}
 
 
 def post_timeout(event: str) -> float:
@@ -70,7 +76,12 @@ def plugin_hooks() -> dict[str, object]:
     # Python, so the shim is the process Claude Code spawned and its parent is the claude process whose pid it records.
     command = {"type": "command", "command": f"${{CLAUDE_PLUGIN_ROOT}}/{LAUNCHER}", "args": ["-m", SHIM_MODULE]}
     display = {"type": "http", "url": DISPLAY_URL, "timeout": DISPLAY_TIMEOUT_SECONDS}
-    return {"hooks": {**{event: [{"hooks": [{**command, **declared(event)}]}] for event in SUBSCRIBED}, "MessageDisplay": [{"hooks": [display]}]}}
+    return {"hooks": {**{event: [{**_matched(event), "hooks": [{**command, **declared(event)}]}] for event in SUBSCRIBED}, "MessageDisplay": [{"hooks": [display]}]}}
+
+
+def _matched(event: str) -> dict[str, object]:
+    matcher = _MATCHERS.get(event)
+    return {} if matcher is None else {"matcher": matcher}
 
 
 def rendered() -> str:

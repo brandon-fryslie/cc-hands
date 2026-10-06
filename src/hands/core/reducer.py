@@ -29,6 +29,7 @@ from hands.core.effects import (
     Compare,
     Snapshot,
     Summarise,
+    Tell,
     Unmatched,
     Unclosed,
     Unregistered,
@@ -43,6 +44,7 @@ from hands.core.events import (
     EndReason,
     MovedOn,
     Moving,
+    Occurred,
     Event,
     Interrupted,
     Continued,
@@ -61,6 +63,7 @@ from hands.core.events import (
     Tick,
     ToolFinished,
 )
+from hands.core.occurrences import Cleared
 from hands.core.progress import Doing, Gathering
 from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core.status import AtPrompt, Going, Report, Stamp
@@ -93,7 +96,7 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             joined, effects = _join(registry, started)
             # A Stop held in the process before is let go: its transcript is read afresh from here, as history.
             held = previous.unnamed if isinstance(previous, Session) else ()
-            return joined, [*_unsettled(membership.id, [stop for stop in held if stop not in started.unnamed]), *effects]
+            return joined, [*_unsettled(membership.id, [stop for stop in held if stop not in started.unnamed]), *effects, *_said_at_start(membership.id, source)]
         case Attached(membership=membership) if membership.id not in registry.sessions:
             # A membership file says nothing of the mode; the session's next hook will.
             return registry.put(Session(membership, Unreported(), mode=None)), []
@@ -194,8 +197,19 @@ def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effe
                     return registry.put(replace(was, subagents=_helped(was.subagents, agent, doings, at))), []
                 case Progressed() | Displayed():
                     return registry.put(replace(was, turn=_gathered(was.turn, event))), []
+                case Occurred(occurrence=occurrence):
+                    return registry, [Tell(was.membership.id, occurrence)]
                 case _:
                     return _moved(registry, was, event)
+
+
+def _said_at_start(session: SessionId, source: StartSource) -> list[Effect]:
+    match source:
+        case "clear":
+            # The session the /clear started, in the process the cleared one ran in; the cleared one ended saying nothing.
+            return [Tell(session, Cleared())]
+        case "startup" | "resume" | "compact":
+            return []
 
 
 def _said_at_end(session: SessionId, reason: EndReason) -> list[Effect]:
