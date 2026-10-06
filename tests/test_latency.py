@@ -89,6 +89,26 @@ async def test_a_wordless_turn_that_took_nothing_over_leaves_the_reply_on_its_wa
     assert (lines[-1] == "latency: first audio, answering no user turn") is not answered
 
 
+async def test_the_last_turns_cut_still_crossing_boundaries_takes_nothing_over_for_the_next() -> None:
+    """Every frame is pushed once per boundary it crosses, so the last turn's cut is still being pushed after its stop
+    began the next turn: it is the last turn's, numbered ahead of that stop."""
+    cut = UserStartedSpeakingFrame()
+    asked: list[Frame] = [opened(1), cut, VADUserStoppedSpeakingFrame(), Words(text="hello", user_id="u", timestamp="t"), resolved(1), UserStoppedSpeakingFrame(), cut]
+    noise: list[Frame] = [opened(2), VADUserStoppedSpeakingFrame(), resolved(2), UserStoppedSpeakingFrame()]
+    marks = await told(*asked, *noise, LLMTextFrame("Hi"), BotStartedSpeakingFrame())
+    assert marks == ["released", "transcript", "released", "no words", "first LLM token", "first audio"]
+
+
+async def test_a_reply_that_finished_while_a_wordless_turn_was_open_is_not_given_back_its_window() -> None:
+    """Its audio played out while the user's turn held another window, so it closed as any answered window does: what
+    hands says next answers nothing."""
+    asked: list[Frame] = [opened(1), UserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame(), Words(text="hello", user_id="u", timestamp="t"), resolved(1), UserStoppedSpeakingFrame()]
+    noise: list[Frame] = [opened(2), VADUserStoppedSpeakingFrame(), BotStoppedSpeakingFrame(), resolved(2), UserStoppedSpeakingFrame()]
+    lines, marks = await observed(*asked, LLMTextFrame("Hi"), BotStartedSpeakingFrame(), *noise, BotStartedSpeakingFrame())
+    assert marks == ["released", "transcript", "first LLM token", "first audio", "released", "no words"]
+    assert lines[-1] == "latency: first audio, answering no user turn"
+
+
 async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_transcribed() -> None:
     """A press thrown away while the hold before it is with Whisper is done with at once; the earlier hold's words are
     still to come."""

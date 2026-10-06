@@ -70,6 +70,9 @@ class Turn:
     took_over: bool = False
     released: Window | None = None
     found: Window | None = None
+    # The id of the stop that ended the turn before: Pipecat numbers every frame from one count, so a cut of this turn's
+    # is a frame numbered past it, and the last turn's cut, still crossing boundaries, is not.
+    since: int = -1
 
 
 class LatencyObserver(BaseObserver):
@@ -122,6 +125,9 @@ class LatencyObserver(BaseObserver):
             return
         if isinstance(frame, BotStoppedSpeakingFrame):
             self._speaking = False
+            if self._turn.found is not None and "first audio" in self._turn.found.marks:
+                # So is a window the turn found open, which the turn gives back if it takes nothing over.
+                self._turn.found = None
             if self._window is not None and "first audio" in self._window.marks:
                 # The window closes when the audio it was waiting for has finished, so the next utterance with
                 # no user behind it is recognised as one. Left open, the first turn of a session stays open for
@@ -134,7 +140,7 @@ class LatencyObserver(BaseObserver):
             # The user aggregator says the turn ended, ahead of sending the model whatever words it had. The turn taken
             # in from here is a new one, which is also what makes the later pushes of this frame say nothing: they
             # find a turn nothing was released in.
-            turn, self._turn = self._turn, Turn()
+            turn, self._turn = self._turn, Turn(since=frame.id)
             if self._window is not None and self._window is turn.released and not turn.said:
                 # A turn with no words sends the model nothing, so no reply is coming to wait for: Whisper found
                 # nothing said in it, or failed on it. The window closes with it, so the next thing hands says, the
@@ -144,7 +150,7 @@ class LatencyObserver(BaseObserver):
                 self._window = None if turn.took_over else turn.found
             return
         if isinstance(frame, UserStartedSpeakingFrame):
-            self._turn.took_over = True
+            self._turn.took_over |= frame.id > self._turn.since
             return
         if isinstance(frame, ErrorFrame):
             # One error is one failure, however many boundaries its frame crosses: taken by the frame's identity, since

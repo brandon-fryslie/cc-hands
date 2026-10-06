@@ -1659,7 +1659,10 @@ speaking, so the reply on its way plays on and runs on a tool's result as if no 
 had opened, while Floor holds what hands tells of the sessions from the hold's opening.
 A cut can land while the turn's words, and the note beside them, are still on
 their way to the model, so those are uninterruptible: an interruption stops hands, never
-the user. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
+the user. And the user aggregator takes none of them in until the assistant aggregator,
+at the end of the pipeline, says the reply the cut stopped is written to the context as
+cut off (`CutWritten`), so the context reads that reply ahead of the words that cut it
+off, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
 long after it opened it did, or that it never did. A turn ends once Whisper is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
