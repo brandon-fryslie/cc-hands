@@ -15,6 +15,7 @@ from hands.core.pending import Briefing, Finished, Mentioned, News, Pending, Unr
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
+from hands.core.sentences import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
@@ -154,11 +155,6 @@ def sent(saying: Saying, telling: Telling, utterances: tuple[Utterance, ...]) ->
             for utterance in utterances:
                 utterance.settle("silent")
             return notes
-
-
-def bounded(text: str, limit: int) -> str:
-    """The text whole up to `limit` characters, and cut there, saying so, past it."""
-    return text if len(text) <= limit else f"{text[:limit]}... (cut short)"
 
 
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is

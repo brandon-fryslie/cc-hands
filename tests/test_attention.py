@@ -29,7 +29,7 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
-from hands.sessions.attention import attention, set_attention
+from hands.sessions.attention import Settings, attention, set_attention
 from hands.sessions.tail import Tails
 from hands.voice.refocus import Refocus
 from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
@@ -268,6 +268,14 @@ def test_the_model_is_offered_only_the_kinds_and_levels_there_are(tmp_path: Path
     assert (items["kind"]["enum"], items["level"]["enum"]) == ([field.name for field in fields(Attention)], ["off", "brief", "full", "on"])
 
 
+async def test_the_file_holds_only_what_the_user_set_so_a_kind_never_set_follows_its_default(tmp_path: Path) -> None:
+    """Defaults written alongside a change would hold every kind at the default of the hands that wrote it."""
+    setting = attention_tool(home := Home(tmp_path)).body
+    await setting(changes=[{"kind": "finished", "level": "brief"}])
+    await setting(changes=[{"kind": "quiet", "level": "on"}])
+    assert json.loads(home.attention.read_text()) == {"finished": "brief", "quiet": "on"}
+
+
 def test_a_file_holding_anything_but_settings_is_refused_and_a_kind_never_written_is_at_its_default(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.attention.write_text('{"finished": "brief"}')
@@ -298,15 +306,15 @@ async def test_setting_a_session_s_overlay_says_what_is_told_of_it_and_holds(tmp
 @pytest.mark.parametrize(
     ("set_to", "readback"),
     [
-        (Attention(finished="full"), "I'll tell you each turn dropped finishes, as I tell every session's."),
+        ({"finished": "full"}, "I'll tell you each turn dropped finishes, as I tell every session's."),
         (
-            Attention(finished="full", quiet="on"),
+            {"finished": "full", "quiet": "on"},
             "For now I'm keeping quiet and holding dropped's turns. After that, I'll tell you each turn dropped finishes, as I tell every session's.",
         ),
-        (Attention(quiet="on"), "For now I'm keeping quiet and holding dropped's turns. After that, I'll hold dropped's turns until you ask for one."),
+        ({"quiet": "on"}, "For now I'm keeping quiet and holding dropped's turns. After that, I'll hold dropped's turns until you ask for one."),
     ],
 )
-async def test_a_normal_session_s_readback_says_how_its_turns_are_told_as_set(tmp_path: Path, set_to: Attention, readback: str) -> None:
+async def test_a_normal_session_s_readback_says_how_its_turns_are_told_as_set(tmp_path: Path, set_to: Settings, readback: str) -> None:
     """The readback is the delivery: unwatching a session with finished turns told does not stop its turns, and says so."""
     member = membership(tmp_path, "dropped")
     home = Home(tmp_path / "home")
@@ -422,7 +430,7 @@ def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: P
 )
 def test_the_skill_refuses_what_is_no_setting_and_leaves_what_is_set_alone(tmp_path: Path, plugin: Path, arguments: tuple[str, ...], refused: str) -> None:
     home = Home(tmp_path / "home")
-    set_attention(home, Attention(finished="full"))
+    set_attention(home, {"finished": "full"})
     result = skill(plugin, home, tmp_path, *arguments)
     assert (result.returncode != 0, result.stdout, result.stderr) == (True, "", refused)
     assert attention(home) == Attention(finished="full")

@@ -7,6 +7,7 @@ adapter over the bodies, hands' MCP server another.
 
 import asyncio
 import functools
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -772,15 +773,28 @@ CATCH_UP_CLOSINGS = 12000
 CATCH_UP_LEAST = 150
 
 
+def _shown(value: object) -> object:
+    """A field of an occurrence as catch_up hands it on: text, or a call's input, bounded as a closing's least share is."""
+    match value:
+        case str():
+            return cut(value, CATCH_UP_LEAST)
+        case dict():
+            return cut(json.dumps(value, ensure_ascii=False), CATCH_UP_LEAST)
+        case _:
+            return value
+
+
 def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -> Tool:
     async def catch_up(minutes: int = 0) -> Result:
         """What the user missed: every session that finished work while they were away and the newest words each closed
-        a turn with, the sessions that ended, and what hands announced.
+        a turn with, the sessions that ended, what their hooks said happened, and what hands announced.
 
         Call this when the user asks what they missed, what happened while they were away, or what went on in the last
         while. Sum it up the way a colleague would after a break: each session that finished in a sentence, by name, then
         any that ended. Leave nothing out of `finished`: the user is asking because they heard none of it. `turns` is
-        how many turns a session finished; read_session reads what each did, when they want more of one.
+        how many turns a session finished; read_session reads what each did, when they want more of one. `occurred` is
+        what sessions' hooks said happened, each by its type: AutoDenied, auto mode refusing a call; SubagentStarted
+        and SubagentStopped; TaskCompleted; ConfigChanged, its settings or skills changing; Compacting; Cleared, a /clear.
 
         Args:
             minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since they last spoke to you before this.
@@ -804,6 +818,7 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
                 for done in missed.finished
             ],
             "ended": [spoken_name(sessions, session) for session in missed.ended],
+            "occurred": [{"session": spoken_name(sessions, happened.session), **{key: _shown(value) for key, value in happened.occurrence.items()}} for happened in missed.occurred],
             "announced": [{"text": said.text, "times": said.times} for said in missed.announced],
         }
 

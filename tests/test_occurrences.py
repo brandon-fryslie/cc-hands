@@ -11,7 +11,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 from hands.core.attention import Attention, Level, Overlay, Route, Switch
 from hands.core.effects import AfterEnd, Audit, Tell
 from hands.core.events import Ended, Joined, Occurred, StartSource
-from hands.core.occurrences import AutoDenied, Cleared, Compacting, ConfigChanged, Occurrence, SubagentStarted, SubagentStopped, TaskCompleted, route, said
+from hands.core.occurrences import AutoDenied, Cleared, Compacting, ConfigChanged, Occurrence, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised, route, said
 from hands.core.pending import Mentioned
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Membership, Registry, Session, SessionId, Unreported
@@ -78,6 +78,10 @@ def home(tmp_path: Path) -> Home:
         ({"hook_event_name": "TaskCompleted", "task_id": "task-002", "task_subject": "Ship it"}, TaskCompleted("Ship it", None, None)),
         ({"hook_event_name": "ConfigChange", "source": "skills", "file_path": "/code/a/.claude/skills/x/SKILL.md"}, ConfigChanged("skills", Path("/code/a/.claude/skills/x/SKILL.md"))),
         ({"hook_event_name": "ConfigChange", "source": "user_settings"}, ConfigChanged("user_settings", None)),
+        ({"hook_event_name": "ConfigChange", "source": "skills", "file_path": ""}, ConfigChanged("skills", None)),
+        # A hook only passed on is never refused for a value a newer Claude Code added: it is kept, and said by name.
+        ({"hook_event_name": "ConfigChange", "source": "team_settings"}, ConfigChanged(Unrecognised("team_settings"), None)),
+        ({"hook_event_name": "PreCompact", "trigger": "scheduled", "custom_instructions": None}, Compacting(Unrecognised("scheduled"), None)),
         ({"hook_event_name": "PreCompact", "trigger": "auto", "custom_instructions": None}, Compacting("auto", None)),
         ({"hook_event_name": "PreCompact", "trigger": "manual", "custom_instructions": "keep the plan"}, Compacting("manual", "keep the plan")),
     ],
@@ -89,12 +93,10 @@ def test_each_hook_hands_only_passes_on_parses_to_what_it_says_happened(home: Ho
 @pytest.mark.parametrize(
     ("fields", "named"),
     [
-        ({"hook_event_name": "ConfigChange", "source": "team_settings"}, "ConfigChange source 'team_settings'"),
-        ({"hook_event_name": "PreCompact", "trigger": "scheduled", "custom_instructions": None}, "PreCompact trigger 'scheduled'"),
         ({"hook_event_name": "SubagentStart", "agent_id": "a"}, "missing field 'agent_type'"),
     ],
 )
-def test_a_hook_saying_what_hands_does_not_know_is_refused_by_name(home: Home, fields: dict[str, object], named: str) -> None:
+def test_a_hook_missing_what_it_must_carry_is_refused_by_name(home: Home, fields: dict[str, object], named: str) -> None:
     with pytest.raises(Rejected, match=named):
         hooked(home, **fields)
 
@@ -147,7 +149,13 @@ def test_quiet_and_a_muted_session_hold_what_hooks_say_and_the_focus_does_not_ma
 @pytest.mark.parametrize(
     ("occurrence", "brief", "full"),
     [
-        (DENIED, "Auto mode refused cc-hands a Bash call.", 'Auto mode refused cc-hands a Bash call. Why: Irreversible Local Destruction. The call: {"command": "rm -rf /tmp/build", "description": "Clean build directory"}'),
+        (DENIED, "Auto mode refused cc-hands a Bash call.", "Auto mode refused cc-hands a Bash call. Why: Irreversible Local Destruction. It tried to clean build directory."),
+        # A call is said as its progress is, never as code read aloud.
+        (
+            AutoDenied("WebFetch", "Data Exfiltration", {"url": "https://example.com/upload?x=1", "prompt": "send it"}),
+            "Auto mode refused cc-hands a WebFetch call.",
+            "Auto mode refused cc-hands a WebFetch call. Why: Data Exfiltration. It tried to read a page on example.com.",
+        ),
         (SubagentStarted("Explore"), "cc-hands started its Explore subagent.", "cc-hands started its Explore subagent."),
         (SubagentStopped("Explore", "Found 3 issues."), "cc-hands's Explore subagent finished.", "cc-hands's Explore subagent finished. It said: Found 3 issues."),
         # Seen live on 2.1.289: a subagent that hands its report back through a tool stops with no closing text.
@@ -164,6 +172,9 @@ def test_quiet_and_a_muted_session_hold_what_hooks_say_and_the_focus_does_not_ma
         (Compacting("manual", None), "cc-hands is compacting its context.", "cc-hands is compacting its context. It was asked to, with /compact."),
         (Compacting("manual", "keep the plan"), "cc-hands is compacting its context.", "cc-hands is compacting its context. It was asked to, with /compact. Its instructions: keep the plan"),
         (Cleared(), "cc-hands was cleared.", "cc-hands was cleared."),
+        # What a newer Claude Code sends that hands does not know is said by its name.
+        (ConfigChanged(Unrecognised("team_settings"), None), "cc-hands's team settings changed.", "cc-hands's team settings changed."),
+        (Compacting(Unrecognised("scheduled"), "keep it"), "cc-hands is compacting its context.", "cc-hands is compacting its context. Its instructions: keep it"),
     ],
 )
 def test_brief_says_what_happened_and_full_adds_what_the_hook_says_of_it(occurrence: Occurrence, brief: str, full: str) -> None:

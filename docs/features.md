@@ -233,7 +233,8 @@ Need 3. How several sessions share one ear.
   yields one utterance.
 - **Catch-up.** `catch_up(minutes)` reads the audit log and narrates what was said
   and done while you were away, at summary depth. Done when "what did I miss"
-  after ten minutes lists every session that finished.
+  after ten minutes lists every session that finished, and what sessions' hooks said
+  happened, whether or not hands said it.
 - **What hands says unprompted.** One control, `attention`: finished turns, the
   focused session's progress, and a session ending, each on or off and at a level, and
   quiet, under which only what blocks speaks and everything else waits to be asked

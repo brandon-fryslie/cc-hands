@@ -5,16 +5,25 @@ Each is one hook of Claude Code's, parsed at the edge (hands.sessions.hooks); a 
 which hands also joins the session's new id on.
 """
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from hands.core.attention import Amount, Attention, Level, Overlay, Route, occurrence_route
+from hands.core.progress import doing, said as done
+from hands.core.sentences import bounded
 
 # How much of a detail a full telling says as written: past it, the line is cut and says so.
 DETAIL_SHOWN = 300
+
+
+@dataclass(frozen=True)
+class Unrecognised:
+    """A value of a hook's field this version of hands does not know, kept as Claude Code sent it, so it is said rather
+    than guessed at and the hook is still passed on."""
+
+    text: str
 
 
 @dataclass(frozen=True)
@@ -69,7 +78,7 @@ _CONFIG: Mapping[ConfigSource, str] = {
 
 @dataclass(frozen=True)
 class ConfigChanged:
-    source: ConfigSource
+    source: ConfigSource | Unrecognised
     path: Path | None
 
 
@@ -82,7 +91,7 @@ class Compacting:
     """Claude Code is about to compact the session's context: asked with /compact, with what was typed after it, or on
     its own as the context filled."""
 
-    trigger: CompactTrigger
+    trigger: CompactTrigger | Unrecognised
     instructions: str | None
 
 
@@ -138,7 +147,7 @@ def _line(occurrence: Occurrence, name: str) -> str:
         case TaskCompleted(subject=subject):
             return f"{name} completed a task: {subject}."
         case ConfigChanged(source=source):
-            return f"{name}'s {_CONFIG[source]} changed."
+            return f"{name}'s {_configuration(source)} changed."
         case Compacting():
             return f"{name} is compacting its context."
         case Cleared():
@@ -148,8 +157,10 @@ def _line(occurrence: Occurrence, name: str) -> str:
 def _details(occurrence: Occurrence) -> tuple[str, ...]:
     """What a full telling says past the line, each detail a sentence; none where the hook carries nothing more."""
     match occurrence:
-        case AutoDenied(reason=reason, input=input):
-            return (f"Why: {_bounded(reason.strip('[]'))}.", f"The call: {_bounded(json.dumps(dict(input), ensure_ascii=False))}")
+        case AutoDenied(tool=tool, reason=reason, input=input):
+            # The call as progress says it, in words a listener can follow: its input is code, and never read aloud.
+            call = doing(tool, input)
+            return (f"Why: {bounded(reason.strip('[]'), DETAIL_SHOWN)}.", *_maybe(None if call is None else done((call,)), "It tried to {}."))
         case SubagentStarted() | Cleared():
             return ()
         case SubagentStopped(closing=closing):
@@ -158,16 +169,29 @@ def _details(occurrence: Occurrence) -> tuple[str, ...]:
             return (*_maybe(teammate, "{} completed it."), *_maybe(description, "{}"))
         case ConfigChanged(path=path):
             return _maybe(None if path is None else str(path), "The file: {}.")
-        case Compacting(trigger="auto"):
+        case Compacting(trigger=trigger, instructions=instructions):
+            return (*_started(trigger), *_maybe(instructions, "Its instructions: {}"))
+
+
+def _configuration(source: ConfigSource | Unrecognised) -> str:
+    match source:
+        case Unrecognised(text=text):
+            return text.replace("_", " ")
+        case _:
+            return _CONFIG[source]
+
+
+def _started(trigger: CompactTrigger | Unrecognised) -> tuple[str, ...]:
+    """What started a compaction, as a sentence; none for a trigger hands does not know."""
+    match trigger:
+        case "auto":
             return ("Its context filled, so Claude Code is doing it on its own.",)
-        case Compacting(instructions=instructions):
-            return ("It was asked to, with /compact.", *_maybe(instructions, "Its instructions: {}"))
+        case "manual":
+            return ("It was asked to, with /compact.",)
+        case Unrecognised():
+            return ()
 
 
 def _maybe(detail: str | None, sentence: str) -> tuple[str, ...]:
     """`detail` in its sentence, bounded; nothing where the hook carried none."""
-    return () if detail is None else (sentence.format(_bounded(detail)),)
-
-
-def _bounded(text: str) -> str:
-    return text if len(text) <= DETAIL_SHOWN else f"{text[:DETAIL_SHOWN]}... (cut short)"
+    return () if detail is None else (sentence.format(bounded(detail, DETAIL_SHOWN)),)

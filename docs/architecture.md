@@ -407,7 +407,8 @@ written past the model, and nothing is said of a session that sits at its prompt
 with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
 session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
 every finished turn. What hands says unprompted is one control, `Attention`
-(`hands/core/attention.py`), kept in `~/.hands/attention.json`: a level for each kind it
+(`hands/core/attention.py`), kept in `~/.hands/attention.json` as only the kinds the user set,
+so a kind never set follows its default: a level for each kind it
 says unasked — finished turns, the focused session's progress, a session ending — and
 quiet, which holds all of them without touching their levels. `delivery`, `progress_route`,
 and `ended_route` are the tables over it and the overlay; a muted session's turn is held
