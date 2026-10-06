@@ -1,8 +1,9 @@
-"""The user's tmux servers: where their sockets are, what each says when asked, the panes each holds, which pane a
-process runs in, what a pane shows, and typing into one."""
+"""The user's tmux servers: where the sockets of those that may hold a session's pane are, what each says when asked,
+the panes each holds, which pane a process runs in, what a pane shows, and typing into one."""
 
 import asyncio
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -16,10 +17,13 @@ from hands.core.effects import Command, Input, Key, Text
 from hands.core.session import Keystroke
 from hands.core.tmux import InPane, Keyboard, Listed, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions.child import Ran, run
-from hands.sessions.terminals import Process, ancestor_terminals, front_terminal, process_table
+from hands.sessions.terminals import Process, Undescribed, ancestor_terminals, ancestors, directory_of, environment_of, front_terminal, process_table
 
-# What tmux says, on stderr, for a socket no server listens on any more: a server that exited leaves its socket behind.
-_NO_SERVER = (b"no server running on", b"error connecting to")
+# What tmux says, on stderr, for a socket no server listens on any more, as a server that exited leaves behind, and
+# for one that is gone; never "error connecting to" for any other reason, as a path too long for a socket.
+_NO_SERVER = re.compile(rb"no server running on |error connecting to .* \(No such file or directory\)$")
+# $TMUX as tmux sets it in a pane: its server's socket, the server's pid, and the session's index.
+_TMUX = re.compile(r"(?P<socket>.+),(?P<server>\d+),\d+")
 # How long a server has to answer: one that does not is wedged.
 ANSWER_SECONDS = 2.0
 
@@ -35,19 +39,71 @@ class Answered:
 Answer = Answered | Unanswered
 
 
-async def asked(environment: Mapping[str, str], *arguments: str) -> list[Answer]:
-    """What every tmux server of the user's answers `arguments` with; `environment` says where tmux keeps its sockets
-    and where tmux is."""
-    directory = socket_directory(environment)
-    sockets = [path for path in directory.glob("*") if path.is_socket()]
+async def asked(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process], *arguments: str) -> list[Answer]:
+    """What each tmux server that may hold a pane of one of `pids`, as `sockets` finds them, answers `arguments` with,
+    and why any could not be found; `environment` says where tmux keeps its sockets and where tmux is."""
+    at = await asyncio.to_thread(sockets, environment, pids, processes)
+    found = [socket for socket in at if isinstance(socket, Path)]
+    unfound: list[Answer] = [socket for socket in at if isinstance(socket, Unanswered)]
     tmux = shutil.which("tmux", path=environment.get("PATH"))
-    match (sockets, tmux):
+    match (found, tmux):
         case ([], _):
-            return []
+            return unfound
         case (_, None):
-            return [Unanswered(f"tmux sockets are in {directory}, and no tmux is on the PATH to ask them")]
+            return [*unfound, Unanswered(f"tmux sockets are at {', '.join(map(str, found))}, and no tmux is on the PATH to ask them")]
         case (_, str(tmux)):
-            return list(await asyncio.gather(*(_answer(tmux, socket, arguments) for socket in sockets)))
+            return [*unfound, *await asyncio.gather(*(_answer(tmux, socket, arguments) for socket in found))]
+
+
+def sockets(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[Path | Unanswered]:
+    """The socket of every tmux server that may hold a pane of one of `pids`: each in the directory `environment` names,
+    and each named by $TMUX on a line of ancestors of `pids`, which is the only word of a server started with `-S`
+    elsewhere, or under another $TMUX_TMPDIR; or why one process on such a line could not be read.
+
+    [LAW:one-source-of-truth] tmux sets $TMUX to its socket, then its pid and the session's index; it resolves the
+    directory's path (/tmp is /private/tmp), so one server found both ways is known by its real path and asked once, by
+    its path in the directory.
+    """
+    # Only the user's own processes are read, and only their own can be a server of theirs: a pid $TMUX names that is
+    # another user's now was reused after that server exited.
+    mine = {process.pid: process for process in processes.values() if process.uid == os.geteuid()}
+    # A pane's $TMUX is on the processes at its terminal; the tmux server, and the app and launchd above it, are at none.
+    lines = {process.pid: process for pid in pids for process in ancestors(pid, processes) if process.pid in mine and process.tty is not None}
+    found = [*(path for path in socket_directory(environment).glob("*") if path.is_socket()), *(socket for process in lines.values() for socket in _named(process, mine))]
+    # Reversed, so the first path found for a server is the one kept.
+    return list({os.path.realpath(socket) if isinstance(socket, Path) else socket: socket for socket in reversed(found)}.values())
+
+
+def _named(process: Process, mine: Mapping[int, Process]) -> list[Path | Unanswered]:
+    """The socket $TMUX names in the environment `process` was started with, its server among the user's processes
+    `mine`: none outside tmux, or once it has exited."""
+    match environment_of(process):
+        case {"TMUX": str(named)} if tmux := _TMUX.fullmatch(named):
+            return _socket(Path(tmux["socket"]), mine.get(int(tmux["server"])))
+        case Undescribed() as refused:
+            # [LAW:no-silent-failure] a server its environment would name may hold a pane: never read as no pane.
+            return [_unread(f"which tmux server process {process.pid} runs under", refused)]
+        case _:
+            return []
+
+
+def _socket(path: Path, server: Process | None) -> list[Path | Unanswered]:
+    """Where the socket $TMUX names as `path` is: tmux keeps a relative -S path as it was given, which is relative to the
+    directory `server` was started in and never leaves."""
+    if path.is_absolute():
+        return [path]
+    match None if server is None else directory_of(server):
+        case Path() as directory:
+            return [directory / path]
+        case Undescribed() as refused:
+            return [_unread(f"where the tmux server at {path} runs", refused)]
+        case None:
+            # A server that has exited holds no pane.
+            return []
+
+
+def _unread(what: str, refused: Undescribed) -> Unanswered:
+    return Unanswered(f"{what} could not be read: {refused.call} refused with errno {refused.errno}")
 
 
 def socket_directory(environment: Mapping[str, str]) -> Path:
@@ -60,7 +116,7 @@ async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
     match await ran_at(tmux, socket, arguments):
         case Ran(returncode=0, out=out):
             return Answered(socket, out.decode().splitlines())
-        case Ran(err=err) if err.startswith(_NO_SERVER):
+        case Ran(err=err) if _NO_SERVER.match(err):
             return Answered(socket, ())
         case Ran(err=err):
             return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: {err.decode(errors='replace').strip()}")
@@ -180,18 +236,20 @@ async def ran_at(tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Una
 
 
 async def panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
-    """The tmux pane each of `pids` runs in, from one read of the processes and of every tmux server."""
+    """The tmux pane each of `pids` runs in, from one read of the processes and of each tmux server that may hold it."""
     return await _read(pids, environment, lambda pid, processes, read: pane_of(ancestor_terminals(pid, processes), read))
 
 
 async def keyboards(pids: Sequence[int], environment: Mapping[str, str]) -> list[Keyboard]:
-    """The tmux pane whose keys reach each of `pids`, from one read of the processes and of every tmux server."""
+    """The tmux pane whose keys reach each of `pids`, from one read of the processes and of each tmux server that may hold
+    it."""
     return await _read(pids, environment, lambda pid, processes, read: keyboard_of(front_terminal(pid, processes), ancestor_terminals(pid, processes), read))
 
 
 async def _read[P](pids: Sequence[int], environment: Mapping[str, str], of: Callable[[int, Mapping[int, Process], list[Server]], P]) -> list[P | PaneUnread]:
     try:
-        read, processes = await asyncio.gather(servers(environment), asyncio.to_thread(process_table))
+        processes = await asyncio.to_thread(process_table)
+        read = await servers(environment, pids, processes)
     except Exception as error:
         # [LAW:no-silent-failure] the pane is a fact its readers can go without: a read that broke is logged with
         # where, and each process says why its pane is missing.
@@ -200,11 +258,11 @@ async def _read[P](pids: Sequence[int], environment: Mapping[str, str], of: Call
     return [of(pid, processes, read) for pid in pids]
 
 
-async def servers(environment: Mapping[str, str]) -> list[Server]:
-    """Every tmux server of the user's, each with the live panes it holds or why it did not say."""
+async def servers(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[Server]:
+    """Each tmux server that may hold a pane of one of `pids`, with the live panes it holds or why it did not say."""
     # A dead pane, kept by remain-on-exit, runs nothing and keeps the name of a terminal that is gone or reused.
     # The session's name last: it is the one field that may hold a tab.
-    answers = await asked(environment, "list-panes", "-a", "-f", "#{?pane_dead,0,1}", "-F", "#{pane_tty}\t#{pane_id}\t#{window_index}\t#{session_name}")
+    answers = await asked(environment, pids, processes, "list-panes", "-a", "-f", "#{?pane_dead,0,1}", "-F", "#{pane_tty}\t#{pane_id}\t#{window_index}\t#{session_name}")
     return [listed(answer) if isinstance(answer, Answered) else answer for answer in answers]
 
 
