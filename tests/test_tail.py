@@ -1288,6 +1288,42 @@ async def test_a_file_read_from_its_start_whose_last_turn_is_a_command_that_prin
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Launched(SID, AGENT, Stamp(1200))]
 
 
+async def test_a_command_held_back_as_carried_out_is_not_once_its_turn_goes_on(tmp_path: Path) -> None:
+    """Read from its start to what /goal printed, its turn looks carried out; the prompt it hands Claude, read after, says it is not."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE, GOAL, GOAL_SET))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(GOAL_PROMPT))
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+
+
+@pytest.mark.parametrize(
+    ("records", "said"),
+    [
+        # The words /compact under one id and its command record under another: which turn they name, nothing read says.
+        (('{"uuid":"c7","type":"user","promptId":"p1","message":{"role":"user","content":"/compact"}}', COMPACT, COMPACTED), ["which turn it ends is not known"]),
+        # Written as system records, which carry no prompt id: no record of it was taken, so it opened no turn to end.
+        (('{"uuid":"c5","type":"system","subtype":"local_command","content":"<command-name>/mcp</command-name>\\n<command-message>mcp</command-message>\\n<command-args></command-args>","level":"info"}', MODEL_SET), []),
+    ],
+    ids=["two ids", "no id"],
+)
+async def test_a_command_whose_turn_goes_by_no_one_id_ends_none(tmp_path: Path, records: tuple[str, ...], said: list[str]) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(*records))
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING", filter="hands")
+    try:
+        transcribed = heard(await tails.catch_up())
+    finally:
+        logger.remove(sink)
+    assert not any(isinstance(event, CarriedOut) for event in transcribed)
+    assert [phrase for phrase in said if any(phrase in warning for warning in warnings)] == said
+
+
 async def test_a_command_run_while_a_subagent_works_in_the_background_returns_the_session_to_its_prompt(tmp_path: Path) -> None:
     """hands-session-mgmt-a7t.9tp: Claude Code sets no idle while the subagent works, so before this the command's turn
     stayed open until the subagent reported back, and the session read as working."""

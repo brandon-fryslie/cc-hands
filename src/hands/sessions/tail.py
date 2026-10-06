@@ -399,8 +399,9 @@ class Tails:
         heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
         current, ended = following.current(), following.reading.turn.ended is not None
         if went_on and following.held:
-            # [LAW:nothing-unseen] the turn held back as ended is running after all, unless a turn after it opened.
-            resumed = [(number, event) for number, event in following.held if number >= current]
+            # [LAW:nothing-unseen] the turn held back as ended is running after all, unless a turn after it opened: so not
+            # carried out either, as /goal's is not once the prompt it hands Claude is read.
+            resumed = [(number, event) for number, event in following.held if number >= current and not isinstance(event, CarriedOut)]
             logger.info(f"the transcript of session {session} went on after the end record it was read from its start to: {len(resumed)} of {len(following.held)} events held back are heard")
             heard, following.held = [*resumed, *heard], []
         # A subagent started in the background in a turn before the one the file ends in may still be working, and only
