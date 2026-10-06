@@ -39,6 +39,7 @@ from hands.core.wire import (
     Written,
     Text,
     TextDelta,
+    Unfinished,
     Unreached,
     UsageLimitReached,
     assemble,
@@ -47,6 +48,7 @@ from hands.core.wire import (
 )
 from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
+from hands.sessions import proxy
 from hands.sessions.proxy import Proxy, serve_proxy
 from hands.sessions.replies import spent
 from hands.sessions.wide import root
@@ -457,6 +459,59 @@ async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_
     await asyncio.wait_for(asyncio.gather(wire.exchanged.wait(), upstream_ended.wait()), timeout=10)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body == Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
+
+
+async def test_a_client_that_hangs_up_before_the_api_answers_ends_its_exchange_unfinished(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    asked = asyncio.Event()
+    released = asyncio.Event()
+
+    async def silent(request: web.Request) -> web.StreamResponse:
+        asked.set()
+        await released.wait()
+        return web.Response()
+
+    _, wire = await serve(silent)
+    posting = asyncio.create_task(post(wire.proxy.url))
+    await asyncio.wait_for(asked.wait(), timeout=10)
+    posting.cancel()
+    try:
+        await asyncio.wait_for(wire.exchanged.wait(), timeout=10)
+    finally:
+        released.set()
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Unfinished) and reply.reason == "cancelled before the API answered: its client hung up or hands stopped"
+    # Every Sent has its Exchanged, so nothing that holds an exchange from one to the other keeps it.
+    assert [seen.exchange for seen in wire.seen if isinstance(seen, Sent)] == [seen.exchange for seen in wire.seen if isinstance(seen, Exchanged)]
+
+
+async def test_a_request_upstream_that_raises_ends_its_exchange_naming_the_error_and_still_raises(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstream, wire = await serve(streamed)
+
+    async def broken(*_args: object, **_kwargs: object) -> aiohttp.ClientResponse:
+        raise RuntimeError("the client broke")
+
+    monkeypatch.setattr(wire.proxy.client, "request", broken)
+    status, _, _ = await post(wire.proxy.url)
+    # The handler raised, so aiohttp answered its own 500: the error was not swallowed.
+    assert (status, upstream.asked) == (500, [])
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Unfinished) and reply.reason == "RuntimeError: the client broke"
+
+
+async def test_a_route_change_that_cannot_be_made_ends_its_exchange_naming_the_error(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], monkeypatch: pytest.MonkeyPatch) -> None:
+    upstream, wire = await serve(streamed)
+    wire.route = lambda _sent: Send((Tail("a note"),), span=root())
+
+    def broken(*_args: object) -> object:
+        raise KeyError("messages")
+
+    monkeypatch.setattr(proxy, "edited", broken)
+    status, _, _ = await post(wire.proxy.url)
+    assert (status, upstream.asked) == (500, [])
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Unfinished) and reply.reason == "KeyError: 'messages'"
 
 
 async def test_closing_the_proxy_mid_stream_stops_at_once_and_records_the_reply(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:

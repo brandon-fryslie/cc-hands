@@ -30,7 +30,7 @@ from typing import Literal, cast
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached, Written
+from hands.core.wire import Ending, Exchanged, Garbled, Held, Reached, Uncopied, Unfinished, Unreached, Written
 from hands.sessions.audit import Entry, Exported, Level, Record, Signal, jsonable, level
 from hands.sessions.heartbeat import Degradation
 from hands.sessions.wide import Fact, Outcome, WideEvent
@@ -163,10 +163,10 @@ def traced(entry: Entry) -> WideEvent | None:
             return None
 
 
-def _reply_end(sent_at: float, reply: Reached | Unreached | Held | Uncopied) -> tuple[float, str | None, Mapping[str, Fact]]:
+def _reply_end(sent_at: float, reply: Ending) -> tuple[float, str | None, Mapping[str, Fact]]:
     """When a request's reply ended, what it failed of where it did, and what it says of the reply."""
     match reply:
-        case Unreached(error=error, failed_at=at) | Uncopied(reason=error, lost_at=at):
+        case Unreached(error=error, failed_at=at) | Uncopied(reason=error, lost_at=at) | Unfinished(reason=error, stopped_at=at):
             return at, error, {}
         case Held(answered_at=at):
             return at, None, {}

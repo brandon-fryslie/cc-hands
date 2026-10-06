@@ -9,6 +9,7 @@ does not forward is one its route holds: that is answered here, with the words t
 asked at all.
 """
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
@@ -26,6 +27,7 @@ from hands.core.wire import (
     Answering,
     Body,
     Change,
+    Ending,
     Exchanged,
     Garbled,
     Heard,
@@ -37,6 +39,7 @@ from hands.core.wire import (
     Seconds,
     Send,
     Sent,
+    Unfinished,
     Unreached,
     edited,
     is_stream,
@@ -135,28 +138,34 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
 
         sent_at = clock()
 
-        def exchanged(changes: tuple[Change, ...], reply: Reached | Unreached | Held, final: bool) -> Exchanged:
+        def exchanged(changes: tuple[Change, ...], reply: Ending, final: bool) -> Exchanged:
             return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, routed.span)
 
-        match routed:
-            case Hold(said=said):
-                content_type, answer = _held(parsed, said)
-                tell(exchanged((), Held(said, clock()), False))
-                return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-            case Send(changes=changes, refusal=refusal):
-                onward, changes = _edited(exchange, body, parsed, changes)
-
+        changes: tuple[Change, ...] = ()
+        # [LAW:single-enforcer] from here until the API's answer has a head, whatever stops the exchange ends it here.
         try:
-            reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
-        except (aiohttp.ClientError, OSError) as error:
-            # A client asks again after the proxy's 502 unless told the refusal is final.
-            final = refusal == "final"
-            tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
-            return web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
+            match routed:
+                case Hold(said=said):
+                    content_type, answer = _held(parsed, said)
+                    # Its answer made before its ending is told: once told, nothing here can raise and tell another.
+                    held = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
+                    tell(exchanged((), Held(said, clock()), False))
+                    return held
+                case Send(changes=asked, refusal=refusal):
+                    onward, changes = _edited(exchange, body, parsed, asked)
+            try:
+                reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
+            except (aiohttp.ClientError, OSError) as error:
+                # A client asks again after the proxy's 502 unless told the refusal is final.
+                final = refusal == "final"
+                refused = web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
+                tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
+                return refused
+        except BaseException as error:
+            # [LAW:no-silent-failure] it goes on as it came; the exchange is still recorded as ended, and how.
+            tell(exchanged(changes, Unfinished(_unfinished(error), clock()), False))
+            raise
         async with reached:
-            limit = spent(reached.status, reached.headers)
-            tell(Answering(exchange, reached.status, limit))
-            reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
             first: Seconds | None = None
             ended: Seconds | None = None
             size = 0
@@ -177,6 +186,9 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 reply = reader.finish()
 
             try:
+                limit = spent(reached.status, reached.headers)
+                tell(Answering(exchange, reached.status, limit))
+                reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
                 if reached.status < 400 and is_stream(reached.headers.get("Content-Type", "")):
                     response = _relayed(reached)
                     await response.prepare(request)
@@ -196,10 +208,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     await read(keep)
                     final = refusal == "final" and (limit is not None or _asked_again(reached.status, reached.headers, reply))
                     response = _refused(reached) if final else web.Response(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers), body=b"".join(parts))
-            except (aiohttp.ClientError, OSError) as error:
-                # Upstream dropped the reply, or the client hung up on it: either way the rest is not coming, and the
-                # client's connection ends as the upstream one did.
-                reply = Garbled(f"the reply ended after {size} bytes: {type(error).__name__}: {error}")
+            except Exception as error:
+                # Upstream dropped the reply, the client hung up on it, or the proxy failed on it: either way the client
+                # has not had it whole, its connection ends, and the error says which.
+                reply = Garbled(f"the reply was not relayed whole, {size} bytes in: {type(error).__name__}: {error}")
                 raise
             finally:
                 last = clock() if ended is None else ended
@@ -231,6 +243,16 @@ def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, .
         # [LAW:no-silent-failure] the request goes on as it came, and the log says it went unchanged.
         logger.exception(f"the proxy could not change exchange {exchange}; forwarding it as it came")
         return body, ()
+
+
+def _unfinished(error: BaseException) -> str:
+    """Why the proxy stopped waiting on the API's answer."""
+    match error:
+        # A client that hangs up cancels its handler, and so does a stopping daemon.
+        case asyncio.CancelledError():
+            return "cancelled before the API answered: its client hung up or hands stopped"
+        case _:
+            return f"{type(error).__name__}: {error}"
 
 
 def _held(body: object, said: str) -> tuple[str, bytes]:

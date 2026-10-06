@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 from hands.core.effects import Input, Type
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Exchanged, Garbled, Held, Reached, Uncopied, Unreached
+from hands.core.wire import Ending, Exchanged, Garbled, Held, Reached, Uncopied, Unfinished, Unreached
 from hands.sessions.wide import WideEvent, chain
 
 
@@ -296,9 +296,9 @@ def level(entry: Entry) -> Level:
             assert_never(entry)
 
 
-def _reply_level(reply: Reached | Unreached | Held | Uncopied) -> Level:
+def _reply_level(reply: Ending) -> Level:
     match reply:
-        case Unreached() | Uncopied() | Reached(body=Garbled()):
+        case Unreached() | Uncopied() | Unfinished() | Reached(body=Garbled()):
             return "error"
         case Reached(status=status):
             return "error" if status >= 400 else "info"

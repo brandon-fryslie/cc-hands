@@ -18,7 +18,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unreached, Written
+from hands.core.wire import Answered, Ending, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unfinished, Unreached, Written
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat
@@ -181,7 +181,7 @@ def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and
 TURN = _event(event="voice.turn")
 
 
-def _exchanged(reply: Reached | Unreached | Held, span: Span = Span(TURN.trace_id, "1111111111111111", TURN.span_id)) -> Exchanged:
+def _exchanged(reply: Ending, span: Span = Span(TURN.trace_id, "1111111111111111", TURN.span_id)) -> Exchanged:
     return Exchanged("x1", SessionId("brain"), MainTurn(None), "POST", "/v1/messages", 2, (), 1000.0, 1000.5, reply, True, span)
 
 
@@ -214,6 +214,8 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     )
     assert refused is not None and (refused.outcome, refused.error) == ("failed", "the API answered 529")
     assert unreached is not None and (unreached.outcome, unreached.error, unreached.duration_ms) == ("failed", "ClientConnectorError: no route", 250.0)
+    unfinished = traced(_exchanged(Unfinished("cancelled before the API answered: its client hung up or hands stopped", 1000.75)))
+    assert unfinished is not None and (unfinished.outcome, unfinished.error, unfinished.duration_ms) == ("failed", "cancelled before the API answered: its client hung up or hands stopped", 250.0)
     assert answered is not None and (answered.outcome, answered.error) == ("ok", None)
     # A message says which way it came; an answer that is not one says nothing of it.
     message = Message("msg_1", "m", (), "end_turn", {})
