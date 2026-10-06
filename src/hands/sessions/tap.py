@@ -158,8 +158,11 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
     if request.lost:
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
-    reply = await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock)
+    reply, stopped = await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock)
     tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
+    if stopped is not None:
+        # [LAW:no-silent-failure] it goes on as it came, once the exchange is recorded as ended.
+        raise stopped
 
 
 def _opened(raw: bytes) -> tuple[Request, Sent]:
@@ -186,35 +189,53 @@ async def _next(reader: asyncio.StreamReader) -> Line | str:
         return f"a line hands cannot read: {error}"
 
 
-async def _reply(reader: asyncio.StreamReader, kind: Kind, hear: Callable[[WireEvent], None], clock: Callable[[], Seconds]) -> Reached | Unreached | Uncopied:
-    """How the exchange ended, as its copy tells it; a copy that breaks off, however it does, is a reply of its own."""
+async def _reply(
+    reader: asyncio.StreamReader, kind: Kind, hear: Callable[[WireEvent], None], clock: Callable[[], Seconds]
+) -> tuple[Reached | Unreached | Uncopied, BaseException | None]:
+    """How the exchange ended, as its copy tells it, and what stopped hands reading it if anything did; a copy that breaks
+    off, however it does, is a reply of its own."""
     reading: tuple[Response, Reader] | None = None
     first: Seconds | None = None
     last: Seconds | None = None
     size = 0
+    stopped: BaseException | None = None
     while True:
-        line = await _next(reader)
-        match (line, reading):
-            case (Response() as head, None):
-                reading = (head, reply_reader(kind, head.headers, hear))
-                continue
-            case (Chunk(at=at, data=data), (_, feeder)):
-                first = at if first is None else first
-                last = at
-                size += len(data)
-                feeder.feed(data)
-                continue
-            case (End(at=at, error=error), (head, feeder)):
-                body = feeder.finish() if error is None else Garbled(error)
-                return Reached(head.status, head.at if first is None else first, at if last is None else last, size, body)
-            case (NoUpstream(at=at, error=error), None):
-                return Unreached(error, at)
-            case (str() as broken, _):
-                pass
-            case (unexpected, _):
-                broken = f"a {type(unexpected).__name__} line out of its order"
+        # [LAW:single-enforcer] from the request to the copy's end, whatever stops the reading breaks the copy off here.
+        try:
+            line = await _next(reader)
+            match (line, reading):
+                case (Response() as head, None):
+                    reading = (head, reply_reader(kind, head.headers, hear))
+                    continue
+                case (Chunk(at=at, data=data), (_, feeder)):
+                    first = at if first is None else first
+                    last = at
+                    size += len(data)
+                    feeder.feed(data)
+                    continue
+                case (End(at=at, error=error), (head, feeder)):
+                    body = feeder.finish() if error is None else Garbled(error)
+                    return Reached(head.status, head.at if first is None else first, at if last is None else last, size, body), None
+                case (NoUpstream(at=at, error=error), None):
+                    return Unreached(error, at), None
+                case (str() as broken, _):
+                    pass
+                case (unexpected, _):
+                    broken = f"a {type(unexpected).__name__} line out of its order"
+        except BaseException as error:
+            broken, stopped = f"hands stopped reading the copy: {_stopped(error)}", error
         match reading:
             case None:
-                return Uncopied(broken, clock())
+                return Uncopied(broken, clock()), stopped
             case (head, _):
-                return Reached(head.status, head.at if first is None else first, head.at if last is None else last, size, Garbled(broken))
+                return Reached(head.status, head.at if first is None else first, head.at if last is None else last, size, Garbled(broken)), stopped
+
+
+def _stopped(error: BaseException) -> str:
+    """Why hands stopped reading a copy before its end."""
+    match error:
+        # Only a stopping daemon cancels a copy's reading: its fritter hanging up is the copy breaking off.
+        case asyncio.CancelledError():
+            return "cancelled, as hands stopped"
+        case _:
+            return f"{type(error).__name__}: {error}"

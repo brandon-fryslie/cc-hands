@@ -16,7 +16,7 @@ from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Written, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
 from hands.sessions.audit import CopiesLost, Entry
-from hands.sessions.tap import moves, serve_tap
+from hands.sessions.tap import _copy, moves, serve_tap  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.wide import root
 
 REQUEST = (
@@ -188,6 +188,40 @@ async def test_a_line_out_of_its_order_ends_the_copy_as_broken_and_the_exchange_
     await asyncio.wait_for(tap.done.wait(), 5)
     reply = tap.exchanged().reply
     assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and "Response line out of its order" in reply.body.reason
+
+
+def fed(lines: Sequence[Mapping[str, object]]) -> asyncio.StreamReader:
+    """A copy whose lines so far have come, and whose next has not: its reading waits on it."""
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"".join(json.dumps(line).encode() + b"\n" for line in lines))
+    return reader
+
+
+async def test_a_copy_cancelled_mid_reply_ends_its_exchange_once_and_stays_cancelled() -> None:
+    heard = Heard_()
+    reading = asyncio.create_task(_copy(fed([request_line(), HEAD, *CHUNKS[:3]]), heard.observe, heard.entries.append, lambda: 999.0))
+    while not any(isinstance(observed, Heard) and isinstance(observed.event, TextDelta) for observed in heard.observed):
+        await asyncio.sleep(0)
+    reading.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reading
+
+    [sent] = [observed for observed in heard.observed if isinstance(observed, Sent)]
+    exchanged = heard.exchanged()
+    assert exchanged.exchange == sent.exchange
+    reply = exchanged.reply
+    assert isinstance(reply, Reached) and reply.body == Garbled("hands stopped reading the copy: cancelled, as hands stopped")
+
+
+async def test_a_reply_reader_that_fails_ends_its_exchange_once_and_its_error_goes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(*_: object) -> object:
+        raise RuntimeError("the reader broke")
+
+    monkeypatch.setattr("hands.sessions.tap.reply_reader", failing)
+    heard = Heard_()
+    with pytest.raises(RuntimeError, match="the reader broke"):
+        await _copy(fed([request_line(), HEAD]), heard.observe, heard.entries.append, lambda: 999.0)
+    assert heard.exchanged().reply == Uncopied("hands stopped reading the copy: RuntimeError: the reader broke", 999.0)
 
 
 async def test_the_socket_is_the_user_s_alone(tap: Heard_, socket_path: Path) -> None:
