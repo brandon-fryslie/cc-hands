@@ -103,6 +103,7 @@ from hands.brain.process import Brain, Launch, Station, Unstartable, conversatio
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
+from hands.spotify import Catalogue, credentials
 from hands.core.session import SessionId
 
 # How late a permission deadline can be heard.
@@ -289,7 +290,7 @@ async def run(
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
-        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, own, lambda: quiet_cues.owe(WORKING))]
+        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, own, Catalogue(credentials(environment)), lambda: quiet_cues.owe(WORKING))]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
         if config is not None:
