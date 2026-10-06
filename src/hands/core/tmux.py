@@ -1,5 +1,6 @@
-"""Which tmux pane a session runs in: the pane, among every pane of every tmux server of the user's, whose terminal is on
-the session's line of ancestor terminals.
+"""Which tmux pane a session runs in: the pane, among every pane of each tmux server that may hold it, whose terminal is
+on the session's line of ancestor terminals. A server may hold it if its socket is in the directory tmux puts sockets in,
+or $TMUX names it on that line.
 
 Read when asked, never kept: a pane moves between windows and sessions (`break-pane`, `join-pane`), and a pane kept would
 go stale without a word.
@@ -22,7 +23,7 @@ class Pane:
 
 @dataclass(frozen=True)
 class NotInTmux:
-    """No pane of any tmux server of the user's runs the session; with no server running, none does."""
+    """No pane of any tmux server that may hold it runs the session; with no server running, none does."""
 
 
 @dataclass(frozen=True)

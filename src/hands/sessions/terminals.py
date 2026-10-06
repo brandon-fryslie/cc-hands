@@ -9,7 +9,7 @@ import ctypes.util
 import errno
 import os
 import struct
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -65,12 +65,8 @@ def attended(process: Terminal) -> bool | Undescribed:
     controlling terminal's device, or /dev/tty, which is that terminal under the name each process has for its own.
     False for one that has exited since it was listed, which reads nothing; the refusal if the kernel would not say."""
     terminal = {process.tty, os.stat("/dev/tty").st_rdev}
-    try:
-        return all(_device(process.pid, fd) in terminal for fd in (0, 1))
-    except _Exited:
-        return False
-    except _Refused as refused:
-        return Undescribed(process.pid, process.parent, refused.call, refused.errno)
+    read = _described(process.pid, process.parent, lambda: all(_device(process.pid, fd) in terminal for fd in (0, 1)))
+    return False if read is None else read
 
 
 @dataclass(frozen=True)
@@ -124,12 +120,13 @@ def ancestor_terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[i
 def environment_of(process: Process) -> Mapping[str, str] | Undescribed | None:
     """The environment a process of this user's was started with; None if it has exited since it was listed, and the
     refusal if the kernel would not say."""
-    try:
-        return _started_as(process.pid)[2]
-    except _Exited:
-        return None
-    except _Refused as refused:
-        return Undescribed(process.pid, process.parent, refused.call, refused.errno)
+    return _described(process.pid, process.parent, lambda: _started_as(process.pid)[2])
+
+
+def directory_of(process: Process) -> Path | Undescribed | None:
+    """The directory a process of this user's runs in; None if it has exited since it was listed, and the refusal if the
+    kernel would not say."""
+    return _described(process.pid, process.parent, lambda: _cwd(process.pid))
 
 
 def front_terminal(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
@@ -173,18 +170,34 @@ def _raise_errno(what: str) -> NoReturn:
 def _terminal(process: Process, tty: int) -> Terminal | Undescribed | None:
     """The process at a terminal, with where it runs and what it was started as; None if it has exited since it was
     listed, and the refusal if the kernel would not say."""
+    match _described(process.pid, process.parent, lambda: (_cwd(process.pid), *_started_as(process.pid))):
+        case (cwd, executable, arguments, environment):
+            # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree
+            # and the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that
+            # directory, in the one record the path itself is read from; a program started with none, or one that is no
+            # absolute path, is taken to be where it started.
+            return Terminal(process.pid, process.parent, (cwd / environment.get("PWD", "") / executable).resolve(), cwd, environment, arguments, tty)
+        case missing:
+            return missing
+
+
+def _described[T](pid: int, parent: int, read: Callable[[], T]) -> T | Undescribed | None:
+    """What `read` reads of pid from the kernel; None if pid has exited since it was listed, and the refusal if the
+    kernel would not say.
+
+    [LAW:single-enforcer] the one place a question about a process that ran when it was listed is told apart from one
+    the kernel refused.
+    """
     try:
-        cwd = Path(os.fsdecode(_string(_pidinfo(process.pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
-        executable, arguments, environment = _started_as(process.pid)
+        return read()
     except _Exited:
         return None
     except _Refused as refused:
-        return Undescribed(process.pid, process.parent, refused.call, refused.errno)
-    # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree and
-    # the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that directory,
-    # in the one record the path itself is read from; a program started with none, or one that is no absolute path, is
-    # taken to be where it started.
-    return Terminal(process.pid, process.parent, (cwd / environment.get("PWD", "") / executable).resolve(), cwd, environment, arguments, tty)
+        return Undescribed(pid, parent, refused.call, refused.errno)
+
+
+def _cwd(pid: int) -> Path:
+    return Path(os.fsdecode(_string(_pidinfo(pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
 
 
 def _device(pid: int, fd: int) -> int | None:

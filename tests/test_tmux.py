@@ -114,12 +114,15 @@ def in_pane(pid: int) -> object:
 def outside() -> Generator[int]:
     """A process in no pane, whatever runs the tests: started with no environment, in a session of its own, and left to
     launchd, so no tmux server is on its line of ancestors."""
-    started = subprocess.run(["/bin/sh", "-c", "sleep 120 >/dev/null 2>&1 & echo $!"], env={}, start_new_session=True, capture_output=True, text=True, check=True)
-    pid = int(started.stdout)
+    # It reads the test's pipe, so closing the pipe ends it: no pid is killed that may since be another process's.
+    held = subprocess.Popen(["/bin/sh", "-c", "/bin/cat <&0 >/dev/null 2>&1 & echo $!"], env={}, start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert held.stdin is not None and held.stdout is not None
+    pid = int(held.stdout.readline())
+    held.wait()
     try:
         yield pid
     finally:
-        os.kill(pid, 9)
+        held.stdin.close()
 
 
 @needs_tmux
@@ -172,6 +175,28 @@ def test_a_server_whose_socket_is_outside_the_socket_directory_is_found_by_the_t
         assert in_pane(worker) == Pane(sockets / "default", work, "work", 0)
     finally:
         subprocess.run([str(TMUX), "-S", str(socket), "kill-server"], capture_output=True, check=False)
+        shutil.rmtree(elsewhere)
+
+
+@needs_tmux
+def test_a_server_started_with_a_relative_socket_is_found_where_it_was_started_and_one_too_long_to_reach_says_why(sockets: Path) -> None:
+    # tmux keeps `-S mine` in $TMUX as it was given: relative to the directory the server was started in.
+    elsewhere = Path(tempfile.mkdtemp(prefix="hands-elsewhere-", dir="/tmp"))
+    # A socket's path has room for 104 bytes; tmux reaches this one only by its relative name.
+    deep = elsewhere / ("d" * 120)
+    deep.mkdir()
+    try:
+        started = [subprocess.run([str(TMUX), "-f", "/dev/null", "-S", "mine", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", "sleep", "120"], cwd=at, capture_output=True, text=True, check=True).stdout.split() for at in (elsewhere, deep)]
+        [(pane, pid), (_, far)] = started
+        assert in_pane(int(pid)) == Pane(Path(os.path.realpath(elsewhere)) / "mine", pane, "aside", 0)
+        match in_pane(int(far)):
+            case PaneUnread(reason=reason):
+                assert "File name too long" in reason
+            case other:
+                pytest.fail(f"read as {other}")
+    finally:
+        for at in (elsewhere, deep):
+            subprocess.run([str(TMUX), "-S", "mine", "kill-server"], cwd=at, capture_output=True, check=False)
         shutil.rmtree(elsewhere)
 
 

@@ -10,7 +10,6 @@ import os
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from Foundation import NSAppleScript
 from loguru import logger
@@ -59,7 +58,7 @@ async def read_front(sessions: Mapping[SessionId, tuple[int, str]], environment:
         processes = process_table()
         screen = await _screen(app, processes)
         # A tmux client is on screen only in a terminal the app in front shows.
-        panes = dict(await _panes(environment, tmux.sockets(environment, [pid for pid, _ in sessions.values()], processes))) if screen.shown else {}
+        panes = dict(await _panes(environment, [pid for pid, _ in sessions.values()], processes)) if screen.shown else {}
     except _Unread as unread:
         return FrontUnread(str(unread))
     except (OSError, TimeoutError) as error:
@@ -123,9 +122,10 @@ def _under(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
         stack.extend(children.get(process.pid, ()))
 
 
-async def _panes(environment: Mapping[str, str], at: Sequence[Path | Unanswered]) -> list[tuple[int, int]]:
-    """Each tmux client's terminal, and the terminal of the pane it shows, from the server at each socket `at`."""
-    answers = await tmux.asked(environment, at, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
+async def _panes(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[tuple[int, int]]:
+    """Each tmux client's terminal, and the terminal of the pane it shows, from each server that may hold a pane of one
+    of `pids`."""
+    answers = await tmux.asked(environment, pids, processes, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
     if unanswered := [answer.reason for answer in answers if isinstance(answer, Unanswered)]:
         raise _Unread("; ".join(unanswered))
     # A client with no terminal, as one in control mode over a pipe, is on no screen; nor is one gone since it was listed.
