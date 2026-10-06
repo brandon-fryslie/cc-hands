@@ -15,10 +15,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.core import status
-from hands.core.session import Idle, Session, SessionId
-from hands.sessions import audit, wide
+from hands.core.events import Attached, Died, MovedOn
+from hands.core.session import Idle, Session, SessionId, Told, Untold
+from hands.sessions import audit, liveness, wide
 from hands.sessions.home import Home
-from hands.sessions.processes import process_starts, still_running
 
 # How long a closed session has to leave the registry: Claude Code's exit, and the SessionEnd that says so, or the sweep
 # that finds its process gone.
@@ -52,11 +52,12 @@ Outcome = Closed | LeftRunning
 
 
 def done(session: Session) -> bool:
-    """Whether a session is done: at its prompt, with no dialog up and nothing of its own still running."""
+    """Whether a session is done: at its prompt, with no dialog up, no turn opened, and no shell running in the background."""
     # [LAW:one-source-of-truth] at its prompt is Claude Code's status; a background shell still running is work it was
-    # set to and has not finished, which ending the session would kill.
+    # set to and has not finished, which ending the session would kill. A turn opens on its prompt's hook, before the
+    # status that says it is busy is read, so an opened turn runs whatever the status still says.
     match session:
-        case Session(state=Idle(status=status.Idle()), dialog=None):
+        case Session(state=Idle(status=status.Idle()), dialog=None, turn=Untold() | Told()):
             return True
         case _:
             return False
@@ -82,19 +83,20 @@ async def close(home: Home, record: audit.Record, live: Callable[[SessionId], Se
 
 
 def _signalled(home: Home, session: Session) -> bool:
-    """Send the session's `claude` SIGTERM, unless its process has ended already: whether it was sent."""
+    """Send the session's `claude` SIGTERM, where its process still holds it: whether it was sent."""
     pid = session.membership.pid
-    try:
-        written_at = home.membership(session.membership.id).stat().st_mtime
-    except FileNotFoundError:
-        # Its SessionEnd removed the file: it is ending, and the registry hears so.
-        return False
-    # [LAW:single-enforcer] the one test for a reused pid, as the sweep asks it: a process that started after the
-    # membership was written took the number of the session's, which has ended, and is never signalled.
-    if not still_running(pid, written_at, process_starts({pid})):
-        return False
+    match liveness.observed(home, session.membership):
+        case Attached():
+            pass
+        case Died() | MovedOn():
+            # Its process ended, or holds another session now, which the user did not ask to close: this session has
+            # ended, and the sweep says so to the registry.
+            return False
     try:
         os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # It ended since it was judged running.
+        return False
     except OSError as error:
         raise NotClosed(f"session {session.membership.id}'s claude, pid {pid}, could not be signalled to end: {error}") from error
     return True
@@ -104,5 +106,5 @@ async def _ended(live: Callable[[SessionId], Session | None], session: SessionId
     deadline = time.monotonic() + END_SECONDS
     while live(session) is not None:
         if time.monotonic() > deadline:
-            raise NotClosed(f"session {session} was told to end and is still running {END_SECONDS:.0f} seconds later")
+            raise NotClosed(f"session {session} was told to end and is still running {END_SECONDS:g} seconds later")
         await asyncio.sleep(LOOK_SECONDS)
