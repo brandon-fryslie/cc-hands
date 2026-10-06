@@ -135,6 +135,10 @@ class Following:
     # in goes by the second, which a queued message changes mid-turn with no hook to say so.
     asked: PromptId | None = None
     answering: PromptId | None = None
+    # What the turn a file read from its start ends in said, by the reading it was read into, held back while its last
+    # record says it ended: heard after all if a record says it went on, as when a Stop hook sends Claude on or an
+    # Escape flushes a queued message into it.
+    held: list[tuple[int, Transcribed]] = field(default_factory=list[tuple[int, Transcribed]])
     # Every subagent of the session known, by id, each followed in its own transcript.
     delegates: dict[AgentId, Delegate] = field(default_factory=dict[AgentId, Delegate])
 
@@ -202,6 +206,7 @@ class Following:
         self.ended = []
         self.offset = 0
         self.asked = self.answering = None
+        self.held = []
         self.delegates = {}
 
 
@@ -370,11 +375,13 @@ class Tails:
         following.offset = read.offset
         # What each record says that no hook does, by the turn it was read into.
         heard: list[tuple[int, Transcribed]] = []
+        went_on = False
         for record in _records(read.lines, f"session {session}"):
             # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
             # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
             prompted = following.prompted(session, record, self._known.now())
             interrupted = None if following.consume(record) is None else self._interrupted(session, record)
+            went_on = went_on or not following.reading.turn.ended
             heard += [(following.reading.number, event) for event in (prompted, interrupted, *_backgrounded(session, record)) if event is not None]
         # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
         # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
@@ -387,14 +394,22 @@ class Tails:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
         current, ended = following.current(), following.reading.turn.ended
+        if went_on and following.held:
+            # [LAW:nothing-unseen] the turn held back as ended is running after all, unless a turn after it opened.
+            resumed = [(number, event) for number, event in following.held if number >= current]
+            logger.info(f"the transcript of session {session} went on after the end record it was read from its start to: {len(resumed)} of {len(following.held)} events held back are heard")
+            heard, following.held = [*resumed, *heard], []
         # A subagent started in the background in a turn before the one the file ends in may still be working, and only
         # its report says it is not: those are heard whatever turn they were read into, and the reducer drops a launch
         # from before Claude Code's last idle.
         live = [event for number, event in heard if not history or (number >= current and not ended) or isinstance(event, Launched | ReportedBack)]
+        if history:
+            following.held = [(number, event) for number, event in heard if number >= current and ended and not isinstance(event, Launched | ReportedBack)]
         if history and (heard or made):
             # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
+            last = f"ended, its {len(following.held)} events held back until a record says it went on" if ended else "may be running"
             logger.info(
-                f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns over before hands followed it; the last goes by {sorted(following.reading.ids)} and {'ended' if ended else 'may be running'}; calls that turn made before hands followed it, not heard as progress: {len(made)}"
+                f"read the transcript of session {session} from its start: {len(heard) - len(live)} of {len(heard)} events are of turns over before hands followed it; the last goes by {sorted(following.reading.ids)} and {last}; calls that turn made before hands followed it, not heard as progress: {len(made)}"
             )
         self._transcribed += live
         # [LAW:no-ambient-temporal-coupling] after the records it covers, so a telling decided by how far the transcript

@@ -13,7 +13,7 @@ from loguru import logger
 from hands.core.steps import Call, Result, recognise
 from hands.core.turn import Commanded, Interruption, Opening, Said, Step, printed, recorded
 from hands.sessions.payload import Payload
-from hands.sessions.transcript import Ended, Printed, Typed,blocks, edge_of, holds_a_tool, ref_of, reported_of, result_text, structured_result
+from hands.sessions.transcript import Ended, Printed, Typed, blocks, edge_of, holds_a_tool, ref_of, reported_of, result_text, structured_result
 
 
 @dataclass
