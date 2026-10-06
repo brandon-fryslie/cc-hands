@@ -316,8 +316,8 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     assert "close canceller 2" not in log
     assert all(isinstance(event, WideEvent) for event in events)
     assert [(event.event, event.outcome, event.facts, dict(event.counts)) for event in cast(list[WideEvent], events)] == [
-        ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0}),
-        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0}),
+        ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0, "underflowed": 0}),
+        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0}),
     ]
 
 
@@ -335,6 +335,24 @@ async def test_a_reopen_whose_streams_fail_to_open_lets_go_of_the_canceller_it_m
     with pytest.raises(OSError, match="Invalid input device"):
         await transport.reopen()
     assert "close canceller 2" in log  # the run fails, and exits without LiveKit's assertion over a canceller left open
+
+
+class MicrophoneRefusingPortAudio(FreshPortAudio):
+    """PortAudio started again with a speaker that opens, and so starts, and a microphone that refuses to open."""
+
+    def open(self, **settings: object) -> LostStream:
+        if settings.get("input"):
+            raise OSError(-9996, "Invalid input device")
+        return super().open(**settings)
+
+
+async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_started_before_letting_go_of_the_canceller() -> None:
+    log: list[str] = []
+    transport = lost_transport(log)
+    setattr(transport, "_portaudio", lambda: MicrophoneRefusingPortAudio(log))
+    with pytest.raises(OSError, match="Invalid input device"):
+        await transport.reopen()
+    assert log[log.index("open speaker") :] == ["open speaker", "stop new speaker", "close new speaker", "close canceller 2"]
 
 
 async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream() -> None:
@@ -434,7 +452,7 @@ async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard() -> No
     await devices.capture(at=1.0)  # a word said over the cue
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
-    assert devices.pushed == [CLEANED]  # the word said over it, with the tone taken out
+    assert devices.pushed == [CLEANED]  # the word said over it, through the canceller
     assert devices.speaker.sounded_at == 1.0
 
 
@@ -542,17 +560,26 @@ def test_the_canceller_is_given_what_the_device_takes_as_it_takes_it_silence_inc
     assert [audio for audio, _ in taken] == [QUIET, LOUD[:400] + bytes(240), QUIET]
     assert room.plays == [(audio, 16000, 1) for audio, _ in taken]
     # Three 20 ms buffers, two 10 ms frames each; the frames wholly of silence are the ones nothing was written for.
-    assert playout.counts() == {"pulled": 6, "unwritten": 4}
+    assert playout.counts() == {"pulled": 6, "unwritten": 4, "underflowed": 0}
 
 
-def test_a_write_waits_while_the_write_ahead_is_full_and_goes_on_as_the_device_takes_sound() -> None:
+def test_a_callback_portaudio_says_came_too_late_is_counted() -> None:
     device = Device()
     playout = Playout(device.open, Room(), 16000, 1, _unfailing)
-    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2))  # a full write-ahead, taken at once
+    assert device.pull is not None
+    device.pull(None, 320, {}, pyaudio.paOutputUnderflow)
+    device.pull(None, 320, {}, 0)
+    assert playout.counts() == {"pulled": 4, "unwritten": 4, "underflowed": 1}
+
+
+def test_a_write_waits_until_the_write_ahead_has_room_for_all_of_it_and_goes_on_as_the_device_takes_sound() -> None:
+    device = Device()
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
+    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2 - 2))  # a write-ahead full but for one sample
     writing = threading.Thread(target=playout.write, args=(LOUD,))
     writing.start()
     writing.join(0.05)
-    assert writing.is_alive()  # waits, as a blocking stream's write does on a full buffer
+    assert writing.is_alive()  # waits, as a blocking stream's write does on a buffer without room for it
     device.take()
     writing.join(1)
     assert not writing.is_alive()

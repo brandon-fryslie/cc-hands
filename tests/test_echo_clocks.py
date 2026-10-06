@@ -81,14 +81,15 @@ class Heard:
     onsets: list[int]  # microphone sample at which each reading's first sound arrives
 
 
-def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8) -> Heard:
-    """Readings with silences between, written at random phases against both devices' callbacks."""
+def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8, microphone_late: int = 0) -> Heard:
+    """Readings with silences between, written at random phases against both devices' callbacks; the microphone starts
+    `microphone_late` ticks after the speaker, and the first reading two seconds after the microphone."""
     rng = np.random.default_rng(seed)
     canceller = EchoCanceller()
     playing = speaker(canceller)
     # The pipeline's writes: each reading begins at an arbitrary tick, after 1 to 2 s of silence.
     writes: list[tuple[int, bytes]] = []
-    at = TICKS
+    at = 2 * TICKS + microphone_late
     size = CHUNK // 2 * 2  # bytes in a 40 ms chunk: 960 samples at 24 kHz
     for index in range(readings):
         audio = _reading(1.6, seed=seed * 100 + index)
@@ -99,7 +100,7 @@ def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8) -
     # (tick, order at one tick, what, the chunk a write writes)
     events: list[tuple[int, int, str, bytes]] = [(tick, 0, "write", chunk) for tick, chunk in writes]
     events += [(tick, 1, "speaker", b"") for tick in range(speaker_phase, end, PERIOD)]
-    events += [(tick, 2, "microphone", b"") for tick in range(microphone_phase + PERIOD + MICROPHONE_LATENCY, end, PERIOD)]
+    events += [(tick, 2, "microphone", b"") for tick in range(microphone_late + microphone_phase + PERIOD + MICROPHONE_LATENCY, end, PERIOD)]
     heapq.heapify(events)
     played = np.zeros(end // 2 + PLAYED_RATE, np.float64)  # what the speaker's converter plays, at 24 kHz
     heard_count = end // 3
@@ -164,4 +165,13 @@ def test_every_readings_opening_is_cancelled_wherever_its_first_write_falls() ->
     for seed in range(4):
         reductions = opening_reductions(run_room(Playing, seed))
         # About 36 dB on AEC3 today. Told at the write, three of these four rooms each let an opening through at 6 to 18.
+        assert min(reductions) > 25, (seed, [round(each, 1) for each in reductions])
+
+
+def test_a_microphone_started_after_the_speaker_still_meets_the_echo_of_what_it_plays() -> None:
+    """PyAudio starts a stream as it opens it, and a reopen opens the speaker first, so the speaker's sound is held for
+    the microphone for as long as the microphone takes to open. Held for good, that reference reached AEC3 after its
+    echo, and nothing was cancelled at all."""
+    for seed in range(2):
+        reductions = opening_reductions(run_room(Playing, seed, microphone_late=600 * TICKS // 1000))
         assert min(reductions) > 25, (seed, [round(each, 1) for each in reductions])

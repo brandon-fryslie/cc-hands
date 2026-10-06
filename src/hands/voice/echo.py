@@ -18,18 +18,29 @@ from livekit import rtc
 # The canceller works on 10 ms frames, in both directions.
 _FRAMES_PER_SECOND = 100
 
-_SAMPLE_BYTES = 2  # 16-bit, as the transport opens both streams
+SAMPLE_BYTES = 2  # 16-bit, as the transport opens both streams
 
-# The most reference held for the microphone to take, in 10 ms frames. The speaker's device and the microphone each
-# take 20 ms at a time, so a few frames are held between them; anything older than this can never be matched to an
-# echo, and is only there because the microphone has stopped taking frames: a Mac with no input device.
+# The most reference held for the microphone to take, in 10 ms frames: a ring buffer's capacity, for a microphone that
+# has stopped taking frames, as on a Mac with no input device.
 _HELD_FRAMES = 100
+
+# How often the reference held is trimmed back to what the microphone needs, in microphone frames: once a second.
+_SLIP_WINDOW = 100
+
+# Reference kept spare at the tightest moment of a window, in frames: one 20 ms buffer of either device, for a callback
+# that comes late.
+_SPARE_FRAMES = 2
 
 
 # What a canceller counts over its life: microphone frames heard through it; of those, the ones heard with nothing
-# playing, matched with silence; and frames of the speaker's sound dropped unheard, because the microphone had stopped
-# taking them.
-COUNTS = ("heard", "unplayed", "dropped")
+# playing, matched with silence; frames of the speaker's sound dropped unheard, because the microphone had stopped
+# taking them; and frames slipped, held through a whole window that never needed them.
+COUNTS = ("heard", "unplayed", "dropped", "slipped")
+
+
+def frame_bytes(sample_rate: int, channels: int) -> int:
+    """The size of one 10 ms frame, the canceller's unit in both directions."""
+    return sample_rate // _FRAMES_PER_SECOND * channels * SAMPLE_BYTES
 
 
 class Echo(Protocol):
@@ -48,6 +59,11 @@ class EchoCanceller:
     gives them. The speaker's device gives its every frame, silence included, as it takes it
     (`hands.voice.microphone.Playout`), on a clock of its own, so what it plays is held, and each microphone frame takes
     the next frame of it, or silence when there is none.
+
+    How much is held is how far the reference lags its echo, and past the two devices' latencies it reaches AEC3 after
+    the echo it would cancel. The speaker starts before the microphone at a reopen, and its clock may run fast against
+    the microphone's, and either leaves frames held that no microphone frame needs. Held through a whole window, they
+    are surplus, and are slipped: dropped, as a jitter buffer drops samples between two clocks.
     """
 
     def __init__(self) -> None:
@@ -59,15 +75,19 @@ class EchoCanceller:
         # thread, under the one lock; a ring buffer, so the oldest goes first when nothing takes it.
         self._held: deque[rtc.AudioFrame] = deque(maxlen=_HELD_FRAMES)
         self._holding = threading.Lock()
+        # The fewest frames left held after a microphone frame took one, over the window so far, and the frames taken
+        # in it. The capture thread alone touches them, under the lock.
+        self._least = _HELD_FRAMES
+        self._taken = 0
         # The reference's format, from the speaker's first buffer; silence is made in it until then.
         self._format = (16000, 1)
         # [LAW:nothing-unseen] the canceller's own decisions, read onto the microphone's event as it is let go of.
-        # Each is written by one thread: `heard` and `unplayed` by the capture thread, `dropped` under the lock.
+        # Each is written by one thread: `heard` and `unplayed` by the capture thread, `dropped` and `slipped` under the lock.
         self._counts: dict[str, int] = dict.fromkeys(COUNTS, 0)
 
     def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
         """Hold sound as the speaker's device takes it, silence included, for the microphone frames that hear its echo."""
-        size = sample_rate // _FRAMES_PER_SECOND * channels * _SAMPLE_BYTES
+        size = frame_bytes(sample_rate, channels)
         pending = self._unplayed + audio
         whole = len(pending) - len(pending) % size
         frames = [rtc.AudioFrame(pending[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND) for start in range(0, whole, size)]
@@ -79,7 +99,7 @@ class EchoCanceller:
 
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
         """A microphone buffer with the speaker's echo taken out; the same length, of whole 10 ms frames."""
-        size = sample_rate // _FRAMES_PER_SECOND * channels * _SAMPLE_BYTES
+        size = frame_bytes(sample_rate, channels)
         # [LAW:parse-dont-validate] the microphone is opened on 20 ms buffers; any other length is a stream opened wrong.
         if len(audio) % size:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
@@ -107,8 +127,23 @@ class EchoCanceller:
 
     def _next_played(self) -> rtc.AudioFrame:
         with self._holding:
-            if self._held:
-                return self._held.popleft()
+            taken = self._held.popleft() if self._held else None
+            self._slip()
             rate, channels = self._format
-        self._counts["unplayed"] += 1
-        return rtc.AudioFrame.create(rate, channels, rate // _FRAMES_PER_SECOND)
+        match taken:
+            case rtc.AudioFrame():
+                return taken
+            case None:
+                self._counts["unplayed"] += 1
+                return rtc.AudioFrame.create(rate, channels, rate // _FRAMES_PER_SECOND)
+
+    def _slip(self) -> None:
+        # [LAW:dataflow-not-control-flow] every window ends in a slip; with nothing surplus, it slips no frames.
+        self._least = min(self._least, len(self._held))
+        self._taken += 1
+        if self._taken == _SLIP_WINDOW:
+            surplus = max(0, self._least - _SPARE_FRAMES)
+            for _ in range(surplus):
+                self._held.popleft()
+            self._counts["slipped"] += surplus
+            self._least, self._taken = _HELD_FRAMES, 0
