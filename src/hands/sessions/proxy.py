@@ -147,8 +147,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             match routed:
                 case Hold(said=said):
                     content_type, answer = _held(parsed, said)
+                    # Its answer made before its ending is told: once told, nothing here can raise and tell another.
+                    held = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
                     tell(exchanged((), Held(said, clock()), False))
-                    return web.Response(status=200, body=answer, headers={"Content-Type": content_type})
+                    return held
                 case Send(changes=asked, refusal=refusal):
                     onward, changes = _edited(exchange, body, parsed, asked)
             try:
@@ -156,8 +158,9 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             except (aiohttp.ClientError, OSError) as error:
                 # A client asks again after the proxy's 502 unless told the refusal is final.
                 final = refusal == "final"
+                refused = web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
                 tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
-                return web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
+                return refused
         except BaseException as error:
             # [LAW:no-silent-failure] it goes on as it came; the exchange is still recorded as ended, and how.
             tell(exchanged(changes, Unfinished(_unfinished(error), clock()), False))
