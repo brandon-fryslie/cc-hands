@@ -200,6 +200,18 @@ def test_a_server_started_with_a_relative_socket_is_found_where_it_was_started_a
         shutil.rmtree(elsewhere)
 
 
+def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
+    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it.
+    held = subprocess.Popen(["/bin/cat"], env={"TMUX": "mine,1,0"}, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    try:
+        table = {held.pid: Process(held.pid, 1, os.geteuid(), 1, None), 1: Process(1, 0, 0, None, None)}
+        assert tmux.sockets({"TMUX_TMPDIR": str(tmp_path)}, [held.pid], table) == []
+    finally:
+        assert held.stdin is not None
+        held.stdin.close()
+        held.wait()
+
+
 @needs_tmux
 def test_a_dead_pane_kept_by_remain_on_exit_leaves_the_live_panes_of_its_server_read(sockets: Path) -> None:
     pane, worker = run_in("default", "work")

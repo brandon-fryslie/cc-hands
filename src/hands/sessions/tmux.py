@@ -64,19 +64,22 @@ def sockets(environment: Mapping[str, str], pids: Sequence[int], processes: Mapp
     directory's path (/tmp is /private/tmp), so one server found both ways is known by its real path and asked once, by
     its path in the directory.
     """
-    own = os.geteuid()
+    # Only the user's own processes are read, and only their own can be a server of theirs: a pid $TMUX names that is
+    # another user's now was reused after that server exited.
+    mine = {process.pid: process for process in processes.values() if process.uid == os.geteuid()}
     # A pane's $TMUX is on the processes at its terminal; the tmux server, and the app and launchd above it, are at none.
-    lines = {process.pid: process for pid in pids for process in ancestors(pid, processes) if process.uid == own and process.tty is not None}
-    found = [*(path for path in socket_directory(environment).glob("*") if path.is_socket()), *(socket for process in lines.values() for socket in _named(process, processes))]
+    lines = {process.pid: process for pid in pids for process in ancestors(pid, processes) if process.pid in mine and process.tty is not None}
+    found = [*(path for path in socket_directory(environment).glob("*") if path.is_socket()), *(socket for process in lines.values() for socket in _named(process, mine))]
     # Reversed, so the first path found for a server is the one kept.
     return list({os.path.realpath(socket) if isinstance(socket, Path) else socket: socket for socket in reversed(found)}.values())
 
 
-def _named(process: Process, processes: Mapping[int, Process]) -> list[Path | Unanswered]:
-    """The socket $TMUX names in the environment `process` was started with: none outside tmux, or once it has exited."""
+def _named(process: Process, mine: Mapping[int, Process]) -> list[Path | Unanswered]:
+    """The socket $TMUX names in the environment `process` was started with, its server among the user's processes
+    `mine`: none outside tmux, or once it has exited."""
     match environment_of(process):
         case {"TMUX": str(named)} if tmux := _TMUX.fullmatch(named):
-            return _socket(Path(tmux["socket"]), processes.get(int(tmux["server"])))
+            return _socket(Path(tmux["socket"]), mine.get(int(tmux["server"])))
         case Undescribed() as refused:
             # [LAW:no-silent-failure] a server its environment would name may hold a pane: never read as no pane.
             return [_unread(f"which tmux server process {process.pid} runs under", refused)]
