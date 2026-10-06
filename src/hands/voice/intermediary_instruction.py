@@ -157,6 +157,7 @@ Short, spoken, and true: one or two sentences a person could say over the phone,
 sessions actually did rather than what you remember. Nothing reaches a session unless the user said it \
 should, and what the user tells you to do yourself, you do."""
 
+
 def intermediary_instruction(personality: str | None) -> str:
     """The intermediary's system prompt, coming across as `personality`, the user's words for it; None is hands' own."""
     return "\n\n".join((_BODY, *_manner(personality), _ABOVE_ALL))
