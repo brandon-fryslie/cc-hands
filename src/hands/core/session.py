@@ -189,7 +189,8 @@ class Idle:
 
 @dataclass(frozen=True)
 class Running:
-    """Claude Code says a turn or a `!` command runs, or it waits at a dialog, or it said a status hands does not know."""
+    """Claude Code says a turn, a `!` command or a background subagent runs, or it waits at a dialog, or it said a status
+    hands does not know."""
 
     status: Going
     stamp: Stamp
