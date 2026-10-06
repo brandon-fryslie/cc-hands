@@ -19,6 +19,7 @@ from hands.sessions import startsession
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
+from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
 
 TMUX = shutil.which("tmux")
@@ -80,7 +81,11 @@ def home_in(tmp_path: Path) -> Home:
 def start(home: Home, folder: Path, model: str = "") -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
     start_session = start_session_tool(home, AuditLog(home.audit, clock=datetime.now).record, os.environ)
-    return dict(asyncio.run(start_session.body(folder=str(folder), model=model)))
+
+    async def called() -> Result:
+        return await start_session.body(folder=str(folder), model=model)
+
+    return dict(asyncio.run(called()))
 
 
 def started(home: Home) -> list[dict[str, Any]]:

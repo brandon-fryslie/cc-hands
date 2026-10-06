@@ -1184,7 +1184,8 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
 
-    return tool(start_session)
+    # A barge-in never stops a start part way: the session would be running, and the user never told.
+    return tool(start_session, completes=True)
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
