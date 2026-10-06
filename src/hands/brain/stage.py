@@ -64,6 +64,7 @@ from hands.core.wire import (
     TextDelta,
     ToolAnswer,
     Unreached,
+    streams,
     tool_answers,
 )
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
@@ -152,6 +153,17 @@ class _Call:
 
 
 @dataclass
+class Broken:
+    """A reply the API broke before any block of it finished, which Claude Code asked again whole (2.1.289): the request
+    that asked it again, what the user heard of it, and whether the reply asked again opened with that, so the user heard
+    it once and the brain's history holds it."""
+
+    retry: str
+    heard: str
+    repeated: bool = False
+
+
+@dataclass
 class _Turn:
     """One question to the brain, from its write to stdin to its result line."""
 
@@ -181,6 +193,10 @@ class _Turn:
     between: str = ""
     # What goes ahead of the next words heard: the `between` of the text block they open.
     ahead: str = ""
+    # What the reply streaming now has said, as handed to the speaker: what the user has heard of it if it breaks.
+    reply: str = ""
+    # Each of the turn's replies that broke and was asked again whole, oldest first.
+    broken: list[Broken] = field(default_factory=list[Broken])
     # The call blocks the reply streaming now has opened and not yet closed, by index: a call is not run until it is whole.
     opening: dict[int, tuple[str, str]] = field(default_factory=dict[int, tuple[str, str]])
     # The calls the turn's last reply made whole, by id, which run until its next request leaves.
@@ -463,6 +479,9 @@ class BrainStage(FrameProcessor):
             await self._unsaid(unsaid)
             await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failure.error
+        # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is told it
+        # with its next turn, unless the reply asked again opened with it.
+        self._broken_off = "\n\n".join(note for broken in turn.broken if not broken.repeated and (note := _broken_off(broken.heard, "your reply again from its start")))
         return None
 
     def _account(self, turn: _Turn, asker: Asker, arrived: Seconds, released: Seconds | None, taken: Seconds, ended: Seconds) -> None:
@@ -475,6 +494,7 @@ class BrainStage(FrameProcessor):
             exchanges=tuple(turn.exchanges),
             text="".join(turn.spoken),
             readbacks=tuple(turn.readbacks),
+            broken=tuple(turn.broken),
             interrupted=turn.interrupted,
             running=turn.running,
             stopped=turn.stopped,
@@ -620,7 +640,11 @@ class BrainStage(FrameProcessor):
         turn.readbacks.extend(says for _, _, result in answers if result is not None and isinstance(says := result.get("says"), str))
         if not (turn.interrupted or whole([tool is not None and result is not None and silent(tool, result) for tool, _, result in answers])):
             turn.exchanges.append(sent.exchange)
-            turn.opening, turn.calls, turn.failure = {}, {}, _UNNAMED
+            # [LAW:no-ambient-temporal-coupling] the reply it asks again for is all heard by now: the proxy tells each byte
+            # before Claude Code reads it, and Claude Code asks again only once it has read the break.
+            if not streams(sent.body):
+                turn.broken.append(Broken(sent.exchange, turn.reply))
+            turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, _UNNAMED, ""
             # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((Tail(self._tail()),), refusal="final", span=within(turn.span))
@@ -649,11 +673,19 @@ class BrainStage(FrameProcessor):
         match observed:
             # Said as it arrives. A reply the API breaks once a block of it is finished is not asked for again; the turn
             # ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
-            # One broken before then is asked again without a stream, and its whole answer is said too (2.1.289).
+            # One broken before then is asked again without a stream (2.1.289): the reply asked again goes on from where
+            # the user stopped hearing the broken one when it opens as that did, and is said whole when it does not.
             case Heard(exchange=exchange, event=BlockStarted(block={"type": "text"})) if exchange in turn.exchanges:
                 turn.ahead = turn.between
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
-                turn.said.put_nowait(turn.ahead + text)
+                again = next((broken for broken in turn.broken if broken.retry == exchange and not turn.reply and broken.heard and text.startswith(broken.heard)), None)
+                match again:
+                    case Broken(heard=heard):
+                        again.repeated = True
+                        turn.said.put_nowait(text.removeprefix(heard))
+                    case None:
+                        turn.said.put_nowait(turn.ahead + text)
+                turn.reply += text
                 turn.ahead, turn.between = "", "\n\n"
                 turn.replied = turn.replied or bool(text.strip())
                 if text.strip() and turn.first_word is None:
@@ -715,9 +747,10 @@ def _failed(turn: _Turn, error: str | None) -> _Failure | None:
     return None
 
 
-def _broken_off(spoken: str) -> str:
-    """The note that tells the brain what the user heard of a turn broken off before its end; none when nothing of it was said."""
-    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
+def _broken_off(spoken: str, then: str = "that it failed") -> str:
+    """The note that tells the brain what the user heard of a turn broken off before its end, and what they heard after;
+    none when nothing of it was said."""
+    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then {then}. Say nothing about this unless the user asks.' if spoken else ""
 
 
 def _result(answer: ToolAnswer) -> Result | None:
