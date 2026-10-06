@@ -156,7 +156,7 @@ async def spoken(player: Player, speaker: FrameProcessor | None = None) -> Async
     """The player's lines through a speaker and output transport, each reduced to a processor that lets frames through,
     with the marks played behind the output as the daemon stands them."""
     speaker, output, heard = speaker or IdentityFilter(), IdentityFilter(), Heard()
-    async with running([player.lines, speaker, output, Marks(), heard], [player.watching(speaker, output)]) as run:
+    async with running([player.lines, speaker, output, Marks(), heard], [player.watching(IdentityFilter(), speaker, output, lambda: "held key")]) as run:
         yield run, heard
 
 
@@ -186,7 +186,7 @@ async def test_a_line_is_heard_once_the_output_passes_its_mark_on_whatever_takes
     player = Player(lambda _entry: None)
     # No Marks behind the output: a barge-in empties its queue, so what counts is the output's push, seen in order.
     speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
-    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+    async with running([player.lines, speaker, output, heard], [player.watching(IdentityFilter(), speaker, output, lambda: "held key")]) as run:
         hearing = asyncio.create_task(player.heard("Switching."))
         await heard.until(1, Mark)
         await run.worker.queue_frame(InterruptionFrame())
@@ -197,7 +197,7 @@ async def test_a_line_cut_off_by_a_barge_in_is_said_so() -> None:
     player = Player(lambda _entry: None)
     # The mark is never passed on, so the line is never heard to its end: only a barge-in can settle it.
     speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
-    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+    async with running([player.lines, speaker, output, heard], [player.watching(IdentityFilter(), speaker, output, lambda: "held key")]) as run:
         hearing = asyncio.create_task(player.heard("Switching."))
         await heard.until(1, TTSSpeakFrame)
         await run.worker.queue_frame(InterruptionFrame())
@@ -232,7 +232,7 @@ async def test_use_model_cut_off_before_its_line_is_heard_switches_nothing() -> 
     own, player = FakeOwn(), Player(lambda _entry: None)
     tools = _tools(own, player)
     speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
-    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+    async with running([player.lines, speaker, output, heard], [player.watching(IdentityFilter(), speaker, output, lambda: "held key")]) as run:
         call = asyncio.ensure_future(tools["use_model"].body(model="claude-opus-5-5"))
         await heard.until(1, TTSSpeakFrame)
         await run.worker.queue_frame(InterruptionFrame())
@@ -258,7 +258,7 @@ async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the
     # A player of its own: its lines stand in one pipeline.
     tools = audited_tools(player := Player(lambda _entry: None))
     speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
-    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+    async with running([player.lines, speaker, output, heard], [player.watching(IdentityFilter(), speaker, output, lambda: "held key")]) as run:
         call = asyncio.ensure_future(tools["use_model"].body(model="claude-opus-5-5"))
         await heard.until(1, TTSSpeakFrame)
         await run.worker.queue_frame(InterruptionFrame())

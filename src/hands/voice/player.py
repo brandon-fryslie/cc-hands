@@ -15,18 +15,41 @@ still waiting in its queue.
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from pipecat.frames.frames import AggregatedTextFrame, DataFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
+from pipecat.frames.frames import (
+    AggregatedTextFrame,
+    DataFrame,
+    ErrorFrame,
+    Frame,
+    InterruptionFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+    TTSTextFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import LastOne, NothingCut, NothingSaid, Played, Playback, Replay
-from hands.sessions.audit import CutOff, Record
+from hands.core.playback import Bookmark, LastOne, NothingCut, NothingSaid, Played, Playback, Replay
+from hands.sessions.audit import CutOff, Record, WentOn
+from hands.voice.trigger import Edge, voice_activated
+from hands.voice.turnstop import HoldDiscarded
 
 Act = Callable[[Playback], tuple[Playback, Played]]
+
+
+@dataclass(frozen=True)
+class _Turn:
+    """A turn of the user's, open: the edge that opened it, the reading it cut off, None while it has cut none off, and
+    whether Whisper has found nothing said in it so far, neither words nor a hold it failed on or threw away."""
+
+    by: Edge
+    cut: Bookmark | None = None
+    silent: bool = True
 
 
 class Player:
@@ -45,15 +68,29 @@ class Player:
         # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, by the mark behind it: settled by the output
         # passing the mark on, or by the next barge-in, whichever the output pushes first.
         self._hearing: dict[asyncio.Future[bool], Mark] = {}
+        # The user's turn open, read off the output's pushes as the speaker is; None between turns.
+        self._turn: _Turn | None = None
 
     @property
     def waiting(self) -> int:
         """How many readings cut off wait to be gone back to."""
         return len(self._playback.bookmarks)
 
-    def watching(self, speaker: FrameProcessor, output: FrameProcessor) -> BaseObserver:
-        """The observer reading the speaker off what `speaker`, the TTS service, and `output`, the output transport, push."""
-        return _Watch(self, speaker, output)
+    def watching(self, hearer: FrameProcessor, speaker: FrameProcessor, output: FrameProcessor, opened: Callable[[], Edge]) -> BaseObserver:
+        """The observer reading the speaker off what `speaker`, the TTS service, and `output`, the output transport, push,
+        and the user's turns off what `hearer`, Whisper, pushes, each with the edge `opened` says opened it."""
+        return _Watch(self, hearer, speaker, output, opened)
+
+    def opened(self, by: Edge) -> None:
+        """The user's turn opened, by `by`."""
+        self._turn = _Turn(by)
+
+    def transcribed(self, frame: Frame) -> None:
+        match self._turn, frame:
+            case _Turn() as turn, TranscriptionFrame() | ErrorFrame() | HoldDiscarded():
+                self._turn = replace(turn, silent=False)
+            case _:
+                pass
 
     def handed(self, frame: Frame) -> None:
         match frame:
@@ -66,7 +103,7 @@ class Player:
             case _:
                 pass
 
-    def played(self, frame: Frame) -> None:
+    async def played(self, frame: Frame) -> None:
         match frame:
             case TTSTextFrame() if frame.will_be_spoken:
                 self._playback = playback.finished(self._playback)
@@ -83,6 +120,23 @@ class Player:
                 self._playback = playback.cut(was)
                 # [LAW:nothing-unseen] every barge-in is a line, one that cut nothing off included.
                 self._record(CutOff(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
+                match self._turn:
+                    case _Turn() as turn if not was.over:
+                        self._turn = replace(turn, cut=self._playback.stopped)
+                    case _:
+                        pass
+            case UserStoppedSpeakingFrame():
+                turn, self._turn = self._turn, None
+                match turn:
+                    # The voice opened the turn, it cut a reading off, and Whisper found nothing said in it: it was the
+                    # room, or hands' own reply coming back through the microphone, and nobody cut in. Only while that
+                    # reading is still the one stopped: one that has begun since is what the user hears now.
+                    case _Turn(by=by, cut=Bookmark() as cut, silent=True) if voice_activated(by) and cut is self._playback.stopped:
+                        lines = await self.act(playback.went_on)
+                        # [LAW:nothing-unseen] every reading that went on is a line, as every barge-in is.
+                        self._record(WentOn(lines[0], len(self._playback.bookmarks)))
+                    case _:
+                        pass
             case _:
                 pass
 
@@ -157,17 +211,27 @@ class Marks(FrameProcessor):
 
 
 class _Watch(BaseObserver):
-    """Shows the player what the speaker is handed and what it has played; every other push is one of those frames
-    passing another processor, and tells it nothing."""
+    """Shows the player what the speaker is handed and what it has played, and what Whisper made of the user's turn; every
+    other push is one of those frames passing another processor, and tells it nothing."""
 
-    def __init__(self, player: Player, speaker: FrameProcessor, output: FrameProcessor) -> None:
+    def __init__(self, player: Player, hearer: FrameProcessor, speaker: FrameProcessor, output: FrameProcessor, opened: Callable[[], Edge]) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._player = player
+        self._hearer = hearer
         self._speaker = speaker
         self._output = output
+        self._opened = opened
 
     async def on_push_frame(self, data: FramePushed) -> None:
-        if data.source is self._speaker:
+        if data.source is self._hearer:
+            self._player.transcribed(data.frame)
+        elif data.source is self._speaker:
             self._player.handed(data.frame)
         elif data.source is self._output:
-            self._player.played(data.frame)
+            match data.frame:
+                # The user aggregator pushes a turn's start ahead of the interruption it broadcasts, so the turn is open
+                # before anything it cuts off; the edge that opened it has moved the gate before either.
+                case UserStartedSpeakingFrame():
+                    self._player.opened(self._opened())
+                case frame:
+                    await self._player.played(frame)

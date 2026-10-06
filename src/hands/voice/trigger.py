@@ -30,6 +30,16 @@ def place_of(edge: Edge) -> Place:
             return "phone"
 
 
+def voice_activated(edge: Edge) -> bool:
+    """Whether a turn `edge` opens is opened by sound the desk heard rather than by the user's hand: such a turn may have
+    been opened by nobody, where a key or button held and let go with nothing said is the user meaning hands to stop."""
+    match edge:
+        case "engaged conversation" | "wake word":
+            return True
+        case "held key" | "phone button":
+            return False
+
+
 class Triggers:
     """The one owner of which trigger is in use: the brain's tools switch it, and the desk is driven by its edge."""
 

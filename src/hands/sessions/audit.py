@@ -139,6 +139,15 @@ class CutOff:
 
 
 @dataclass(frozen=True)
+class WentOn:
+    """A barge-in the voice opened heard no words, so nobody cut in: the reading it cut off went on from `sentence`, the
+    one it stopped on, and how many cut-off readings are left waiting to be gone back to."""
+
+    sentence: str
+    waiting: int
+
+
+@dataclass(frozen=True)
 class Announced:
     """A fact the system channel gave the user, and whether it was spoken or, with speech down, posted to the screen."""
 
@@ -243,6 +252,7 @@ Entry = (
     | Primed
     | Replied
     | CutOff
+    | WentOn
     | Announced
     | Cued
     | Refocused
@@ -274,7 +284,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Rolled()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | WentOn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

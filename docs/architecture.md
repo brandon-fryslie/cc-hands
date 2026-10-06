@@ -1374,6 +1374,17 @@ memory. Those lines enter just ahead of the TTS service, not through the model's
 barge-in drops them like any sentence not yet played; their reading holds all of them from
 the start, so none is lost to going back.
 
+A barge-in the voice opened can be nobody: under engaged conversation the desk's detector
+hears through the echo canceller, so the reply's own sound left over from it, or a cough
+or a door, opens a turn and cuts the reading off. Between 23:52 on 2026-10-05 and 02:53 UTC
+on the MacBook's speakers, 14 of 33 voice barge-ins on a reading held no words for Whisper. So the
+observer also follows the user's turn: the edge that opened it, whether it cut a reading
+off, and whether Whisper pushed anything for it. A turn the voice opened (`voice_activated`)
+that cut a reading off and ends with nothing pushed, no words, no failure, no hold thrown
+away, is `went_on()`: the reading goes on from the sentence it stopped on, and a `WentOn`
+line says so. A turn opened by the key or the phone's button never goes on: holding one and
+letting go with nothing said is how the user stops hands.
+
 A staged or amended draft is read back the same way, by hands as written: the tool hands
 back `{"says": ...}`, and the API path says it as the call returns while the brain's stage
 says it once the brain's own words are done, so a barge-in before then does not lose it.

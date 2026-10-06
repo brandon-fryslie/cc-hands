@@ -120,6 +120,16 @@ def resume(playback: Playback) -> tuple[Playback, Played]:
     return _popped(playback, playback.interrupted or _held(playback.stopped), 0)
 
 
+def went_on(playback: Playback) -> tuple[Playback, Played]:
+    """Nobody cut in after all: the reading the latest barge-in cut off goes on from the start of the sentence it stopped
+    on, and no longer waits to be gone back to; the readings cut off before it still wait."""
+    match playback.stopped:
+        case None:
+            return playback, NothingCut()
+        case Bookmark(sentences=sentences, at=at):
+            return replace(playback, stopped=None), Replay(sentences[at:])
+
+
 def skip(playback: Playback) -> tuple[Playback, Played]:
     """"Skip that": the latest reading cut off, from the sentence after the one it stopped on."""
     return _popped(playback, playback.bookmarks, 1)

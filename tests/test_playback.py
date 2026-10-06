@@ -6,7 +6,17 @@ from contextlib import asynccontextmanager
 from functools import reduce
 
 import pytest
-from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
+from pipecat.frames.frames import (
+    AggregatedTextFrame,
+    ErrorFrame,
+    Frame,
+    InterruptionFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+    TTSTextFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.base_text_aggregator import AggregationType
@@ -28,11 +38,14 @@ from hands.core.playback import (
     repeat,
     resume,
     skip,
+    went_on,
 )
-from hands.sessions.audit import CutOff, Entry
+from hands.sessions.audit import CutOff, Entry, WentOn
 from hands.sessions.wide import WideEvent
 from hands.voice.player import Player, said
 from hands.voice.tools import audited, playback_tools
+from hands.voice.trigger import Edge
+from hands.voice.turnstop import HoldDiscarded
 
 # What happens at the speaker, as the taps report it: a sentence handed to it, one played to its end, the user cutting in.
 Happening = str
@@ -85,6 +98,10 @@ def played(*happenings: Happening) -> Playback:
         (("A.", "cut", "B.", "cut", "C.", "done", "cut"), resume, Replay(("B.",)), (Bookmark(("A.",), 0),)),
         # A report of a sentence finishing after its reading was cut changes nothing.
         (("A.", "B.", "cut", "done"), resume, Replay(("A.", "B.")), ()),
+        # Nobody cut in after all: the reading cut off goes on from the sentence it stopped on, and waits no more...
+        (("A.", "B.", "C.", "done", "cut"), went_on, Replay(("B.", "C.")), ()),
+        # ...and it is the reading just cut off that goes on, not the one cut off before it, which still waits.
+        (("A.", "cut", "B.", "C.", "cut"), went_on, Replay(("B.", "C.")), (Bookmark(("A.",), 0),)),
     ],
 )
 def test_each_act_says_what_the_speaker_was_at(
@@ -174,11 +191,12 @@ class Heard(FrameProcessor):
 
 
 @asynccontextmanager
-async def stood(player: Player) -> AsyncGenerator[tuple[Running, Heard]]:
-    """The player as the daemon stands it: its lines ahead of the speaker, and its observer on the speaker and the output
-    transport, each reduced to a processor that lets frames through in order."""
-    speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
-    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+async def stood(player: Player, opened: Edge = "held key") -> AsyncGenerator[tuple[Running, Heard]]:
+    """The player as the daemon stands it: Whisper ahead of its lines, its lines ahead of the speaker, and its observer on
+    Whisper, the speaker, and the output transport, each reduced to a processor that lets frames through in order; every
+    turn opened by `opened`."""
+    hearer, speaker, output, heard = IdentityFilter(), IdentityFilter(), IdentityFilter(), Heard()
+    async with running([hearer, player.lines, speaker, output, heard], [player.watching(hearer, speaker, output, lambda: opened)]) as run:
         yield run, heard
 
 
@@ -239,3 +257,75 @@ async def test_a_barge_in_on_a_quiet_speaker_is_a_line_that_cut_nothing_off() ->
         await run.worker.queue_frame(InterruptionFrame())
         await heard.until(1, InterruptionFrame)
     assert recorded == [CutOff(None, 0)]
+
+
+def words(text: str) -> TranscriptionFrame:
+    """What Whisper pushes for a hold it heard words in."""
+    return TranscriptionFrame(text, "user", "2026-10-05T01:00:09Z")
+
+
+async def barged_in(run: Running, heard: Heard, *during: Frame) -> None:
+    """Hands reads three sentences and has played the first when a turn of the user's opens, cutting it off; `during` is
+    what Whisper pushes before the turn ends. A system frame overtakes those still queued, so each waits for what is
+    ahead of it to be heard."""
+    for frame, seen in (
+        (spoken("The parser is fixed."), 1), (spoken("Its tests pass."), 2), (spoken("It pushed."), 3), (ended("The parser is fixed."), 1),
+        (UserStartedSpeakingFrame(), 1), (InterruptionFrame(), 1), *((each, n + 1) for n, each in enumerate(during)), (UserStoppedSpeakingFrame(), 1),
+    ):
+        await run.worker.queue_frame(frame)
+        await heard.until(seen, type(frame))
+
+
+@pytest.mark.parametrize("opened", ["engaged conversation", "wake word"])
+async def test_a_barge_in_the_voice_opened_that_heard_nothing_goes_on_from_the_sentence_it_cut_off(opened: Edge) -> None:
+    # Hands' own reply came back through the microphone, the desk's detector took it for the user, and Whisper found no
+    # words in the turn it opened: nobody cut in, so the reading goes on where it stopped.
+    recorded: list[Entry] = []
+    player = Player(recorded.append)
+    async with stood(player, opened) as (run, heard):
+        await barged_in(run, heard)
+        said = await heard.until(2, TTSSpeakFrame)
+    assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == ["Its tests pass.", "It pushed."]
+    assert recorded == [CutOff("Its tests pass.", 1), WentOn("Its tests pass.", 0)]
+    assert player.waiting == 0
+
+
+@pytest.mark.parametrize(
+    ("opened", "during"),
+    [
+        # A key or button held and let go with nothing said is the user stopping hands.
+        ("held key", ()),
+        ("phone button", ()),
+        # The user said something: what they said is the turn, and the reading waits to be gone back to.
+        ("engaged conversation", (words("Wait, which file?"),)),
+        # Whisper failed on the hold, or it was thrown away: it may have held the user's words.
+        ("engaged conversation", (ErrorFrame(error="Whisper could not transcribe hold 3"),)),
+        ("engaged conversation", (HoldDiscarded(),)),
+    ],
+)
+async def test_a_barge_in_that_heard_the_user_or_was_theirs_by_hand_leaves_the_reading_cut_off(opened: Edge, during: tuple[Frame, ...]) -> None:
+    recorded: list[Entry] = []
+    player = Player(recorded.append)
+    async with stood(player, opened) as (run, heard):
+        await barged_in(run, heard, *during)
+        # Nothing is said after the turn: a frame queued behind it arrives with nothing said ahead of it.
+        await run.worker.queue_frame(spoken("Next."))
+        await heard.until(4, AggregatedTextFrame)
+    assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]
+    assert recorded == [CutOff("Its tests pass.", 1)]
+    assert player.waiting == 1
+
+
+async def test_a_turn_the_voice_opened_on_a_quiet_speaker_says_nothing_again_whatever_waits() -> None:
+    # A reading the user cut off by hand still waits to be gone back to; the voice then opens a turn with nothing playing,
+    # and nothing said in it. It cut nothing off, so nothing goes on: the reading the user stopped stays stopped.
+    recorded: list[Entry] = []
+    player = Player(recorded.append)
+    async with stood(player, "engaged conversation") as (run, heard):
+        for frame, seen in ((spoken("A."), 1), (InterruptionFrame(), 1), (UserStartedSpeakingFrame(), 1), (InterruptionFrame(), 2), (UserStoppedSpeakingFrame(), 1)):
+            await run.worker.queue_frame(frame)
+            await heard.until(seen, type(frame))
+        await run.worker.queue_frame(spoken("Next."))
+        await heard.until(2, AggregatedTextFrame)
+    assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]
+    assert recorded == [CutOff("A.", 1), CutOff(None, 1)]
