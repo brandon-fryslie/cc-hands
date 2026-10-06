@@ -1428,6 +1428,12 @@ writes, not the one it began with. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.
 
+How full that window is comes from the wire too (`hands.brain.usage`): the brain's
+`context_usage` tool reads the usage the API reports on each reply's `message_start` and
+`message_delta` frames, which reach hands before Claude Code has them, so the figure holds the
+main-conversation request the tool was called in. Claude Code's own token figure in its system
+reminders stays fixed across a conversation (15000000, hands-misc-itx.xak) and is not it.
+
 The one thing that must be preserved for "give me the details of that part" to
 resolve: every segment carries the `uuid`s of the records it summarises. "That part"
 is then a lookup rather than a fuzzy search back through what was said.

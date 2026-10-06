@@ -34,7 +34,7 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
-from hands.core.wire import Exchanged, Fork, Garbled, MainTurn, Message, Reached, Send, Sent, Streamed
+from hands.core.wire import Exchanged, Fork, Garbled, Heard, MainTurn, Message, MessageStarted, Reached, Send, Sent, Streamed
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
 from hands.daemon.run import mind
@@ -1379,6 +1379,8 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed() and minded.noting == ()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
+        # The brain alone is behind the proxy, so it alone is given its usage read off the wire.
+        assert list(minded.llm._tools) == ["mcp__hands__echo", "mcp__hands__context_usage"]  # pyright: ignore[reportPrivateUsage]
         [launched] = events(recorded, "brain.launch")
         assert (launched.facts["cwd"], launched.facts["account"]) == (tmp_path / "brain" / "cwd", "brain@example.com")
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
@@ -1390,8 +1392,13 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
-    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ):
-        pass
+    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
+        # Its usage is heard under the session it resumed, not one begun for it.
+        wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), {}))
+        wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
+        assert isinstance(minded.llm, BrainStage)
+        reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage]
+        assert reported["in_context_tokens"] == 8
     [_, again] = events(recorded, "brain.launch")
     assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
 
