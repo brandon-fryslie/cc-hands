@@ -369,11 +369,13 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
 
 async def _panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
     """The tmux pane each of `pids` runs in, from one read of the processes and of every tmux server."""
-    servers = await tmux.servers(environment)
     try:
-        processes = await asyncio.to_thread(process_table)
-    except OSError as error:
-        return [PaneUnread(f"the processes could not be read: {error}")] * len(pids)
+        servers, processes = await asyncio.gather(tmux.servers(environment), asyncio.to_thread(process_table))
+    except Exception as error:
+        # [LAW:no-silent-failure] the pane is a fact the listing can go without: a read that broke is logged with where,
+        # and each session says why its pane is missing, rather than the listing failing whole.
+        logger.opt(exception=error).error("reading which tmux pane each session runs in broke")
+        return [PaneUnread(f"{type(error).__name__}: {error}")] * len(pids)
     return [pane_of(ancestor_terminals(pid, processes), servers) for pid in pids]
 
 

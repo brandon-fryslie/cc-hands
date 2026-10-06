@@ -30,8 +30,7 @@ Answer = Answered | Unanswered
 async def asked(environment: Mapping[str, str], *arguments: str) -> list[Answer]:
     """What every tmux server of the user's answers `arguments` with; `environment` says where tmux keeps its sockets
     and where tmux is."""
-    # Where tmux puts a server's socket unless -S names one: $TMUX_TMPDIR, else /tmp, in tmux-<uid>.
-    directory = Path(environment.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    directory = socket_directory(environment)
     sockets = [path for path in directory.glob("*") if path.is_socket()]
     tmux = shutil.which("tmux", path=environment.get("PATH"))
     match (sockets, tmux):
@@ -41,6 +40,12 @@ async def asked(environment: Mapping[str, str], *arguments: str) -> list[Answer]
             return [Unanswered(f"tmux sockets are in {directory}, and no tmux is on the PATH to ask them")]
         case (_, str(tmux)):
             return list(await asyncio.gather(*(_answer(tmux, socket, arguments) for socket in sockets)))
+
+
+def socket_directory(environment: Mapping[str, str]) -> Path:
+    """Where tmux puts a server's socket unless -S names one: in tmux-<uid> under $TMUX_TMPDIR, or /tmp when that is
+    unset or empty, as tmux reads it."""
+    return Path(environment.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}"
 
 
 async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
@@ -69,15 +74,15 @@ def listed(answered: Answered) -> Server:
     """The panes a server's list-panes answer names, by the device number of each one's terminal."""
     panes = [(tty, Pane(answered.socket, id, session, int(window))) for tty, id, window, session in (line.split("\t", 3) for line in answered.lines)]
     try:
-        terminals = [(_device(tty), pane) for tty, pane in panes]
+        terminals = [(device(tty), pane) for tty, pane in panes]
     except OSError as error:
         return Unanswered(f"a terminal of a pane of tmux at {answered.socket} could not be read: {error}")
     return Listed({device: pane for device, pane in terminals if device is not None})
 
 
-def _device(tty: str) -> int | None:
-    """The device number of a pane's terminal; none for a pane closed since it was listed, whose terminal is gone and
-    runs nothing."""
+def device(tty: str) -> int | None:
+    """The device number of a terminal tmux named, of a pane or a client; none for one closed since it was named, which
+    is gone and shows or runs nothing."""
     try:
         return os.stat(tty).st_rdev
     except FileNotFoundError:

@@ -127,8 +127,9 @@ async def _panes(environment: Mapping[str, str]) -> list[tuple[int, int]]:
     answers = await tmux.asked(environment, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
     if unanswered := [answer.reason for answer in answers if isinstance(answer, Unanswered)]:
         raise _Unread("; ".join(unanswered))
-    # A client with no terminal, as one in control mode over a pipe, is on no screen.
-    return [(_device(client), _device(pane)) for answer in answers if isinstance(answer, tmux.Answered) for client, pane in (line.split("\t") for line in answer.lines) if client]
+    # A client with no terminal, as one in control mode over a pipe, is on no screen; nor is one gone since it was listed.
+    pairs = [(tmux.device(client), tmux.device(pane)) for answer in answers if isinstance(answer, tmux.Answered) for client, pane in (line.split("\t") for line in answer.lines) if client]
+    return [(client, pane) for client, pane in pairs if client is not None and pane is not None]
 
 
 def _device(path: str) -> int:

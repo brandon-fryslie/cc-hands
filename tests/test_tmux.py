@@ -128,6 +128,11 @@ def test_a_dead_pane_kept_by_remain_on_exit_leaves_the_live_panes_of_its_server_
     assert in_pane(worker) == Pane(sockets / "default", pane, "work", 0)
 
 
+def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_read_as_unset() -> None:
+    assert tmux.socket_directory({"TMUX_TMPDIR": "/var/run/mine"}) == Path(f"/var/run/mine/tmux-{os.getuid()}")
+    assert tmux.socket_directory({"TMUX_TMPDIR": ""}) == tmux.socket_directory({}) == Path(f"/tmp/tmux-{os.getuid()}")
+
+
 def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_the_rest_of_its_server_read() -> None:
     lines = ["/dev/null\t%1\t0\twork", "/dev/hands-no-such-terminal\t%2\t1\twork"]
     assert tmux.listed(Answered(WORK, lines)) == Listed({os.stat("/dev/null").st_rdev: Pane(WORK, "%1", "work", 0)})

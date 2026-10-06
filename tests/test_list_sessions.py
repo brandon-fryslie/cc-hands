@@ -3,12 +3,16 @@
 import zlib
 import json
 from pathlib import Path
+from typing import NoReturn
+
+import pytest
 
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
 from hands.sessions.focus import set_focus
+from hands.sessions import tmux
 from hands.sessions.home import Home
 from hands.sessions.names import Names
 from hands.sessions.overlays import Overlays
@@ -128,6 +132,17 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(broken, "startup"))
     assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
+
+
+async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why_its_pane_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def broken(_environment: object) -> NoReturn:
+        raise ValueError("not enough values to unpack")
+
+    monkeypatch.setattr(tmux, "servers", broken)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(membership(tmp_path, "plain"), "startup"))
+    listed = {"id": "plain", "name": "plain", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": {"cannot_read": "ValueError: not enough values to unpack"}}
+    assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
