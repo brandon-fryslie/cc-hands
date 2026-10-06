@@ -78,8 +78,12 @@ class Names:
         """The session's name as it stands, given `held`, the one Claude Code holds: one hands has decided while Claude
         Code still holds the name it was decided against, for a session idle since its last turn gives it at no prompt;
         else `held`, which a /rename set since outranks the older decision."""
-        due = self._due.get(session)
+        due = self.pending(session)
         return due.name if due is not None and due.against == held else held
+
+    def pending(self, session: SessionId) -> Due | None:
+        """The name decided for the session and not yet given, left waiting for its prompt."""
+        return self._due.get(session)
 
     def due(self, session: SessionId) -> Due | None:
         """The name to give the session at this prompt, handed over once; None when hands has none waiting for it."""

@@ -127,7 +127,7 @@ async def test_a_rename_since_a_decision_is_the_name_judged(tmp_path: Path) -> N
     await judged(transcript(tmp_path, "auth refactor"), "naming fix", names)
     heard: list[str] = []
     line = await judged(transcript(tmp_path, "auth refactor", "my own name"), "my own name", names, heard)
-    assert (line.facts["judged"], line.facts["before"]) == (Judged.KEPT, "my own name")
+    assert (line.facts["judged"], line.facts["before"], line.facts["pending"]) == (Judged.KEPT, "my own name", Due("naming fix", "auth refactor"))
     assert "Its name now: my own name" in heard[0]
 
 

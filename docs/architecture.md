@@ -483,7 +483,7 @@ as a `custom-title` record and shows on the terminal's tab, exactly as `/rename`
 After each turn a session finishes, hands asks the summariser's model whether the
 session's name still fits, showing it the name and the turn's closing reply
 (`hands.voice.naming`). A new name, three words at most, waits in `Names` for that
-session's next prompt. Each judging is one `name.judged` event: the name before, the reply, the
+session's next prompt. Each judging is one `name.judged` event: the name before, any name decided and not yet given (`pending`), the reply, the
 name decided, and what came of it (`judged`: renamed or kept, or, failing the event, unread, failed, or
 refused). A hook can set a title only at a start or a prompt, so Claude Code's tab
 shows its new name from its next prompt on; hands lists the session by it at once, unless a
