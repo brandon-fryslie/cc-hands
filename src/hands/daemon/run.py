@@ -62,6 +62,7 @@ from hands.voice.hold import Move
 from hands.voice import wake
 from hands.voice.engaged import drive, drive_engaged, loaded, untapped
 from hands.voice.wake import WAKE
+from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, drive_talk_key, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.turnstop import Typed
@@ -132,7 +133,7 @@ def configured_from(home: Home, settings: Settings, environment: Mapping[str, st
         llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
-    return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality), settings)
+    return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake), settings)
 
 
 def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
@@ -290,10 +291,10 @@ async def run(
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
-        tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, own, Catalogue(credentials(environment)), lambda: quiet_cues.owe(WORKING))]
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
         if config is not None:
+            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), lambda: quiet_cues.owe(WORKING))]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
@@ -302,7 +303,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.noting, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, run_start)
+                    await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -322,12 +323,14 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the collector they name, the
     # server and model the run reaches and the brain's account (None for a keyed variant), never its key, the voice it
-    # starts speaking in, the one the user kept or the default, and the personality it comes across in, None for hands' own.
+    # starts speaking in, the one the user kept or the default, the personality it comes across in, None for hands' own,
+    # and the wake word the wake word trigger listens for, with the model of the user's own it is heard with, None for
+    # openWakeWord's own.
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
         backend=type(config.llm).__name__, base_url=backends.server(config.llm), model=config.llm.model, account=backends.account(config.llm), voice=config.voice,
-        personality=config.personality,
+        personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
     )
     return config
 
@@ -349,6 +352,7 @@ async def converse(
     recounts: Recounts,
     quiet_cues: QuietCues,
     triggers: Triggers,
+    wake_word: Word,
     run_start: Start,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did. The start is
@@ -443,7 +447,7 @@ async def converse(
                     await drive_engaged(tapped, voice.audio.input().overheard, ears, lambda move: at_desk(move, "engaged conversation"), record)
             case "wake word":
                 # As engaged conversation's, with the wake word's model beside them; the talk key is not read.
-                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, home.wake_word, record) as word:
+                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, home.wake_word, wake_word, record) as word:
                     woken = wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
                     await drive(WAKE, untapped, voice.audio.input().overheard, ears, woken, lambda move: at_desk(move, "wake word"), record)
 

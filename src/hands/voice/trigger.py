@@ -12,6 +12,7 @@ from typing import Literal
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
 from hands.voice import wake
+from hands.voice.wakeword import Word
 
 # Right Shift held alone for each turn (`hands.voice.hold`); or held once to engage, after which the user's voice opens
 # each turn and end-of-turn detection closes it (`hands.voice.engaged`); or the wake word said, with no key at all
@@ -84,22 +85,24 @@ class Triggers:
         return self._in_use
 
 
-async def readied(trigger: Trigger, wake_word: Path) -> tuple[str, ...]:
-    """What `trigger`'s edge loads from disk, fetched before it is put in use, so a switch that cannot be made is refused
-    as it is asked for and the edge loads only what is there: the names of the files fetched."""
+async def readied(trigger: Trigger, models: Path, word: Word) -> tuple[str, ...]:
+    """What `trigger`'s edge loads from disk, fetched and loaded once before it is put in use, so a switch that cannot be
+    made is refused as it is asked for, never by the edge failing the run: the names of the files fetched."""
     match trigger:
         case "wake word":
-            return await wake.fetched(wake_word)
+            fetched = await wake.fetched(models, word)
+            await asyncio.to_thread(wake.WakeWord, models, word)
+            return fetched
         case "held key" | "engaged conversation":
             return ()
 
 
-def described(trigger: Trigger) -> str:
-    """What hands says of a trigger in use: its name, and how to talk under it."""
+def described(trigger: Trigger, word: Word) -> str:
+    """What hands says of a trigger in use: its name, and how to talk under it, `word` being the wake word."""
     match trigger:
         case "held key":
             return "The held key: hold Right Shift to talk, and let go to send."
         case "engaged conversation":
             return "Engaged conversation: hold Right Shift once to engage, then just talk; hands answers when you finish, and listens again. Hold it once more to disengage."
         case "wake word":
-            return "The wake word: say Hey Jarvis, then what you want; hands answers when you finish. It cannot hear the wake word while it speaks."
+            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. It cannot hear the wake word while it speaks."

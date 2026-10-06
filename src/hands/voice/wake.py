@@ -1,7 +1,8 @@
-"""The wake word: saying "Hey Jarvis" opens a turn with no hand on the key, and end-of-turn detection closes it, as in an
+"""The wake word: saying it opens a turn with no hand on the key, and end-of-turn detection closes it, as in an
 engaged conversation (`hands.voice.engaged`), whose driver and models this edge shares.
 
-openWakeWord's pretrained "hey jarvis" model listens to the desk's microphone through the echo canceller. It is
+The word is config.toml's (`hands.daemon.config`): one of openWakeWord's own, "Hey Jarvis" unless another is named, or
+one the user trained with openWakeWord. Its model listens to the desk's microphone through the echo canceller. It is
 half-duplex: while hands speaks the detector is given silence in place of the room, because a microphone open in a room
 with speakers hears the pipeline's own voice. The desk listens for as long as the trigger is in use, so Whisper keeps the
 second before each turn opens and the wake word, and anything said while the detector made sure of it, are in the turn.
@@ -20,15 +21,13 @@ from openwakeword.model import Model
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice.engaged import Act, Begun, Conversation, Disengaged, Engagement, Event, Listening, SpeechStarted, SpeechStopped, Talking, TurnEnded, TurnTooLong, Woke, Woken, in_turn, released
+from hands.voice.wakeword import Pretrained, Trained, Word, model_of
 
 # openWakeWord's release, and the files hands runs the wake word from, in ONNX: the two models that turn audio into the
-# features every wake word model hears, and the "hey jarvis" model itself.
+# features every wake word model hears, and a model of each of openWakeWord's own wake words (`PRETRAINED`).
 RELEASE = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
 MELSPECTROGRAM = "melspectrogram.onnx"
 EMBEDDING = "embedding_model.onnx"
-WORD = "hey_jarvis_v0.1.onnx"
-# The model's score is given under its file's name.
-MODEL = Path(WORD).stem
 # Long enough for the three files, about 3 MB, on a slow connection; a stalled one fails the switch rather than hang it.
 FETCH_SECONDS = 60
 # openWakeWord's own default: its pretrained models are tuned to score a wake word above it and little else.
@@ -45,8 +44,8 @@ def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, .
             return replace(engagement, phase=Listening()), ("listen",)
         case Listening(), Woken(at=at):
             return replace(engagement, phase=Woke(at)), ("arm", "start")
-        # [LAW:types-are-the-program] the pause after "Hey Jarvis," is no end of the turn: Smart Turn judges "Hey
-        # Jarvis" complete, so only once what is asked has started does a stop go to it. The driver hears afresh from
+        # [LAW:types-are-the-program] the pause after the wake word is no end of the turn: Smart Turn judges the wake
+        # word complete, so only once what is asked has started does a stop go to it. The driver hears afresh from
         # the wake, so what is asked starts as any speech does, asked after a pause or in the same breath.
         case Woke(since=since), SpeechStarted():
             return replace(engagement, phase=Talking(since)), ()
@@ -64,10 +63,15 @@ def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, .
 WAKE = Conversation("trigger.awake", step, released, counts=("heard", "muted"))
 
 
-async def fetched(models: Path, release: str = RELEASE) -> tuple[str, ...]:
-    """The wake word's models in `models`, each fetched from `release` unless already there, and whole or not there at
-    all: the names of those fetched."""
-    missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, WORD) if not (models / name).exists())
+async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str, ...]:
+    """`word`'s models in `models`, each fetched from `release` unless already there, and whole or not there at all: the
+    names of those fetched. A word the user trained is never fetched: whether its model is there is WakeWord's to say."""
+    match word:
+        case Pretrained():
+            own: tuple[str, ...] = (model_of(word, models).name,)
+        case Trained():
+            own = ()
+    missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, *own) if not (models / name).exists())
     models.mkdir(parents=True, exist_ok=True)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True) as http:
         for name in missing:
@@ -79,20 +83,38 @@ async def fetched(models: Path, release: str = RELEASE) -> tuple[str, ...]:
     return missing
 
 
-class WakeWord:
-    """openWakeWord's "hey jarvis" model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio, from the files
-    `fetched` put in `models`."""
+class Unheard(Exception):
+    """A model the wake word cannot be heard with, and why."""
 
-    def __init__(self, models: Path) -> None:
-        self._model = Model(
-            wakeword_models=[str(models / WORD)], melspec_model_path=str(models / MELSPECTROGRAM), embedding_model_path=str(models / EMBEDDING), inference_framework="onnx"
-        )
+
+class WakeWord:
+    """A wake word's model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio, from the files `fetched` put
+    in `models` and, for a word the user trained, from theirs. Raises Unheard for a model it cannot hear the word with."""
+
+    def __init__(self, models: Path, word: Word) -> None:
+        heard = model_of(word, models)
+        # [LAW:single-enforcer] the one judge of whether a model can be heard with, at the switch and at the load alike.
+        # openWakeWord takes a path that is not there for the name of one of its own models, and says that one is missing.
+        if not heard.is_file():
+            raise Unheard(f"no wake word model at {heard}")
+        try:
+            self._model = Model(
+                wakeword_models=[str(heard)], melspec_model_path=str(models / MELSPECTROGRAM), embedding_model_path=str(models / EMBEDDING), inference_framework="onnx"
+            )
+        # ONNX Runtime's errors share no base nearer than Exception; each is said as the model's, with its own words.
+        except Exception as error:
+            raise Unheard(f"the wake word model at {heard} cannot be loaded: {error}") from error
+        # The model's score is given under its file's name, for a model that scores one word; one that scores several
+        # gives each under the name of its class.
+        self._name = heard.stem
+        if (scores := cast(dict[str, int], self._model.model_outputs)[self._name]) != 1:  # pyright: ignore[reportUnknownMemberType]  (untyped in openWakeWord)
+            raise Unheard(f"the wake word model at {heard} scores {scores} words, and a wake word is one")
 
     def score(self, audio: bytes) -> float:
         """How sure the model is that the wake word has just been said, from 0 to 1, with `audio` heard last."""
         # Without `timing`, each model's score by the model's name.
         scores = cast(dict[str, float], self._model.predict(np.frombuffer(audio, dtype=np.int16)))  # pyright: ignore[reportUnknownMemberType]  (untyped in openWakeWord)
-        return float(scores[MODEL])
+        return float(scores[self._name])
 
     def reset(self) -> None:
         """Forget the audio heard so far, so one saying of the wake word wakes hands once."""
@@ -100,13 +122,15 @@ class WakeWord:
 
 
 @asynccontextmanager
-async def loaded(sample_rate: int, models: Path, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
-    """The wake word's model, loaded from `models` off the loop as its own unit of work."""
+async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
+    """`word`'s model, loaded off the loop as its own unit of work."""
     with unit("trigger.wake_word_loaded", emit):
+        # [LAW:nothing-unseen] which word the desk listens for, and the file it is heard with.
+        annotate(phrase=word.phrase, model=str(model_of(word, models)))
         if sample_rate != SAMPLE_RATE:
             raise ValueError(f"the wake word is heard at {SAMPLE_RATE} Hz, and the desk's microphone runs at {sample_rate} Hz")
-        word = await asyncio.to_thread(WakeWord, models)
-    yield word
+        heard = await asyncio.to_thread(WakeWord, models, word)
+    yield heard
 
 
 def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes], Awaitable[bool]]:

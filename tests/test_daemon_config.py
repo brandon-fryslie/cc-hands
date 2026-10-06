@@ -30,6 +30,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
+from hands.voice.wakeword import Pretrained, Trained
 from hands.voice import backends
 from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
@@ -60,6 +61,17 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(tmp_path: Path
     assert config.parse("").personality is None
 
 
+def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_model() -> None:
+    # Left out, it is Hey Jarvis; one of openWakeWord's own is matched however it is capitalised and spaced.
+    assert config.parse("").wake == Pretrained("Hey Jarvis")
+    assert config.parse('[talk]\nwake_word = "hey  mycroft"\n').wake == Pretrained("Hey Mycroft")
+    assert config.parse('[talk]\nwake_word = "ALEXA"\n').wake == Pretrained("Alexa")
+    # The user's own is said as written, spaced as one of openWakeWord's is, and its model's path may start at the home
+    # directory.
+    assert config.parse('[talk]\nwake_word = "Hey Computer"\nwake_word_model = "~/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path.home() / "wake" / "hey_computer.onnx")
+    assert config.parse('[talk]\nwake_word = " Hey   Computer "\nwake_word_model = "/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path("/wake/hey_computer.onnx"))
+
+
 @pytest.mark.parametrize(
     ("text", "said"),
     [
@@ -77,7 +89,13 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(tmp_path: Path
         ("[llm]\nmodel = 4\n", "model should be a non-empty string, got 4"),
         ('llm = "claude"\n', "llm should be a table"),
         ('[talk]\npersonality = "  "\n', "[talk] personality should be a non-empty string"),
-        ('[talk]\nmood = "dry"\n', "[talk] has no 'mood'; it takes personality"),
+        ('[talk]\nmood = "dry"\n', "[talk] has no 'mood'; it takes personality, wake_word, wake_word_model"),
+        # A phrase openWakeWord has no model of could never be heard, so it is refused, naming those it has.
+        ('[talk]\nwake_word = "Hey Computer"\n', "[talk] wake_word 'Hey Computer' is not one of openWakeWord's own: Hey Jarvis, Hey Mycroft, Hey Rhasspy, Alexa"),
+        ('[talk]\nwake_word = " "\n', "[talk] wake_word should be a non-empty string"),
+        ('[talk]\nwake_word_model = "/models/hey_computer.onnx"\n', "wake_word_model needs wake_word"),
+        ('[talk]\nwake_word = "Hey Computer"\nwake_word_model = "models/hey_computer.onnx"\n', "is not a full path to an ONNX model"),
+        ('[talk]\nwake_word = "Hey Computer"\nwake_word_model = "/models/hey_computer.tflite"\n', "is not a full path to an ONNX model"),
     ],
 )
 def test_a_file_that_does_not_parse_is_refused_saying_what_is_wrong(text: str, said: str) -> None:
@@ -347,7 +365,7 @@ def test_a_backend_printed_does_not_print_its_key() -> None:
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT, personality="Dry and wry.")
+    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
 
 
@@ -375,16 +393,17 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     answered.set()
     assert await starting == config
     # The start's event says which file the settings came from, the collector they name, which server and
-    # model the run reaches, and never with what key, the voice it speaks in, and the personality it comes across in.
+    # model the run reaches, and never with what key, the voice it speaks in, the personality it comes across in, and the
+    # wake word it listens for, with the model of the user's own it is heard with.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
         "backend": "AnthropicBackend", "base_url": ANTHROPIC_URL, "model": ANTHROPIC_MODEL, "account": None, "voice": voices.DEFAULT,
-        "personality": "Dry and wry.",
+        "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
     }
     assert "sk-secret" not in str(encoded(event))
 

@@ -26,6 +26,8 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
+from hands.voice.wake import fetched
+from hands.voice.wakeword import Pretrained
 
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
@@ -54,6 +56,16 @@ def _dead_pid() -> int:
     process = subprocess.Popen(["true"])
     process.wait()
     return process.pid
+
+
+@pytest.fixture
+async def models(pytestconfig: pytest.Config) -> Path:
+    """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
+    pytest's cache."""
+    directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
+    for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
+        await fetched(directory, word)
+    return directory
 
 
 @pytest.fixture
