@@ -146,6 +146,8 @@ What it does, once built:
   anticipated, and the rule each entry produced.
 - [docs/happy-voice-reference.md](docs/happy-voice-reference.md): how Happy, the
   closest prior art, works, and what to copy and avoid.
+- [design-docs/monetization/hosted-subscription.md](design-docs/monetization/hosted-subscription.md):
+  what a paid hands can sell under Anthropic's terms, and what has to change first.
 
 ## Shape
 
