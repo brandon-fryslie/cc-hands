@@ -70,9 +70,6 @@ class Playing:
     position_seconds: int | None = None
     duration_seconds: int | None = None
 
-    def said(self) -> Mapping[str, object]:
-        return {name: value for name, value in vars(self).items() if value is not None}
-
 
 class Player:
     """The Spotify app, told through AppleScript. Only `play` starts it: everything else, asked of a Spotify that is not
@@ -90,9 +87,14 @@ class Player:
                 "if player state is stopped then return \"stopped\"",
                 "set t to current track",
                 # Spotify's AppleScript gives a track's duration in milliseconds and the position in seconds (1.2.x).
-                f'return (player state as text) & (character id 31) & (name of t) & (character id 31) & (artist of t) & (character id 31) & (album of t) & (character id 31) & (spotify url of t) & (character id 31) & ((player position) as integer) & (character id 31) & ((duration of t) div 1000)',
+                f'return (player state as text) & (character id 31) & my field(name of t) & (character id 31) & my field(artist of t) & (character id 31) & my field(album of t) & (character id 31) & (spotify url of t) & (character id 31) & ((player position) as integer) & (character id 31) & ((duration of t) div 1000)',
                 "end tell",
                 "end run",
+                # An episode or an ad has no artist or album: `missing value`, which `&` would print as those words.
+                "on field(v)",
+                'if v is missing value then return ""',
+                "return v as text",
+                "end field",
             ],
             [],
         )
@@ -102,7 +104,7 @@ class Player:
             case ["stopped"]:
                 return Playing("stopped")
             case [("playing" | "paused") as state, track, artist, album, uri, position, duration]:
-                return Playing(cast(State, state), track, artist, album, uri, int(position), int(duration))
+                return Playing(cast(State, state), track or None, artist or None, album or None, uri, int(position), int(duration))
             case _:
                 raise Refused(f"Spotify answered what is playing with {printed!r}, which hands cannot read")
 
@@ -138,6 +140,8 @@ class Player:
             ran = await self._tell(script, argv)
         except TimeoutError as error:
             raise Refused(f"Spotify did not answer in {TELL_SECONDS:.0f}s") from error
+        except OSError as error:
+            raise Refused(f"osascript could not start: {error}") from error
         if ran.returncode != 0:
             err = ran.err.decode().strip()
             if _NOT_PERMITTED in err:
@@ -154,8 +158,10 @@ class Found:
     by: str | None
     link: str
 
-    def said(self) -> Mapping[str, object]:
-        return {name: value for name, value in vars(self).items() if value is not None}
+
+def said(fact: Playing | Found) -> Mapping[str, object]:
+    """`fact` as a tool's result: its fields, leaving out those it has none of."""
+    return {name: value for name, value in vars(fact).items() if value is not None}
 
 
 @dataclass(frozen=True)
@@ -198,12 +204,15 @@ class Catalogue:
                 raise Refused(why)
             case Credentials() as held:
                 pass
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=SEARCH_SECONDS)) as http:
-            token = await self._token_for(http, held)
-            async with http.get(self._search_url, params={"q": query, "type": kind, "limit": str(SEARCH_LIMIT)}, headers={"Authorization": f"Bearer {token}"}) as response:
-                if response.status != 200:
-                    raise Refused(f"Spotify's search answered {response.status}: {(await response.text()).strip()}")
-                answered = await response.json()
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=SEARCH_SECONDS)) as http:
+                token = await self._token_for(http, held)
+                async with http.get(self._search_url, params={"q": query, "type": kind, "limit": str(SEARCH_LIMIT)}, headers={"Authorization": f"Bearer {token}"}) as response:
+                    if response.status != 200:
+                        raise Refused(f"Spotify's search answered {response.status}: {(await response.text()).strip()}")
+                    answered = await response.json()
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise Refused(f"Spotify's search could not be reached: {error!r}") from error
         # Spotify's search lists a playlist it cannot show as a null in place of it.
         return [_found(kind, item) for item in answered[f"{kind}s"]["items"] if item is not None]
 
@@ -212,7 +221,7 @@ class Catalogue:
         if self._token is not None and now < self._token[1]:
             annotate(spotify_token="held")
             return self._token[0]
-        async with http.post(self._token_url, data={"grant_type": "client_credentials"}, headers={"Authorization": aiohttp.encode_basic_auth(held.client_id, held.client_secret)}) as response:
+        async with http.post(self._token_url, data={"grant_type": "client_credentials"}, headers={"Authorization": aiohttp.BasicAuth(held.client_id, held.client_secret).encode()}) as response:
             if response.status != 200:
                 raise Refused(f"Spotify refused hands' developer app credentials ({response.status}): {(await response.text()).strip()}")
             granted = await response.json()

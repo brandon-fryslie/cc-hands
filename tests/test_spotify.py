@@ -65,6 +65,19 @@ async def test_now_playing_reads_the_track_spotify_is_on() -> None:
     }
 
 
+async def test_now_playing_leaves_out_what_an_episode_or_an_ad_has_none_of() -> None:
+    tell = Osascript(printed("\x1f".join(["playing", "Episode 12", "", "", f"spotify:episode:{TRACK}", "5", "3000"])))
+    assert await tools(tell)["spotify_now_playing"]() == {"state": "playing", "track": "Episode 12", "link": f"spotify:episode:{TRACK}", "position_seconds": 5, "duration_seconds": 3000}
+
+
+async def test_an_osascript_that_cannot_start_is_said() -> None:
+    async def unstartable(_script: Sequence[str], _argv: Sequence[str]) -> Ran:
+        raise FileNotFoundError(2, "No such file or directory", "osascript")
+
+    result = await {tool.name: tool.body for tool in spotify_tools(Player(unstartable), Catalogue(Missing("none here")))}["spotify_pause"]()
+    assert str(result["error"]).startswith("osascript could not start:")
+
+
 async def test_now_playing_says_a_spotify_that_is_closed_or_stopped_has_no_track() -> None:
     assert await tools(Osascript(printed("not running")))["spotify_now_playing"]() == {"state": "not running"}
     assert await tools(Osascript(printed("stopped")))["spotify_now_playing"]() == {"state": "stopped"}
@@ -141,7 +154,7 @@ async def test_a_search_without_credentials_is_refused_saying_how_to_get_them() 
 @asynccontextmanager
 async def spotify_api(granted: list[str], searched: list[dict[str, str]]) -> AsyncGenerator[str]:
     async def token(request: web.Request) -> web.Response:
-        assert request.headers["Authorization"].startswith("Basic ") and (await request.post())["grant_type"] == "client_credentials"
+        assert request.headers["Authorization"] == "Basic aWQ6c2VjcmV0" and (await request.post())["grant_type"] == "client_credentials"
         granted.append(f"token-{len(granted)}")
         return web.json_response({"access_token": granted[-1], "token_type": "Bearer", "expires_in": 3600})
 
@@ -205,3 +218,14 @@ async def test_spotify_refusing_the_credentials_is_said_with_its_answer() -> Non
     finally:
         await runner.cleanup()
     assert str(result["error"]).startswith("Spotify refused hands' developer app credentials (400)") and "invalid_client" in str(result["error"])
+
+
+async def test_a_search_spotify_cannot_be_reached_for_is_said() -> None:
+    runner = web.AppRunner(web.Application())
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    url = f"http://127.0.0.1:{runner.addresses[0][1]}"
+    await runner.cleanup()
+    catalogue = Catalogue(Credentials("id", "secret"), token_url=f"{url}/token", search_url=f"{url}/search")
+    result = await tools(Osascript(), catalogue)["spotify_search"](query="radiohead")
+    assert str(result["error"]).startswith("Spotify's search could not be reached:")

@@ -1151,7 +1151,7 @@ async def _refusable(act: Awaitable[Result]) -> Result:
 
 
 async def _now(player: spotify.Player) -> Result:
-    return (await player.now_playing()).said()
+    return spotify.said(await player.now_playing())
 
 
 async def _done(act: Awaitable[None], result: Result) -> Result:
@@ -1160,7 +1160,7 @@ async def _done(act: Awaitable[None], result: Result) -> Result:
 
 
 async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind) -> Result:
-    return {"found": [found.said() for found in await catalogue.search(query, kind)]}
+    return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
