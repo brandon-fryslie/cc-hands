@@ -21,7 +21,7 @@ from openwakeword.model import Model
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice.engaged import Act, Begun, Conversation, Disengaged, Engagement, Event, Listening, SpeechStarted, SpeechStopped, Talking, TurnEnded, TurnTooLong, Woke, Woken, in_turn, released
-from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word, model_of
+from hands.voice.wakeword import Pretrained, Trained, Word, model_of
 
 # openWakeWord's release, and the files hands runs the wake word from, in ONNX: the two models that turn audio into the
 # features every wake word model hears, and a model of each of openWakeWord's own wake words (`PRETRAINED`).
@@ -65,13 +65,11 @@ WAKE = Conversation("trigger.awake", step, released, counts=("heard", "muted"))
 
 async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str, ...]:
     """`word`'s models in `models`, each fetched from `release` unless already there, and whole or not there at all: the
-    names of those fetched. A word the user trained is never fetched; raises FileNotFoundError where its model is not."""
+    names of those fetched. A word the user trained is never fetched: whether its model is there is WakeWord's to say."""
     match word:
-        case Pretrained(phrase=phrase):
-            own: tuple[str, ...] = (PRETRAINED[phrase],)
-        case Trained(model=model):
-            if not model.is_file():
-                raise FileNotFoundError(f"no wake word model at {model}")
+        case Pretrained():
+            own: tuple[str, ...] = (model_of(word, models).name,)
+        case Trained():
             own = ()
     missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, *own) if not (models / name).exists())
     models.mkdir(parents=True, exist_ok=True)
@@ -85,17 +83,32 @@ async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str
     return missing
 
 
+class Unheard(Exception):
+    """A model the wake word cannot be heard with, and why."""
+
+
 class WakeWord:
     """A wake word's model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio, from the files `fetched` put
-    in `models` and, for a word the user trained, from theirs."""
+    in `models` and, for a word the user trained, from theirs. Raises Unheard for a model it cannot hear the word with."""
 
     def __init__(self, models: Path, word: Word) -> None:
         heard = model_of(word, models)
-        # The model's score is given under its file's name.
+        # [LAW:single-enforcer] the one judge of whether a model can be heard with, at the switch and at the load alike.
+        # openWakeWord takes a path that is not there for the name of one of its own models, and says that one is missing.
+        if not heard.is_file():
+            raise Unheard(f"no wake word model at {heard}")
+        try:
+            self._model = Model(
+                wakeword_models=[str(heard)], melspec_model_path=str(models / MELSPECTROGRAM), embedding_model_path=str(models / EMBEDDING), inference_framework="onnx"
+            )
+        # ONNX Runtime's errors share no base nearer than Exception; each is said as the model's, with its own words.
+        except Exception as error:
+            raise Unheard(f"the wake word model at {heard} cannot be loaded: {error}") from error
+        # The model's score is given under its file's name, for a model that scores one word; one that scores several
+        # gives each under the name of its class.
         self._name = heard.stem
-        self._model = Model(
-            wakeword_models=[str(heard)], melspec_model_path=str(models / MELSPECTROGRAM), embedding_model_path=str(models / EMBEDDING), inference_framework="onnx"
-        )
+        if (scores := cast(dict[str, int], self._model.model_outputs)[self._name]) != 1:  # pyright: ignore[reportUnknownMemberType]  (untyped in openWakeWord)
+            raise Unheard(f"the wake word model at {heard} scores {scores} words, and a wake word is one")
 
     def score(self, audio: bytes) -> float:
         """How sure the model is that the wake word has just been said, from 0 to 1, with `audio` heard last."""

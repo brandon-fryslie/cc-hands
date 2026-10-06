@@ -66,8 +66,10 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
     assert config.parse("").wake == Pretrained("Hey Jarvis")
     assert config.parse('[talk]\nwake_word = "hey  mycroft"\n').wake == Pretrained("Hey Mycroft")
     assert config.parse('[talk]\nwake_word = "ALEXA"\n').wake == Pretrained("Alexa")
-    # The user's own is said as written, and its model's path may start at the home directory.
+    # The user's own is said as written, spaced as one of openWakeWord's is, and its model's path may start at the home
+    # directory.
     assert config.parse('[talk]\nwake_word = "Hey Computer"\nwake_word_model = "~/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path.home() / "wake" / "hey_computer.onnx")
+    assert config.parse('[talk]\nwake_word = " Hey   Computer "\nwake_word_model = "/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path("/wake/hey_computer.onnx"))
 
 
 @pytest.mark.parametrize(
@@ -363,7 +365,7 @@ def test_a_backend_printed_does_not_print_its_key() -> None:
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT, personality="Dry and wry.")
+    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
 
 
@@ -374,7 +376,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
 
     def prompted() -> run.Configured:
         answered.wait()
-        return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318", wake=Pretrained("Alexa"))))
+        return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
     run_start = Start(restarted=False)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
@@ -392,16 +394,16 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     assert await starting == config
     # The start's event says which file the settings came from, the collector they name, which server and
     # model the run reaches, and never with what key, the voice it speaks in, the personality it comes across in, and the
-    # wake word it listens for.
+    # wake word it listens for, with the model of the user's own it is heard with.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality", "wake_word")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
         "backend": "AnthropicBackend", "base_url": ANTHROPIC_URL, "model": ANTHROPIC_MODEL, "account": None, "voice": voices.DEFAULT,
-        "personality": "Dry and wry.", "wake_word": "Alexa",
+        "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
     }
     assert "sk-secret" not in str(encoded(event))
 
@@ -466,7 +468,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable), Pretrained())
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable))
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.

@@ -44,6 +44,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from hands.sessions.audit import Record
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
 from hands.voice.transcript import TranscriptObserver
+from hands.voice.wakeword import Pretrained, Word
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.latency import LatencyObserver
@@ -70,6 +71,8 @@ class VoiceConfig:
     voice: voices.Voice
     # How the model comes across, in the user's words; None is hands' own.
     personality: str | None = None
+    # What the wake word trigger listens for.
+    wake: Word = Pretrained()
     max_reply_tokens: int = 300
 
 

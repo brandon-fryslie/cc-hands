@@ -51,6 +51,8 @@ from hands.sessions import attention as settings
 from hands.core import playback
 from hands.core.place import Modality
 from hands.voice.trigger import Trigger, Triggers, described, readied
+from hands.voice.wake import Unheard
+from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
@@ -204,7 +206,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, own: "OwnModel", catalogue: spotify.Catalogue, acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, wake: Word, own: "OwnModel", catalogue: spotify.Catalogue, acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act.
@@ -231,7 +233,7 @@ def intermediary_tools(
         catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
         attention_tool(home),
         modality_tool(switch),
-        *trigger_tools(triggers, home.wake_word),
+        *trigger_tools(triggers, home.wake_word, wake),
         *voice_tools(Voices(home, player.lines, fetched)),
         *model_tools(own, player),
         *playback_tools(player),
@@ -900,15 +902,16 @@ def _modality_readback(modality: Modality) -> str:
             return "Okay, audio only."
 
 
-def trigger_tools(triggers: Triggers, wake_word: Path) -> list[Tool]:
-    """Which trigger opens the user's turns at the Mac: saying the one in use, and switching to another while hands runs."""
+def trigger_tools(triggers: Triggers, models: Path, wake: Word) -> list[Tool]:
+    """Which trigger opens the user's turns at the Mac: saying the one in use, and switching to another while hands runs;
+    `wake` is the wake word, and `models` where its models are kept."""
 
     async def trigger_in_use() -> Result:
         """Say which trigger is in use: the way the user opens a turn at the Mac.
 
         Call this when the user asks how to talk to hands, or which trigger is on. Say the returned readback.
         """
-        return {"trigger": triggers.in_use, "readback": described(triggers.in_use, triggers.word)}
+        return {"trigger": triggers.in_use, "readback": described(triggers.in_use, wake)}
 
     async def set_trigger(trigger: Trigger) -> Result:
         """Switch the trigger the user opens their turns with at the Mac; their next turn opens the new way.
@@ -920,13 +923,13 @@ def trigger_tools(triggers: Triggers, wake_word: Path) -> list[Tool]:
             trigger: the trigger to use from now on.
         """
         try:
-            fetched = await readied(trigger, wake_word, triggers.word)
-        except (aiohttp.ClientError, TimeoutError, OSError) as error:
+            fetched = await readied(trigger, models, wake)
+        except (aiohttp.ClientError, TimeoutError, OSError, Unheard) as error:
             return {"error": f"{trigger} could not be readied: {error}", "trigger": triggers.in_use, "readback": f"The {trigger} could not be set up, so the trigger stays as it was."}
         was = triggers.choose(trigger)
         # [LAW:nothing-unseen] the trigger it replaced and the files fetched for it land on the call's event, so a switch,
         # a no-op, and a first switch that fetched read apart.
-        return {"trigger": trigger, "was": was, "fetched": list(fetched), "readback": f"{'Already on' if was == trigger else 'Okay'}. {described(trigger, triggers.word)}"}
+        return {"trigger": trigger, "was": was, "fetched": list(fetched), "readback": f"{'Already on' if was == trigger else 'Okay'}. {described(trigger, wake)}"}
 
     return [tool(trigger_in_use), tool(set_trigger, completes=True)]
 

@@ -155,16 +155,6 @@ def said(text: str, at: Path) -> bytes:
     return bytes(SAMPLE_RATE * 2) + audio + bytes(SAMPLE_RATE * 2)
 
 
-@pytest.fixture
-async def models(pytestconfig: pytest.Config) -> Path:
-    """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
-    pytest's cache."""
-    directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
-        await fetched(directory, word)
-    return directory
-
-
 def wakes(word: WakeWord, audio: bytes) -> bool:
     """Whether `word` wakes on `audio`, heard as the desk's microphone hands it over, 20 ms at a time."""
     word.reset()

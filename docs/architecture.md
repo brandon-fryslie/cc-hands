@@ -1802,7 +1802,7 @@ turn's `UserAsked` says it:
 The wake-word edge is the only one that opens the mic without a hand, and it is
 half-duplex: while hands speaks, the wake-word detector hears silence in place of the
 room, because an open mic in a room with speakers hears the pipeline's own voice. The
-pause after "Hey Jarvis," is no end of the turn: Smart Turn judges the vocative
+pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
 The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
 again and Smart Turn holds none, so what is asked starts as any speech does, after a

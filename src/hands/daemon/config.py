@@ -273,16 +273,16 @@ def _wake(table: Mapping[str, object]) -> Word:
     """The wake word: one of openWakeWord's own, matched however it is capitalised, or, with a model, the user's own,
     said as written. Whether the model is there is the switch to the wake word's to find (hands.voice.trigger.readied),
     as it is for openWakeWord's own."""
-    if "wake_word_model" in table:
-        if "wake_word" not in table:
+    if "wake_word" not in table:
+        if "wake_word_model" in table:
             raise Rejected("[talk] wake_word_model needs wake_word, the phrase the model was trained on, which hands tells you to say")
+        return Pretrained()
+    said = " ".join(_text(table, "[talk]", "wake_word", "").split())
+    if "wake_word_model" in table:
         model = Path(_text(table, "[talk]", "wake_word_model", "")).expanduser()
         if not model.is_absolute() or model.suffix != ".onnx":
             raise Rejected(f"[talk] wake_word_model {str(model)!r} is not a full path to an ONNX model, such as ~/wake/hey_computer.onnx")
-        return Trained(phrase=_text(table, "[talk]", "wake_word", ""), model=model)
-    if "wake_word" not in table:
-        return Pretrained()
-    said = " ".join(_text(table, "[talk]", "wake_word", "").split())
+        return Trained(phrase=said, model=model)
     for phrase in PRETRAINED:
         if said.casefold() == phrase.casefold():
             return Pretrained(phrase)
