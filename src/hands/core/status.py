@@ -1,6 +1,6 @@
 """What Claude Code itself says a session is doing, as it publishes it in the session's own file.
 
-Claude Code 2.1.280 to 2.1.282 keep ~/.claude/sessions/<pid>.json for every interactive session and rewrite its
+Claude Code 2.1.280 to 2.1.289 keep ~/.claude/sessions/<pid>.json for every interactive session and rewrite its
 `status` as the session moves: busy while a turn, a `!` command or a background subagent runs, waiting at a dialog,
 idle at the prompt. It is the session's own word on whether it is at work, which no hook and no transcript record says
 for every way a turn can stop.
