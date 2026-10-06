@@ -98,7 +98,7 @@ from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tool import Tool
-from hands.voice.tools import audited, cued, intermediary_tools, start_session_tool, usage_tool
+from hands.voice.tools import audited, close_session_tool, cued, intermediary_tools, start_session_tool, usage_tool
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
@@ -301,8 +301,12 @@ async def run(
         if config is not None:
             tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
-            # started once the registry holds it, so the brain can stage for it at once.
-            brain_tools = [audited(cued(start_session_tool(home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record)]
+            # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
+            # no longer does.
+            brain_tools = [
+                audited(cued(start_session_tool(home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record),
+                audited(cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
+            ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.

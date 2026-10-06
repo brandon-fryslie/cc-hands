@@ -40,7 +40,7 @@ from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
-from hands.sessions import catchup, startsession, tmux
+from hands.sessions import catchup, closesession, startsession, tmux
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.focus import Unreadable, focused
@@ -49,7 +49,7 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
-from hands.core import playback
+from hands.core import playback, status
 from hands.core.place import Modality
 from hands.voice.trigger import Trigger, Triggers, described, readied
 from hands.voice.wake import Unheard
@@ -715,6 +715,9 @@ def _spoken_state(state: SessionState, dialog: Dialog | None, turn: Turn) -> str
             # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
             # notes are this listing at the tail of its every request.
             return f"working; the last thing it set out to do: {said((latest,))}"
+        case (None, Idle(status=status.Idle()), Opened()):
+            # A turn opened at its prompt, before the status that says it is busy is read.
+            return "working"
         case (None, _, _):
             return _stated(state)
 
@@ -1239,6 +1242,39 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
 
     # A barge-in never stops a start part way: the session would be running, and the user never told.
     return tool(start_session, completes=True)
+
+
+def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
+    """[LAW:nothing-unseen] each close is its own session.close event, inside the call's."""
+
+    async def closed(id: SessionId, asked: closesession.Asked) -> Result:
+        # Its name as the user knows it, read while it is still listed.
+        name = spoken_name(sessions, id)
+        try:
+            match await closesession.close(home, record, sessions.live_session, id, asked):
+                case closesession.Closed():
+                    return {"closed": name}
+                case closesession.LeftRunning(session=found):
+                    # [LAW:one-source-of-truth] what it was found doing, as list_sessions says it.
+                    return {"left_running": name, "state": _spoken_state(found.state, found.dialog, found.turn)}
+        except closesession.NotClosed as why:
+            return {"error": str(why)}
+
+    async def close_session(sessions: list[str], asked: closesession.Asked) -> Result:
+        """End Claude Code sessions the user is finished with: each one's claude exits, as at a closed terminal, and it
+        leaves your session listing. Returns once they have, with each one's name, or says why one did not. A tmux window
+        hands opened for one closes with it; a terminal the user started one from stays.
+
+        Args:
+            sessions: Each session's id, from list_sessions. They are closed together, so one call closes them all.
+            asked: `named` when the user named these sessions: each ends whatever it is doing. `done` when they asked for
+                the sessions that are done: each ends only at its prompt, with no dialog up and no shell running in the
+                background, and is otherwise left running, which its result says.
+        """
+        return {"sessions": list(await asyncio.gather(*(closed(SessionId(session), asked) for session in sessions)))}
+
+    # A barge-in never stops a close part way: the sessions would be ending, and the user never told.
+    return tool(close_session, completes=True)
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:

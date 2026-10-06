@@ -1672,6 +1672,17 @@ no whole path, no tmux, `claude` ended first, it has not joined in 30 seconds (u
 it joined outside fritter. A session started has been told nothing: what the user wants of it is staged and sent as any
 prompt is. Each start is a `session.start` event.
 
+**Closing a session.** The brain's `close_session` tool ends the sessions it is given, all together, as its
+`hands:close` skill says (`hands.sessions.closesession`). It sends each session's `claude` SIGTERM, which Claude Code
+ends on as on a closed terminal, firing SessionEnd (2.1.289), unless the liveness sweep's judgement says that process
+no longer holds the session (it ended, its pid was reused, or a /clear moved it to another session); then it waits until
+the registry no longer lists the session, 10 seconds at most. Whatever ran that `claude` goes as it
+would at a terminal: a window hands opened ran nothing else, so tmux closes it, and a shell the user ran it from gives
+them their prompt back. A close is asked one of two ways: `named`, which ends the session whatever it is doing, or
+`done`, which ends it only at its prompt with no dialog up, no turn opened, and no background shell running, and
+otherwise leaves it, saying what it is doing. The registry's state is read as the close runs, so a session that began a
+turn after the brain listed it is left alone, even before its busy status is read. Each close is a `session.close` event.
+
 ## The audio side
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on

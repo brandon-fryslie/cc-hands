@@ -63,6 +63,15 @@ async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
         await asyncio.sleep(period)
 
 
+def observed(home: Home, membership: Membership) -> Observed:
+    """What the files and the OS say of one session now, judged as a sweep judges it."""
+    # [LAW:single-enforcer] the sweep's own judgement, of only the files naming the session's pid: they alone say which
+    # session that process holds. Judged as a session already unfiled, so a file that is gone says so now.
+    records, _ = recorded(home)
+    seen, _ = observations([membership], [record for record in records if record.membership.pid == membership.pid], process_starts({membership.pid}), frozenset({membership.id}))
+    return next(observation for observation in seen if observation.membership.id == membership.id)
+
+
 def observations(
     listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float], unfiled_before: Unfiled
 ) -> tuple[list[Observed], Unfiled]:

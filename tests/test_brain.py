@@ -229,7 +229,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[0] == "/real/claude" and "-p" not in argv and "--print" not in argv
     # Its tools, what it may do without asking, and its MCP servers are its config directory's: nothing here narrows them.
     assert not {"--tools", "--disallowedTools", "--permission-mode", "--strict-mcp-config", "--system-prompt", "--bare"} & set(argv)
-    assert argv[argv.index("--allowedTools") + 1 : argv.index("--plugin-dir")] == ["mcp__hands", "Skill(hands:chat)", "Skill(hands:prompt)", "Skill(hands:recall)", "Skill(hands:start)"]
+    assert argv[argv.index("--allowedTools") + 1 : argv.index("--plugin-dir")] == ["mcp__hands", "Skill(hands:chat)", "Skill(hands:close)", "Skill(hands:prompt)", "Skill(hands:recall)", "Skill(hands:start)"]
     assert argv[argv.index("--mcp-config") + 1] == launch(tmp_path).mcp_config
     # Beside its setup's skills, hands gives it its own: how it talks with the user, and how it writes a session's prompt.
     plugin = Path(argv[argv.index("--plugin-dir") + 1])
