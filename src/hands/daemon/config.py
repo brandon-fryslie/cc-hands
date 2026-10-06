@@ -103,9 +103,7 @@ def load(home: Home, model: str | None = None) -> Settings:
     """The settings `home` holds, on `model` where one is given, read once as a run starts; raises Rejected naming the
     file and what is wrong in it, or --model and why hands cannot run on it."""
     held = _readable(home, _held(home))
-    config = _settings(home, held, model)
-    # [LAW:parse-dont-validate] the flag as parsed, which a restart runs on again.
-    return Settings(held, config, None if model is None else config.llm.model)
+    return Settings(held, _settings(home, held, model), model)
 
 
 async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, period: float = EDIT_SECONDS) -> SettingsEdited:
@@ -147,8 +145,9 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
 class OwnModel:
     """hands' own model: the one the run is on, and the one the user chooses for hands by voice.
 
-    [LAW:one-source-of-truth] config.toml is the one place the model is chosen, by hand or by voice. A choice by voice
-    is an edit to the file, its every other line kept as written, and the run takes it as it takes any edit: by
+    [LAW:one-source-of-truth] config.toml is the one place the model is chosen, by hand or by voice, and `hands run
+    --model` the one thing that outranks it, for that run alone: a choice by voice is refused while it does. A choice by
+    voice is an edit to the file, its every other line kept as written, and the run takes it as it takes any edit: by
     starting again on it once `edited` has weighed it.
     """
 
@@ -158,7 +157,7 @@ class OwnModel:
         self._reachable = reachable
 
     def running(self) -> str:
-        """The model the run is on, which the file named as it started."""
+        """The model the run is on: the one --model named, or the file's as it started."""
         return self._running.config.llm.model
 
     def weigh(self, model: str) -> Callable[[], None]:
@@ -231,27 +230,23 @@ def _readable(home: Home, held: bytes | _Unreadable | None) -> bytes | None:
 def _settings(home: Home, held: bytes | None, model: str | None = None) -> Config:
     # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared, on the
     # same --model.
-    config = _file(home, held)
-    if model is None:
-        return config
     try:
-        return replace(config, llm=_on(config.llm, _text({"model": model}, "--model", "model", "")))
-    except Rejected as error:
-        raise Rejected(f"--model {model!r}: {error}") from error
-
-
-def _file(home: Home, held: bytes | None) -> Config:
-    if held is None:
-        return Config()
-    try:
-        return parse(held.decode())
+        return parse("" if held is None else held.decode(), model)
     except UnicodeDecodeError as error:
         raise Rejected(f"{home.config} could not be read: {error}") from error
+    except ModelFlagRejected:
+        raise
     except Rejected as error:
         raise Rejected(f"{home.config}: {error}") from error
 
 
-def parse(text: str) -> Config:
+class ModelFlagRejected(Rejected):
+    """A model --model named that hands cannot run on: the flag's fault, never the file's, so it is said without it."""
+
+
+def parse(text: str, model: str | None = None) -> Config:
+    """The settings `text` holds, on `model`, the one --model names, where one is given: it outranks the file's, which
+    is then never read, so one hands does not offer refuses nothing and an edit to it alone is no edit."""
     # [LAW:parse-dont-validate] the one crossing from the file: past it, a setting is a variant that holds exactly its fields.
     try:
         top = tomllib.loads(text)
@@ -260,7 +255,7 @@ def parse(text: str) -> Config:
     _known(top, "the file", ("llm", "telemetry"))
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
-    return Config(llm=_llm(_table(top, "llm")), collector=_collector(telemetry))
+    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry))
 
 
 def _collector(table: Mapping[str, object]) -> str | None:
@@ -286,7 +281,7 @@ def _base(url: str, where: str, server: str, example: str, appended: str) -> str
     return url
 
 
-def _llm(table: Mapping[str, object]) -> LLM:
+def _llm(table: Mapping[str, object], model: str | None) -> LLM:
     match backend := _text(table, "[llm]", "backend", "anthropic"):
         case "anthropic":
             _known(table, "[llm] for anthropic", ("backend", "model", "url"))
@@ -294,19 +289,29 @@ def _llm(table: Mapping[str, object]) -> LLM:
             url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
             if url.endswith("/v1"):
                 raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
-            return _on(Anthropic(url=url), _text(table, "[llm]", "model", ANTHROPIC_MODEL))
+            return _on(Anthropic(url=url), table, model)
         case "openai":
             _known(table, "[llm] for openai", ("backend", "model", "url"))
-            return _on(OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL)), _text(table, "[llm]", "model", OPENAI_MODEL))
+            return _on(OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL)), table, model)
         case "claude":
             # A url would be ignored, its requests going through hands' proxy to Anthropic's API, so it is refused.
             _known(table, "[llm] for claude", ("backend", "model"))
-            return _on(Claude(), _text(table, "[llm]", "model", ANTHROPIC_MODEL))
+            return _on(Claude(), table, model)
         case _:
             raise Rejected(f"[llm] backend {backend!r} is not one of: anthropic, openai, claude")
 
 
-def _on(llm: LLM, model: str) -> LLM:
+def _on(llm: LLM, table: Mapping[str, object], flag: str | None) -> LLM:
+    """`llm` on the model `table` names, its default where it names none, or on `flag`, the --model that outranks it."""
+    if flag is None:
+        return _offered_on(llm, _text(table, "[llm]", "model", llm.model))
+    try:
+        return _offered_on(llm, flag)
+    except Rejected as error:
+        raise ModelFlagRejected(f"--model {flag!r}: {error}") from error
+
+
+def _offered_on(llm: LLM, model: str) -> LLM:
     """`llm` on `model`. [LAW:single-enforcer] the one place a model is refused that hands does not offer, whether the
     file or --model named it."""
     match llm:

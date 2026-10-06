@@ -181,44 +181,60 @@ def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
 
 def test_a_model_flag_outranks_the_files_on_the_files_backend(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    assert config.load(home, " claude-opus-5-5 ") == config.Settings(None, Config(llm=Anthropic(model="claude-opus-5-5")), "claude-opus-5-5")
+    assert config.load(home, "claude-opus-5-5") == config.Settings(None, Config(llm=Anthropic(model="claude-opus-5-5")), "claude-opus-5-5")
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[telemetry]\ncollector = "http://otel.example:4318"\n')
     assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
+    # The file's model, outranked, is never read: one hands no longer offers is no reason to refuse the run.
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-sonnet-4"\n')
+    assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"))
     # A server of its own serves models hands has no list of, the flag's as the file's.
     home.config.write_text('[llm]\nbackend = "openai"\nurl = "http://localhost:8080/v1"\n')
     assert config.load(home, "/models/qwen 30b").config == Config(llm=OpenAI(url="http://localhost:8080/v1", model="/models/qwen 30b"))
 
 
-@pytest.mark.parametrize(("model", "said"), [("opus", f"hands runs Claude on {', '.join(CLAUDE_MODELS)}, not opus"), ("  ", "--model model should be a non-empty string")])
-def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_file(tmp_path: Path, model: str, said: str) -> None:
+def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_file(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "claude"\n')
     with pytest.raises(Rejected) as refused:
-        config.load(home, model)
-    assert str(refused.value).startswith(f"--model {model!r}: {said}")
-    assert str(home.config) not in str(refused.value)
+        config.load(home, "opus")
+    assert str(refused.value) == f"--model 'opus': hands runs Claude on {', '.join(CLAUDE_MODELS)}, not opus"
 
 
-def test_a_start_says_the_model_flag_it_was_given_and_is_refused_at_the_door_on_one_it_cannot_run_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_blank_model_flag_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["--home", str(tmp_path), "run", "--model", "  "])
+    assert exited.value.code == 2
+    assert f"argument --model: a model's id, such as {ANTHROPIC_MODEL}, not '  '" in capsys.readouterr().err
+
+
+def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_settings_are_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: False)
+    monkeypatch.setattr(talkkey, "ask", lambda: None)
+    for given in ((), ("--model", " claude-opus-5-5 ")):
+        assert cli.main(["--home", str(home.root), "run", *given]) == 1
+    capsys.readouterr()
+    starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
+    assert [(start["outcome"], start["facts"]["model_flag"]) for start in starts] == [("failed", None), ("failed", "claude-opus-5-5")]
+
+
+def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from hands.voice import talkkey
 
     home = Home(tmp_path / ".hands")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    events: list[WideEvent] = []
-    for model in (None, "claude-opus-5-5"):
-        run_start = Start(restarted=False)
-        assert cli.door(home, run_start, model) == config.load(home, model)
-        run_start.ended(events.append, None)
-    refused = Start(restarted=False)
+    assert cli.door(home, Start(restarted=False), "claude-opus-5-5") == config.load(home, "claude-opus-5-5")
     with pytest.raises(CannotStart, match="^--model 'opus': "):
-        cli.door(home, refused, "opus")
-    refused.ended(events.append, None)
-    assert [event.facts["model_flag"] for event in events] == [None, "claude-opus-5-5", "opus"]
+        cli.door(home, Start(restarted=False), "opus")
 
 
-@pytest.mark.parametrize(("given", "carried"), [((), ()), (("--model", "claude-opus-5-5"), ("--model", "claude-opus-5-5"))])
-def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], carried: tuple[str, ...]) -> None:
+@pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
+def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], loads: str | None, carried: tuple[str, ...]) -> None:
     home = Home(tmp_path)
+    # A server of its own, whose models hands has no list of.
+    home.config.write_text('[llm]\nbackend = "openai"\nurl = "http://localhost:8080/v1"\n')
     loaded: list[str | None] = []
 
     def door(_home: Home, _start: Start, model: str | None) -> config.Settings:
@@ -243,8 +259,12 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     monkeypatch.setattr(cli, "again", again)
     with pytest.raises(Again) as restarted:
         cli.main(["--home", str(home.root), "run", *given])
-    assert loaded == [carried[1] if carried else None]
+    assert loaded == [loads]
     assert restarted.value.args[0][-2 - len(carried):] == ["--restarted", "42", *carried]
+    # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all.
+    with pytest.raises(Again):
+        cli.main(["--home", str(home.root), "run", *restarted.value.args[0][-2 - len(carried):]])
+    assert loaded == [loads, loads]
 
 
 async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_its_backend_is(tmp_path: Path) -> None:
@@ -255,6 +275,9 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, period=0.01), 0.3))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
+    await asyncio.sleep(0.05)
+    # Nor is one to a model hands does not offer: outranked, it is never read, so nothing is refused.
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
     with pytest.raises(TimeoutError):
         await watching
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, period=0.01), 2.0))
