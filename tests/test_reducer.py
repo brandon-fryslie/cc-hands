@@ -36,7 +36,6 @@ from hands.core import progress
 from hands.core.reducer import EXPIRED_MESSAGE, UNTOLD, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
-    Delegating,
     Dialog,
     Gone,
     Held,
@@ -63,6 +62,7 @@ from hands.core.session import (
     UnknownMode,
     Unreported,
     Untold,
+    delegating,
 )
 from hands.core.status import Busy, Report, Shell, Stamp, Status, Unknown, Waiting
 from hands.core import status
@@ -1277,7 +1277,7 @@ def test_a_message_queued_between_the_wire_telling_a_turn_and_its_stop_is_marked
 AGENT = AgentId("a587b79fd8308e5bc")
 OTHER_AGENT = AgentId("a1f0")
 # Claude Code's busy from the turn that launched the subagent, kept up while it works.
-DELEGATING = Delegating(RUNNING.stamp, RUNNING.idled)
+DELEGATING = RUNNING
 
 
 def launched(agent: AgentId = AGENT, written: Stamp | None = Stamp(1200)) -> Launched:
@@ -1293,35 +1293,35 @@ def test_a_turn_that_launched_a_subagent_in_the_background_leaves_the_session_at
     """hands-session-mgmt-a7t.9qr, 2.1.289: Claude Code stays busy from the launch until the turn reporting it back ends,
     through the Stop of the turn that launched it, so only the turn and the subagent out say no turn runs."""
     state, _ = told([launched(), STOP], in_turn(RUNNING))
-    assert (live(state).state, live(state).turn, live(state).background) == (DELEGATING, Told(TURN), frozenset({AGENT}))
+    assert (delegating(live(state)), live(state).turn, live(state).background) == (True, Told(TURN), frozenset({AGENT}))
 
 
 def test_a_turn_stopped_before_claude_code_writes_its_idle_is_still_running_with_no_subagent_out() -> None:
     """A Stop fires before Claude Code writes its idle, so busy with no turn open is a turn just told, never the prompt."""
     state, _ = told([STOP], in_turn(RUNNING))
-    assert live(state).state == RUNNING
+    assert (live(state).state, delegating(live(state))) == (RUNNING, False)
 
 
 def test_a_prompt_typed_while_a_subagent_works_in_the_background_runs_and_its_stop_returns_the_session_to_its_prompt() -> None:
     """Claude Code sets no new status for the turn, since it was busy already: the turn says it runs."""
     state, _ = told([PROMPT], out(DELEGATING, Told(TURN), AGENT))
-    assert (live(state).state, live(state).turn) == (RUNNING, Opened(NEXT))
+    assert (live(state).state, live(state).turn, delegating(live(state))) == (RUNNING, Opened(NEXT), False)
     state, _ = told([Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST)], state)
-    assert (live(state).state, live(state).turn) == (DELEGATING, Told(NEXT))
+    assert (delegating(live(state)), live(state).turn) == (True, Told(NEXT))
 
 
 def test_the_report_of_the_last_subagent_out_runs_the_turn_it_opens() -> None:
     """The notification opens a turn under the busy the subagent kept up, and Claude Code's idle ends that turn."""
     report = PromptId("report")
     state, _ = told([ReportedBack(ONE.id, AGENT)], out(DELEGATING, Told(TURN), AGENT))
-    assert (live(state).state, live(state).background) == (RUNNING, frozenset())
+    assert (live(state).state, live(state).background, delegating(live(state))) == (RUNNING, frozenset(), False)
     state, _ = told([taken(report, Stamp(1600))], state)
     assert (live(state).state, live(state).turn) == (RUNNING, Opened(report))
 
 
 def test_a_report_of_one_subagent_leaves_the_session_at_its_prompt_while_another_works() -> None:
     state, _ = told([ReportedBack(ONE.id, AGENT)], out(DELEGATING, Told(TURN), AGENT, OTHER_AGENT))
-    assert (live(state).state, live(state).background) == (DELEGATING, frozenset({OTHER_AGENT}))
+    assert (delegating(live(state)), live(state).background) == (True, frozenset({OTHER_AGENT}))
 
 
 def test_a_report_of_a_task_that_is_no_subagent_out_moves_nothing() -> None:
@@ -1335,12 +1335,19 @@ def test_a_launch_written_before_claude_code_last_said_idle_was_over_by_then(wri
     """Claude Code sets no idle while a subagent it started works, so a launch read after an idle written later is of
     one that reported back before it, as the transcript read from its start holds many."""
     state, effects = reduce(holding(Idle(status.Idle(), Stamp(2000), after=TURN), Told(TURN)), launched(written=written))
-    assert (live(state).background, effects) == ((frozenset({AGENT}), []) if out_after else (frozenset(), [Audit(Overtaken(ONE.id, AGENT))]))
+    assert (live(state).background, effects) == ((frozenset({AGENT}), []) if out_after else (frozenset(), [Audit(Overtaken(ONE.id, frozenset({AGENT})))]))
 
 
-@pytest.mark.parametrize(("report", "after"), [(said(Busy(), 3000), Delegating(Stamp(3000), RUNNING.idled)), (said(status.Idle(), 3000), Idle(status.Idle(), Stamp(3000), after=TURN))])
-def test_a_status_read_at_the_prompt_with_a_subagent_out_is_read_as_claude_code_says_it(report: StatusReported, after: SessionState) -> None:
-    assert live(told([report], out(DELEGATING, Told(TURN), AGENT))[0]).state == after
+def test_a_busy_read_at_the_prompt_with_a_subagent_out_leaves_it_at_its_prompt() -> None:
+    state = live(told([said(Busy(), 3000)], out(DELEGATING, Told(TURN), AGENT))[0])
+    assert (state.state, delegating(state)) == (Running(Busy(), Stamp(3000), idled=RUNNING.idled), True)
+
+
+def test_an_idle_says_no_subagent_is_out_whose_report_was_not_read() -> None:
+    """Claude Code sets no idle while a subagent works, so its idle ends every one still held out, and says so."""
+    state, effects = reduce(out(DELEGATING, Told(TURN), AGENT, OTHER_AGENT), said(status.Idle(), 3000))
+    assert (live(state).state, live(state).background) == (Idle(status.Idle(), Stamp(3000), after=TURN), frozenset())
+    assert Audit(Overtaken(ONE.id, frozenset({AGENT, OTHER_AGENT}))) in effects
 
 
 def test_a_late_record_of_a_turn_told_opens_nothing_though_no_idle_came_between() -> None:

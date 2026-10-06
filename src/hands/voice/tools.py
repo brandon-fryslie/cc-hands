@@ -30,7 +30,7 @@ from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutco
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.progress import Doing, said
-from hands.core.session import Blocker, Delegating, Membership, CommandName, Opened, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
+from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
@@ -38,7 +38,7 @@ from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.spoken import counted
-from hands.core.turn import AgentId, Budget, Happening, Opening, body, describe, turns
+from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
 from hands.sessions import catchup, closesession, startsession, tmux
@@ -472,8 +472,10 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         live = sessions.live_session(member.id)
         # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
         # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
-        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good.
-        over = live is None or isinstance(live.state, Idle)
+        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good. One whose
+        # only work is subagents in the background is at its prompt too, though Claude Code says busy.
+        delegates = live is not None and delegating(live)
+        over = live is None or isinstance(live.state, Idle) or delegates
         entries: list[dict[str, object]] = []
         due: list[Due] = []
         for number in range(start + 1, end + 1):
@@ -489,7 +491,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
             "turns": entries,
             "earlier": start,
             "unsummarised": len(due),
-            "working": live is not None and isinstance(live.state, Running),
+            "working": live is not None and isinstance(live.state, Running) and not delegates,
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:
@@ -719,11 +721,14 @@ def _spoken_state(session: Session) -> str:
         case (None, Idle(status=status.Idle()), Opened()):
             # A turn opened at its prompt, before the status that says it is busy is read.
             return "working"
+        case (None, _, _) if delegating(session):
+            # No turn runs: a prompt typed at it runs at once, and each subagent's report opens a turn of its own.
+            return f"idle, with {counted(len(session.background), 'subagent')} it started in the background still working"
         case (None, state, _):
-            return _stated(state, session.background)
+            return _stated(state)
 
 
-def _stated(state: SessionState, background: frozenset[AgentId]) -> str:
+def _stated(state: SessionState) -> str:
     match state:
         case Unreported():
             return "not reported yet"
@@ -732,9 +737,6 @@ def _stated(state: SessionState, background: frozenset[AgentId]) -> str:
             return "idle, with a shell command it started in the background still running"
         case Idle():
             return "idle"
-        case Delegating():
-            # No turn runs: a prompt typed at it runs at once, and each subagent's report opens a turn of its own.
-            return f"idle, with {counted(len(background), 'subagent')} it started in the background still working"
         case Running(status=going):
             return _running(going)
 

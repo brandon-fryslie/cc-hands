@@ -206,15 +206,13 @@ def launched_of(record: Payload) -> AgentId | None:
 
 def notified_of(record: Payload) -> AgentId | None:
     """The task whose notification this record carries, at the prompt or mid-turn; None for every other record."""
-    match record.fields.get("type"), record.fields.get("attachment"), record.fields.get("origin"):
-        case "attachment", {"type": "queued_command", "commandMode": "task-notification", "prompt": str() as text}, _:
-            notification = text
-        case "user", _, {"kind": "task-notification"}:
-            notification = result_text(message(record).get("content"))
+    # [LAW:one-source-of-truth] read as the turns read it: mid-turn by `reported_of`, at the prompt by the opening.
+    match reported_of(record) or _opening_of(record, mid_tool=False):
+        case Reported(text=text) | Notified(text=text):
+            task = _TASK.search(text)
+            return None if task is None else AgentId(task.group(1))
         case _:
             return None
-    task = _TASK.search(notification)
-    return None if task is None else AgentId(task.group(1))
 
 
 def _reporter(notification: str) -> AgentTask | None:

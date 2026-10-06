@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 
-from hands.core.events import Ended, Joined, StatusReported
-from hands.core.session import Membership, SessionId
+from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
+from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp
+from hands.core.turn import AgentId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.registry import Sessions
@@ -335,6 +336,28 @@ async def test_the_turn_a_running_session_is_on_is_not_summarised_until_it_is_do
     assert answer["turns"][1] == {"turn": 2, "opened": "The user asked:\ndo task 1"}
     wanted = await store.wanted()
     assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
+
+
+async def test_a_session_at_its_prompt_while_a_subagent_works_in_the_background_has_its_last_turn_summarised(tmp_path: Path) -> None:
+    """Claude Code says busy while the subagent works, but the turn that launched it was told: it is over."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
+    sessions = await joined(transcript)
+    turn = PromptId("p1")
+    for event in (
+        StatusReported(SID, Report(Idle(), Stamp(1)), at=0.0),
+        Prompted(SID, at=1.0, mode=None, prompt=turn),
+        StatusReported(SID, Report(Busy(), Stamp(2)), at=1.0),
+        Launched(SID, AgentId("a1"), Stamp(3)),
+        Stopped(SID, "Started it.", mode=None, prompt=turn, again=False, heard=Stamp(4), request=RequestId("stop")),
+    ):
+        await sessions.apply(event)
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+
+    answer = await sentences(sessions, store)
+    assert answer["working"] is False and answer["unsummarised"] == 2
+    wanted = await store.wanted()
+    assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1", "turn-2"]
 
 
 async def test_a_session_whose_status_is_not_read_yet_has_its_last_turn_left_unsummarised(tmp_path: Path) -> None:

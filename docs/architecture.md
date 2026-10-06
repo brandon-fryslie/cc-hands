@@ -125,14 +125,13 @@ Known = Session | Gone        # what the registry holds per session
 
 # Only a status read moves a session between these: whether it runs is Claude Code's
 # word, never inferred from a hook or a record. Its busy also covers a subagent working
-# in the background (2.1.289), so busy with no turn open and a subagent out is Delegating.
-SessionState = Unreported | Idle | Running | Delegating
+# in the background (2.1.289), so busy with no turn open and a subagent out is read as
+# delegating(session): at its prompt. Its idle says no subagent is out.
+SessionState = Unreported | Idle | Running
 @dataclass(frozen=True)
 class Idle:      status: Idle | Shell; stamp: Stamp; after: PromptId | None  # one idle period; Shell: a background shell runs
 @dataclass(frozen=True)
 class Running:   status: Busy | Waiting | Unknown; stamp: Stamp; idled: Stamp
-@dataclass(frozen=True)
-class Delegating: stamp: Stamp; idled: Stamp  # at its prompt; only subagents in the background work
 
 # Each fact about the turn lives on the phase it is true in.
 Turn = Opened | Untold | Told

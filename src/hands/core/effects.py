@@ -63,11 +63,11 @@ class Unsettled:
 
 @dataclass(frozen=True)
 class Overtaken:
-    """A subagent's launch in the background read after an idle Claude Code set later, which it sets none of while one
-    works: that subagent was over by then, so it is not out. The launch itself is the line of the event it came in."""
+    """Subagents launched in the background that an idle Claude Code set after their launch says are over, since it sets
+    none while one works: a launch read after that idle, or one whose report had not been read when the idle was."""
 
     session: SessionId
-    agent: AgentId
+    agents: frozenset[AgentId]
 
 
 AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | Unsettled | Overtaken

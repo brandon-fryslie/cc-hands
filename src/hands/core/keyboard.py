@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from hands.core.effects import Command, Fritter, Key, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
-from hands.core.session import Delegating, Gone, Idle, Registry, Running, Session, SessionId
+from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId, delegating
 from hands.core.status import Waiting
 from hands.core.tmux import Keyboard, Pane
 
@@ -54,7 +54,7 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
             return UnknownSession(id)
         case Gone():
             return SessionEnded(id)
-        case Session(state=state, membership=member, background=background):
+        case Session(state=state, membership=member, background=background) as session:
             match (request, state, writer(member, pane)):
                 case (_, _, Unwrapped() as unwrapped):
                     return unwrapped
@@ -67,7 +67,7 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
                     return Type(id, by, command)
                 case (Interrupt(), Idle(), _):
                     return NothingRunning(id)
-                case (Interrupt(), Delegating(), _):
+                case (Interrupt(), _, _) if delegating(session):
                     return InBackground(id, len(background))
                 case (Interrupt(), _, Fritter() | Pane() as by):
                     # [LAW:types-are-the-program] Escape is the one key a request can press, and at a dialog it is the

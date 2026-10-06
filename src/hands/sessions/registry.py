@@ -487,5 +487,5 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
             return "DEBUG", f"Stop of turn {prompt} in session {session} is held until a record names its id"
         case Unsettled(session=session, prompt=prompt):
             return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its session ended or started again before a record named its id"
-        case Overtaken(session=session, agent=agent):
-            return "DEBUG", f"subagent {agent} of session {session} was launched in the background before Claude Code last set it idle, so it is not out"
+        case Overtaken(session=session, agents=agents):
+            return "DEBUG", f"subagents {sorted(agents)} of session {session} were launched in the background before Claude Code last set it idle, so they are not out"
