@@ -269,8 +269,12 @@ class Sessions:
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
         """Apply a draft request. A send is typed into its session, and the outcome is whether that was done."""
-        pane = await self._pane(request.session)
-        self._registry, decided = drafts.decide(self._registry, request, pane)
+        match request:
+            case drafts.SendDraft(session=session):
+                decidable: drafts.Decidable = drafts.Sending(session, await self._pane(session))
+            case drafts.StageDraft() | drafts.AmendDraft() | drafts.DiscardDraft():
+                decidable = request
+        self._registry, decided = drafts.decide(self._registry, decidable)
         match decided:
             case Type() as effect:
                 return await self._type(effect)

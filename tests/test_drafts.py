@@ -7,13 +7,13 @@ import pytest
 
 from hands.core.drafts import (
     AmendDraft,
+    Decidable,
     DiscardDraft,
     DraftAmended,
     DraftDiscarded,
-    DraftRequest,
     DraftStaged,
     NothingStaged,
-    SendDraft,
+    Sending,
     StageDraft,
     decide,
 )
@@ -72,34 +72,34 @@ def staged(state: SessionState = IDLE) -> Registry:
 
 @pytest.mark.parametrize("state", [IDLE, running(), AT_DIALOG])
 def test_staging_holds_the_draft(state: SessionState) -> None:
-    assert decide(registry(state), StageDraft(ONE.id, FIX), NotInTmux()) == (staged(state), DraftStaged(ONE.id, FIX, replaced=None))
+    assert decide(registry(state), StageDraft(ONE.id, FIX)) == (staged(state), DraftStaged(ONE.id, FIX, replaced=None))
 
 
 def test_staging_over_a_draft_replaces_it_and_says_so() -> None:
-    assert decide(staged(), StageDraft(ONE.id, BETTER), NotInTmux()) == (registry(drafts={ONE.id: BETTER}), DraftStaged(ONE.id, BETTER, replaced=FIX))
+    assert decide(staged(), StageDraft(ONE.id, BETTER)) == (registry(drafts={ONE.id: BETTER}), DraftStaged(ONE.id, BETTER, replaced=FIX))
 
 
 def test_amending_replaces_the_draft_and_keeps_both_versions_for_the_readback() -> None:
-    assert decide(staged(), AmendDraft(ONE.id, BETTER), NotInTmux()) == (registry(drafts={ONE.id: BETTER}), DraftAmended(ONE.id, before=FIX, after=BETTER))
+    assert decide(staged(), AmendDraft(ONE.id, BETTER)) == (registry(drafts={ONE.id: BETTER}), DraftAmended(ONE.id, before=FIX, after=BETTER))
 
 
 @pytest.mark.parametrize("request_", [AmendDraft(ONE.id, BETTER), DiscardDraft(ONE.id)])
-def test_with_nothing_staged_there_is_nothing_to_amend_or_discard(request_: DraftRequest) -> None:
-    assert decide(registry(), request_, NotInTmux()) == (registry(), NothingStaged(ONE.id))
+def test_with_nothing_staged_there_is_nothing_to_amend_or_discard(request_: Decidable) -> None:
+    assert decide(registry(), request_) == (registry(), NothingStaged(ONE.id))
 
 
 def test_discarding_clears_the_draft_even_after_the_session_ended() -> None:
-    assert decide(gone({ONE.id: FIX}), DiscardDraft(ONE.id), NotInTmux()) == (gone(), DraftDiscarded(ONE.id, FIX))
+    assert decide(gone({ONE.id: FIX}), DiscardDraft(ONE.id)) == (gone(), DraftDiscarded(ONE.id, FIX))
 
 
 @pytest.mark.parametrize("request_", [StageDraft(ONE.id, BETTER), AmendDraft(ONE.id, BETTER)])
-def test_an_ended_session_takes_no_draft(request_: DraftRequest) -> None:
-    assert decide(gone({ONE.id: FIX}), request_, NotInTmux()) == (gone({ONE.id: FIX}), SessionEnded(ONE.id))
+def test_an_ended_session_takes_no_draft(request_: Decidable) -> None:
+    assert decide(gone({ONE.id: FIX}), request_) == (gone({ONE.id: FIX}), SessionEnded(ONE.id))
 
 
 @pytest.mark.parametrize("request_", [StageDraft(TWO.id, FIX), AmendDraft(TWO.id, FIX), DiscardDraft(TWO.id)])
-def test_a_session_that_never_joined_is_named_unknown(request_: DraftRequest) -> None:
-    assert decide(staged(), request_, NotInTmux()) == (staged(), UnknownSession(TWO.id))
+def test_a_session_that_never_joined_is_named_unknown(request_: Decidable) -> None:
+    assert decide(staged(), request_) == (staged(), UnknownSession(TWO.id))
 
 
 def test_a_discard_touches_only_its_own_session() -> None:
@@ -108,7 +108,7 @@ def test_a_discard_touches_only_its_own_session() -> None:
         sessions={ONE.id: Session(ONE, IDLE, mode=None), TWO.id: Session(TWO, IDLE, mode=None)},
         drafts={ONE.id: FIX, TWO.id: BETTER},
     )
-    after, _ = decide(both, DiscardDraft(TWO.id), NotInTmux())
+    after, _ = decide(both, DiscardDraft(TWO.id))
     assert after.drafts == {ONE.id: FIX}
 
 
@@ -119,7 +119,7 @@ def wrapped(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None =
 @pytest.mark.parametrize("state", [IDLE, running(), SHELLING, Unreported()])
 def test_a_send_is_typed_into_the_fritter_that_wrapped_the_session_and_the_draft_is_gone_at_once(state: SessionState) -> None:
     typed = Type(ONE.id, Fritter(Path("/tmp/fritter-1/session.sock"), pid=1), input=Text(FIX.text))
-    assert decide(wrapped(state, {ONE.id: FIX}), SendDraft(ONE.id), NotInTmux()) == (wrapped(state), typed)
+    assert decide(wrapped(state, {ONE.id: FIX}), Sending(ONE.id, NotInTmux())) == (wrapped(state), typed)
 
 
 def test_text_is_typed_behind_a_space_so_a_leading_sigil_is_read_as_text() -> None:
@@ -127,25 +127,25 @@ def test_text_is_typed_behind_a_space_so_a_leading_sigil_is_read_as_text() -> No
 
 
 def test_a_session_nobody_wrapped_is_refused_by_name_and_keeps_its_draft() -> None:
-    assert decide(staged(), SendDraft(ONE.id), NotInTmux()) == (staged(), Unwrapped(ONE.id, NotInTmux()))
+    assert decide(staged(), Sending(ONE.id, NotInTmux())) == (staged(), Unwrapped(ONE.id, NotInTmux()))
 
 
 @pytest.mark.parametrize("state", [IDLE, running(), Unreported()])
 def test_a_send_to_a_session_nobody_wrapped_is_typed_into_its_tmux_pane_and_the_draft_is_gone_at_once(state: SessionState) -> None:
     pane = Pane(Path("/tmp/tmux-501/default"), "%3", "work", 1)
-    assert decide(registry(state, {ONE.id: FIX}), SendDraft(ONE.id), pane) == (registry(state), Type(ONE.id, pane, Text(FIX.text)))
+    assert decide(registry(state, {ONE.id: FIX}), Sending(ONE.id, pane)) == (registry(state), Type(ONE.id, pane, Text(FIX.text)))
 
 
 @pytest.mark.parametrize("state", [AT_DIALOG, running(Waiting(UnknownReason("a dialog this version does not know")))])
 def test_a_session_at_a_dialog_is_sent_nothing_and_keeps_its_draft(state: SessionState) -> None:
     before = wrapped(state, {ONE.id: FIX})
-    assert decide(before, SendDraft(ONE.id), NotInTmux()) == (before, AtItsDialog(ONE.id))
+    assert decide(before, Sending(ONE.id, NotInTmux())) == (before, AtItsDialog(ONE.id))
 
 
 def test_an_ended_session_is_sent_nothing() -> None:
     before = gone({ONE.id: FIX}, WRAPPED)
-    assert decide(before, SendDraft(ONE.id), NotInTmux()) == (before, SessionEnded(ONE.id))
+    assert decide(before, Sending(ONE.id, NotInTmux())) == (before, SessionEnded(ONE.id))
 
 
 def test_with_nothing_staged_there_is_nothing_to_send() -> None:
-    assert decide(wrapped(), SendDraft(ONE.id), NotInTmux()) == (wrapped(), NothingStaged(ONE.id))
+    assert decide(wrapped(), Sending(ONE.id, NotInTmux())) == (wrapped(), NothingStaged(ONE.id))

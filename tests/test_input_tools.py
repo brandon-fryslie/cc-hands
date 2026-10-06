@@ -329,6 +329,23 @@ async def test_a_session_nobody_wrapped_whose_pane_could_not_be_read_is_refused_
     }
 
 
+async def test_only_a_send_waits_on_its_pane_so_staging_and_amending_are_decided_as_they_are_asked(tmp_path: Path) -> None:
+    read: list[Sequence[int]] = []
+
+    async def keyboards(pids: Sequence[int]) -> list[Keyboard]:
+        read.append(pids)
+        return [NotInTmux()] * len(pids)
+
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=unrecorded, keyboards=keyboards)
+    await sessions.apply(Joined(Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp_path / "none.jsonl"), "startup"))
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session="s1", text="run the tests", resolutions=[])
+    await call(tools, "amend_draft", session="s1", text="run the tests again", resolutions=[])
+    assert read == []
+    await call(tools, "send_draft", session="s1")
+    assert read == [[4242]]
+
+
 async def test_a_session_nobody_wrapped_behind_another_program_in_its_pane_is_refused_and_nothing_is_typed(tmp_path: Path) -> None:
     typed: list[Type[Input]] = []
     sessions, id = await joined(tmp_path, typed=typed.append, pane=Behind(Pane(tmp_path / "default", "%3", "work", 1)))
