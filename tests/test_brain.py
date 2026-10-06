@@ -1396,7 +1396,8 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
         # Its usage is heard under the session it resumed, not one begun for it.
         wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
-        reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        assert isinstance(minded.llm, BrainStage)
+        reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage]
         assert reported["in_context_tokens"] == 8
     [_, again] = events(recorded, "brain.launch")
     assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
