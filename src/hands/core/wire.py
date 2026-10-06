@@ -942,6 +942,20 @@ class Uncopied:
 
 
 @dataclass(frozen=True)
+class Unfinished:
+    """The proxy stopped waiting on the API before its answer's head came: the client hung up, hands stopped, or the proxy
+    failed, and `reason` says which. Whether the API ever saw the request is not known here, and the client was answered
+    nothing."""
+
+    reason: str
+    stopped_at: Seconds
+
+
+# How an exchange ended.
+Ending = Reached | Unreached | Held | Uncopied | Unfinished
+
+
+@dataclass(frozen=True)
 class Exchanged:
     """One request and its reply, whole: the wide record of one unit of the proxy's work."""
 
@@ -955,7 +969,7 @@ class Exchanged:
     changes: tuple[Change, ...]
     requested_at: Seconds
     sent_at: Seconds
-    reply: Reached | Unreached | Held | Uncopied
+    reply: Ending
     # The client was answered the proxy's own refusal, told final (x-should-retry: false), in place of the API's answer.
     final: bool
     # [LAW:one-source-of-truth] the exchange's own span: in the trace of the unit of work it was made for, so this record
