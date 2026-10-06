@@ -27,7 +27,7 @@ from uuid import uuid4
 
 from loguru import logger
 
-from hands.brain.process import Station, Unstartable, brain_claude, slim, spawn
+from hands.brain.process import Fresh, Station, Unstartable, brain_claude, slim, spawn
 from hands.sessions.pseudoterminal import ClaudeCode
 from hands.core.effects import Command
 from hands.core.session import CommandName, SessionId, pasted
@@ -47,7 +47,7 @@ def aside_command(claude: Path, model: str, session: SessionId, question: str) -
     """A side question's command line: the slim Claude Code, closed, opening with the question."""
     # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with. `--` ends
     # the options: without it, --mcp-config takes every word up to the next option, the prompt as a second config file.
-    return [*slim(claude, model, session), *CLOSED, "--", Command(ASIDE, pasted(question)).typed]
+    return [*slim(claude, model, Fresh(session, None)), *CLOSED, "--", Command(ASIDE, pasted(question)).typed]
 
 
 class AsideKind(StrEnum):

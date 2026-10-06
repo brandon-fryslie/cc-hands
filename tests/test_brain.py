@@ -23,7 +23,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Launch, NotLoggedIn, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -195,7 +195,7 @@ def unasked(asked: Asked) -> None:
 
 
 def launch(tmp: Path) -> Launch:
-    return Launch(station(tmp), "brain@example.com", "You are hands.", '{"mcpServers": {}}', SessionId("b1"))
+    return Launch(station(tmp), "brain@example.com", "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
 
 
 def typed(tmp: Path) -> list[list[str]]:
@@ -236,6 +236,8 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     for skill in ("chat", "prompt"):
         assert (plugin / "skills" / skill / "SKILL.md").read_text().startswith(f"---\nname: {skill}\n")
     assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
+    # The instruction this hands writes goes on every request, never the one its conversation first had.
+    assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     settings = json.loads(argv[argv.index("--settings") + 1])
     # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
     # settings.json env nor hands' environment outranks it.
@@ -294,11 +296,37 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "fritter": fritter, "pid": brain.pid,
+        "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
+        "conversation": "fresh", "gone": None, "fritter": fritter, "pid": brain.pid,
     }
+    # Held once the brain is up, for the next start to resume.
+    assert conversation(tmp_path / "brain", SessionId("b2")) == Fresh(SessionId("b2"), SessionId("b1"))
+    transcript(tmp_path / "brain", "b1")
+    assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
     # Its run is a part of its launch, from its input coming up to its process's end.
     assert (ran.event, ran.outcome, ran.trace_id, ran.parent_id) == ("brain.run", "ok", launched.trace_id, launched.span_id)
     assert ran.facts["pid"] == brain.pid and isinstance(ran.facts["code"], int) and isinstance(ran.facts["shown"], str)
+
+
+def transcript(config_dir: Path, session: str) -> None:
+    """Claude Code's transcript of `session`, under the project directory it names the brain's cwd by."""
+    project = config_dir / "projects" / "-brain-cwd"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / f"{session}.jsonl").write_text("{}\n")
+
+
+def test_a_brain_starts_new_until_one_has_held_a_conversation_and_resumes_it_while_claude_code_keeps_its_transcript(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    assert conversation(brain, SessionId("n1")) == Fresh(SessionId("n1"), None)
+    (brain / "conversation").write_text("c1\n")
+    # A conversation Claude Code has no transcript of has nothing to resume: the one held is named as gone.
+    assert conversation(brain, SessionId("n1")) == Fresh(SessionId("n1"), SessionId("c1"))
+    transcript(brain, "c1")
+    assert conversation(brain, SessionId("n1")) == Resumed(SessionId("c1"))
+    # Resumed under its own session, which Claude Code keeps: never a session id of its own beside it.
+    argv = command(replace(launch(tmp_path), conversation=Resumed(SessionId("c1"))), Path("/real/claude"), "http://127.0.0.1:7")
+    assert argv[argv.index("--resume") + 1] == "c1" and "--session-id" not in argv
 
 
 def permissions(recorded: Sequence[Entry]) -> list[tuple[Fact, Fact, Fact]]:
@@ -1342,6 +1370,12 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
+    # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
+    transcript(tmp_path / "brain", str(launched.facts["session"]))
+    async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ):
+        pass
+    [_, again] = events(recorded, "brain.launch")
+    assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
 
 
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:

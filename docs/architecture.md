@@ -1081,8 +1081,9 @@ line (`acknowledged`) and how long after the turn left its lane it was handed to
 the turn's own words are told: a line the user spoke over before it came to be said is not told.
 
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
-up, on which account, model, and config directory, under which fritter (the one hands' package carries), or with what
-failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
+up, on which account, model, and config directory, under which fritter (the one hands' package carries), and in which
+conversation (`conversation`: `resumed`, or `fresh` with the one held before it whose transcript was gone, `gone`), or
+with what failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
 (`brain.run`), a part of the launch, runs from then until its process ends, with its exit code and the last of what it
 showed. Each turn typed into it (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its
 end, with the prompt ids Claude Code took it as (`prompts`), how many times it was typed (`typings`), the tools its
@@ -1419,7 +1420,11 @@ ends, as a side question that shows the result to a Claude Code started for that
 alone (`hands.brain.asides`), and kept in the summary store by the result's content. Each batch reached
 is one `context.stubbing` event, naming the calls that go as a line from then on (`stubbed`) and those
 that go whole because no sentence had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
-session keeps rather than what a coding session does. This is the single decision that avoids
+session keeps rather than what a coding session does. A restart does not start the conversation over: each brain holds its
+session in `conversation` in its config directory, and the next one resumes it while Claude Code still has its
+transcript, so a restart, an upgrade, or a change of model goes on from what was said, its length kept by that same
+compaction. It runs with `--system-prompt-snapshot off`, so a resumed conversation is sent the instruction this hands
+writes, not the one it began with. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.
 

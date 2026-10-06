@@ -16,6 +16,7 @@ what the login brings from the account.
 
 import asyncio
 import contextlib
+import glob
 import json
 import re
 import shutil
@@ -139,26 +140,90 @@ class Launch:
     account: str
     instruction: str
     mcp_config: str
+    conversation: "Conversation"
+
+    @property
+    def session(self) -> SessionId:
+        return self.conversation.session
+
+
+@dataclass(frozen=True)
+class Fresh:
+    """A conversation begun new, under a session chosen by hands; `gone` is the one held before it, whose transcript
+    Claude Code no longer has, when there was one."""
+
     # [LAW:one-source-of-truth] chosen by hands, so the brain's requests are known as its own from the first one on the
     # wire, and its hooks from the first one posted.
     session: SessionId
+    gone: SessionId | None
 
 
-def slim(claude: Path, model: str, session: SessionId) -> list[str]:
+@dataclass(frozen=True)
+class Resumed:
+    """The conversation the brain held when hands last ran, taken up again under its own session: a restart, an upgrade,
+    or a change of model goes on from what was said, compacted as Claude Code compacts any conversation."""
+
+    session: SessionId
+
+
+Conversation = Fresh | Resumed
+
+
+def held(config_dir: Path) -> Path:
+    """The session of the brain's conversation, written by hands alone as each brain on `config_dir` starts."""
+    return config_dir / "conversation"
+
+
+def conversation(config_dir: Path, new: SessionId) -> Conversation:
+    """The conversation a brain on `config_dir` starts in: the one held, while Claude Code still has its transcript, or
+    else one begun under `new`."""
+    try:
+        session = SessionId(held(config_dir).read_text().strip())
+    except FileNotFoundError:
+        return Fresh(new, None)
+    # [LAW:one-source-of-truth] Claude Code's own transcript says whether there is a conversation to resume: named by
+    # its session, under whichever project directory Claude Code names the brain's cwd by.
+    if glob.glob(glob.escape(str(config_dir / "projects")) + f"/*/{glob.escape(session)}.jsonl"):
+        return Resumed(session)
+    return Fresh(new, session)
+
+
+def hold(config_dir: Path, session: SessionId) -> None:
+    """Remember `session` as the brain's conversation, replacing whatever was held whole."""
+    path = held(config_dir)
+    written = path.with_name(f"{path.name}.writing")
+    written.write_text(f"{session}\n")
+    written.replace(path)
+
+
+def slim(claude: Path, model: str, conversation: Conversation) -> list[str]:
     """A slim Claude Code's command line: the real claude, interactive, reading no settings but its config directory's."""
     return [
         str(claude),
         "--model", model,
-        "--session-id", session,
+        *_conversing(conversation),
         # The config directory's settings.json is the only settings file read: none from the working directory.
         "--setting-sources", "user",
     ]
 
 
+def _conversing(conversation: Conversation) -> tuple[str, str]:
+    match conversation:
+        case Fresh(session=session):
+            return ("--session-id", session)
+        case Resumed(session=session):
+            # Claude Code keeps the session it resumes unless told to fork it (2.1.289, --fork-session).
+            return ("--resume", session)
+
+
 def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
     return [
-        *slim(claude, launch.station.model, launch.session),
+        *slim(claude, launch.station.model, launch.conversation),
+        # The instruction as this hands writes it on every request, a resumed conversation's too: Claude Code otherwise
+        # sends the system prompt its conversation first had until it is compacted (2.1.289, measured: a resume launched
+        # with a new --append-system-prompt sent the old one). Rendered fresh, it is byte-identical request to request.
+        "--system-prompt-snapshot", "off",
         # Beside the MCP servers its own setup names, never in place of them.
         "--mcp-config", launch.mcp_config,
         # After Claude Code's own system prompt, never in place of it: the API checks that it opens as Claude Code's does.
@@ -833,6 +898,11 @@ async def start(launch: Launch, record: Record) -> Brain:
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
     with unit("brain.launch", record):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
+        match launch.conversation:
+            case Fresh(gone=gone):
+                annotate(conversation="fresh", gone=gone)
+            case Resumed():
+                annotate(conversation="resumed")
         # [LAW:one-source-of-truth] the fritter built with this hands, never a copy installed apart from it: what hands
         # asks of fritter and what the brain's fritter answers are one build's.
         try:
@@ -850,6 +920,8 @@ async def start(launch: Launch, record: Record) -> Brain:
             running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
             annotate(pid=running.pid)
             typist = await _typist(running, sockets, launch.session)
+            # Held once the brain is up in it, so the next start resumes what this one says.
+            hold(station.config_dir, launch.session)
         except BaseException:
             # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
             # its own, which nothing but hands' own end would hang up.
