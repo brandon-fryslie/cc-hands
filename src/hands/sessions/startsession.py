@@ -11,7 +11,7 @@ import asyncio
 import shlex
 import shutil
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,8 +19,7 @@ from hands.core.session import Membership, SessionId
 from hands.sessions import audit, wide
 from hands.sessions.child import Ran, run
 from hands.sessions.home import Home
-from hands.sessions.membership import parse_membership
-from hands.sessions.payload import Rejected
+from hands.sessions.terminals import Process, process_table
 from hands.sessions.untap import untap_script, untapped
 
 # What a session gives each process it runs, naming itself as their parent: Claude Code's (2.1.288), and fritter's
@@ -36,11 +35,11 @@ SESSION_GIVEN = (
 # How long a started session has to join hands: Claude Code's start and its first hook. A folder it has never been
 # trusted in holds it at the trust dialog, which no hook outlasts.
 JOIN_SECONDS = 30.0
-# How often the memberships and the session's pane are looked at while it joins.
+# How often the sessions and the session's pane are looked at while it joins.
 LOOK_SECONDS = 0.25
 # What tmux says when the session a new one would be named for is there already (tmux 3.6).
 DUPLICATE = "duplicate session"
-# How long tmux and ps have to answer: a server that does not is wedged, and the start says so.
+# How long tmux has to answer: a server that does not is wedged, and the start says so.
 ANSWER_SECONDS = 5.0
 
 
@@ -61,45 +60,31 @@ def as_from_a_terminal(environment: Mapping[str, str]) -> dict[str, str]:
     return {name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN}
 
 
-# [LAW:one-source-of-truth] as_from_a_terminal, as sh run in the environment to clean, from the same names; it ends by
-# running `claude` with the script's arguments.
-AS_FROM_A_TERMINAL_SCRIPT = f'{untap_script()}unset {shlex.join(SESSION_GIVEN)}\nexec claude "$@"\n'
+def as_from_a_terminal_script(claude: Path) -> str:
+    """as_from_a_terminal, as sh run in the environment to clean, from the same names, ending by running `claude` with the
+    script's arguments."""
+    # [LAW:one-source-of-truth] the same names as as_from_a_terminal.
+    return f'{untap_script()}unset {shlex.join(SESSION_GIVEN)}\nexec {shlex.quote(str(claude))} "$@"\n'
 
 
-async def joined(home: Home, before: frozenset[str], root: int) -> Membership | None:
-    """The membership a session started under process `root` since `before` was listed wrote at its first hook, if one has."""
-    fresh: list[Membership] = []
-    for path in sorted(home.memberships.glob("*.json")):
-        if path.stem in before:
-            continue
-        try:
-            fresh.append(parse_membership(SessionId(path.stem), path.read_bytes()))
-        except (OSError, Rejected):
-            # Being written, or already removed: read again at the next poll.
-            continue
-    parents = await _parents()
-    return next((membership for membership in fresh if descends(membership.pid, root, parents)), None)
+def joined(members: Iterable[Membership], root: int, table: Mapping[int, Process]) -> Membership | None:
+    """The session among `members` whose process is `root` or one it started, by the process `table`: a session already
+    running when `root` was started is never one."""
+    return next((member for member in members if descends(member.pid, root, table)), None)
 
 
-def descends(pid: int, root: int, parents: Mapping[int, int]) -> bool:
-    """Whether process `pid` is `root` or one of the processes it started, by each process's parent in `parents`."""
+def descends(pid: int, root: int, table: Mapping[int, Process]) -> bool:
+    """Whether process `pid` is `root` or one of the processes it started, by each process's parent in `table`."""
     while pid != root:
-        if pid <= 1:
+        if pid not in table:
             return False
-        pid = parents.get(pid, 0)
+        pid = table[pid].parent
     return True
 
 
-async def _parents() -> dict[int, int]:
-    """Each running process's parent, as ps lists them."""
-    listed = await _answered("ps", "-A", "-o", "pid=,ppid=")
-    if listed.returncode != 0:
-        raise NotStarted(f"ps could not list the processes to find which session is the one started: {listed.err.decode(errors='replace').strip()}")
-    return {int(pid): int(ppid) for pid, ppid in (line.split() for line in listed.out.decode().splitlines())}
-
-
-async def start(home: Home, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str]) -> Started:
-    """Start `claude` in `folder` on `model`, or on its own default with none, and wait until it joined hands."""
+async def start(home: Home, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
+    """Start hands' `claude` in `folder` on `model`, or on its own default with none, and wait until it is among the
+    `members` of hands."""
     # [LAW:nothing-unseen] a start is one unit of work: where, on what, in which tmux session and pane, which session
     # joined, and whether tmux's session was made for it.
     with wide.unit("session.start", record):
@@ -113,19 +98,22 @@ async def start(home: Home, record: audit.Record, folder: Path, model: str | Non
         # [LAW:single-enforcer] the window runs `claude` as from a terminal outside any session whatever the tmux server
         # it opens in holds: one already running gives a window its own environment, which a server started inside a
         # session holds that session's in. Through sh, never the user's shell, whose startup files would set a PATH of
-        # their own: `claude` is the one on the window's PATH, with or without a model.
-        claude = ["/bin/sh", "-c", AS_FROM_A_TERMINAL_SCRIPT, "claude", *(() if model is None else (f"--model={model}",))]
-        before = frozenset(path.stem for path in home.memberships.glob("*.json"))
+        # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
+        # fritter, so hands can type into it.
+        claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", *(() if model is None else (f"--model={model}",))]
         made, pane, pid = await _opened(tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
         wide.annotate(tmux_session=name, made_tmux_session=made, pane=pane)
-        member = await _joined(home, where, before, tmux, terminal, pane, pid)
+        member = await _joined(members, where, tmux, terminal, pane, pid)
         wide.annotate(session=member.id, under_fritter=member.fritter is not None)
         if member.fritter is None:
-            raise NotStarted(f"session {member.id} joined hands in tmux pane {pane}, but not under fritter, so hands cannot type into it: the `claude` on tmux's PATH is not hands' shim; put {home.bin} first on PATH")
+            raise NotStarted(f"session {member.id} joined hands in tmux pane {pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
         return Started(member.id, name, pane)
 
 
 def _folder(folder: Path) -> Path:
+    # [LAW:parse-dont-validate] the daemon's own working directory is no folder the user named.
+    if not folder.expanduser().is_absolute():
+        raise NotStarted(f"{folder} is no absolute folder, nor one from ~: give the folder's whole path")
     try:
         resolved = folder.expanduser().resolve(strict=True)
     # A symlink loop is a RuntimeError before Python 3.13.
@@ -164,9 +152,9 @@ def _pane(opened: Ran) -> tuple[str, int]:
     return pane, int(pid)
 
 
-async def _joined(home: Home, folder: Path, before: frozenset[str], tmux: str, terminal: Mapping[str, str], pane: str, pid: int) -> Membership:
+async def _joined(members: Callable[[], Iterable[Membership]], folder: Path, tmux: str, terminal: Mapping[str, str], pane: str, pid: int) -> Membership:
     deadline = time.monotonic() + JOIN_SECONDS
-    while (member := await joined(home, before, pid)) is None:
+    while (member := joined(members(), pid, _processes())) is None:
         # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6).
         state = await _tmux(tmux, terminal, "list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")
         if state.returncode != 0:
@@ -191,11 +179,14 @@ def _said(ran: Ran) -> str:
 async def _tmux(tmux: str, terminal: Mapping[str, str], *arguments: str) -> Ran:
     # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of hands'.
     # The home the session reports to is given its window by name.
-    return await _answered(tmux, *arguments, env=terminal)
-
-
-async def _answered(*argv: str, env: Mapping[str, str] | None = None) -> Ran:
     try:
-        return await run(*argv, timeout=ANSWER_SECONDS, env=env)
+        return await run(tmux, *arguments, timeout=ANSWER_SECONDS, env=terminal)
     except TimeoutError as error:
-        raise NotStarted(f"{shlex.join(argv[:2])} did not answer in {ANSWER_SECONDS:.0f} seconds") from error
+        raise NotStarted(f"tmux {arguments[0]} did not answer in {ANSWER_SECONDS:.0f} seconds") from error
+
+
+def _processes() -> dict[int, Process]:
+    try:
+        return process_table()
+    except OSError as error:
+        raise NotStarted(f"the processes could not be read to tell which session is the one started: {error}") from error

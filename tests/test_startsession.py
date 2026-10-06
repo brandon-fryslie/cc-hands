@@ -1,6 +1,6 @@
 """The `start_session` tool: `claude` started in a tmux window of the tmux session named for its folder, as from a terminal
 outside any session, and the session that joined hands named. Driven through a tmux server of the test's own, with a
-`claude` that joins as the plugin's first hook does."""
+`claude` in the home's bin that joins as the plugin's first hook does, and the home's memberships as the registry."""
 
 import asyncio
 import json
@@ -15,10 +15,13 @@ from typing import Any
 
 import pytest
 
+from hands.core.session import Membership, SessionId
 from hands.sessions import startsession
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
+from hands.sessions.membership import parse_membership
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
+from hands.sessions.terminals import Process
 from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
 
@@ -44,12 +47,10 @@ exec sleep 120
 
 @pytest.fixture
 def terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Path]:
-    """A terminal whose PATH has the joining `claude` first and whose tmux is a server of the test's own; its bin."""
+    """A terminal whose tmux is a server of the test's own; its bin."""
     assert TMUX is not None
     bin = tmp_path / "bin"
     bin.mkdir()
-    (bin / "claude").write_text(CLAUDE)
-    (bin / "claude").chmod(0o755)
     # The test's tmux server reads no tmux.conf of the user's.
     (bin / "tmux").write_text(f'#!/bin/sh\nexec {TMUX} -f /dev/null "$@"\n')
     (bin / "tmux").chmod(0o755)
@@ -75,12 +76,20 @@ def terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Path]
 def home_in(tmp_path: Path) -> Home:
     home = Home(tmp_path / "home")
     home.memberships.mkdir(parents=True)
+    home.bin.mkdir(parents=True)
+    (home.bin / "claude").write_text(CLAUDE)
+    (home.bin / "claude").chmod(0o755)
     return home
+
+
+def members(home: Home) -> list[Membership]:
+    """The home's sessions as the registry holds them once each has written its membership."""
+    return [parse_membership(SessionId(path.stem), path.read_bytes()) for path in sorted(home.memberships.glob("*.json"))]
 
 
 def start(home: Home, folder: Path, model: str = "") -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(home, AuditLog(home.audit, clock=datetime.now).record, os.environ)
+    start_session = start_session_tool(home, AuditLog(home.audit, clock=datetime.now).record, os.environ, lambda: members(home))
 
     async def called() -> Result:
         return await start_session.body(folder=str(folder), model=model)
@@ -184,7 +193,7 @@ def test_two_sessions_started_in_one_folder_at_once_are_each_named_by_its_own_st
 
     async def both() -> list[startsession.Started]:
         record = AuditLog(home.audit, clock=datetime.now).record
-        return list(await asyncio.gather(*(startsession.start(home, record, folder, None, os.environ) for _ in range(2))))
+        return list(await asyncio.gather(*(startsession.start(home, record, folder, None, os.environ, lambda: members(home)) for _ in range(2))))
 
     first, second = asyncio.run(both())
     assert first.session != second.session
@@ -193,17 +202,20 @@ def test_two_sessions_started_in_one_folder_at_once_are_each_named_by_its_own_st
 
 
 def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling() -> None:
-    parents = {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}
-    assert [descends(pid, 10, parents) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
+    table = {pid: Process(pid, parent, 501, None) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}.items()}
+    assert [descends(pid, 10, table) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
 
 
-def test_a_folder_that_is_not_there_or_is_a_symlink_loop_is_said(tmp_path: Path) -> None:
+def test_a_folder_that_is_not_there_is_a_symlink_loop_or_is_not_a_whole_path_is_said(tmp_path: Path) -> None:
     home = home_in(tmp_path)
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
     for folder in (tmp_path / "nowhere", loop):
         assert f"there is no folder {folder}" in start(home, folder)["error"]
-    assert [event["outcome"] for event in started(home)] == ["failed", "failed"]
+    # Never the daemon's own working directory.
+    for folder in (Path("billing"), Path("")):
+        assert f"{folder} is no absolute folder, nor one from ~" in start(home, folder)["error"]
+    assert [event["outcome"] for event in started(home)] == ["failed"] * 4
 
 
 def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_own_setup() -> None:

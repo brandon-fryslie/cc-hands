@@ -97,7 +97,7 @@ from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tool import Tool
-from hands.voice.tools import audited, intermediary_tools, start_session_tool, usage_tool
+from hands.voice.tools import audited, cued, intermediary_tools, start_session_tool, usage_tool
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
@@ -180,11 +180,12 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, recall: str, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
-    through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
+    through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions.
+    The brain alone is given `brain_tools`: what it does with a shell, to find what they act on, and a skill saying when."""
     # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
@@ -201,7 +202,7 @@ async def mind(
             talk = conversation(config_dir, SessionId(str(uuid4())))
             # Only the brain is behind hands' proxy, so only it has its usage read off the wire, and a tool to ask it with.
             usage = Usage(talk.session)
-            tools = [*tools, audited(usage_tool(usage), record)]
+            tools = [*tools, *brain_tools, audited(usage_tool(usage), record)]
             server = await serve_mcp(tools, record, spans)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
@@ -295,8 +296,11 @@ async def run(
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
         if config is not None:
             tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), lambda: quiet_cues.owe(WORKING))]
+            # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
+            # started once the registry holds it, so the brain can stage for it at once.
+            brain_tools = [audited(cued(start_session_tool(home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record)]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
+            async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)

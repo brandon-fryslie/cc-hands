@@ -10,7 +10,7 @@ import functools
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict, cast
@@ -1166,7 +1166,7 @@ async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
-def start_session_tool(home: Home, record: Record, environment: Mapping[str, str]) -> Tool:
+def start_session_tool(home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool:
     """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
 
     async def start_session(folder: str, model: str = "") -> Result:
@@ -1175,11 +1175,11 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
         and the tmux pane it runs in, or says why it did not. A session started has been told nothing.
 
         Args:
-            folder: The folder the session works in, absolute or from ~.
+            folder: The folder the session works in, its whole path or one from ~.
             model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
         """
         try:
-            started = await startsession.start(home, record, Path(folder), model or None, environment)
+            started = await startsession.start(home, record, Path(folder), model or None, environment, members)
         except startsession.NotStarted as why:
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}

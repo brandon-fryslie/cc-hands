@@ -21,7 +21,8 @@ from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
 from hands.sessions.startsession import joined
-from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
+from hands.sessions.terminals import process_table
+from hands.daemon.smoke import members, FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
@@ -164,7 +165,7 @@ async def test_a_call_that_drops_stops_the_stage_being_said_and_says_why() -> No
         await peer.close()
 
 
-def test_the_smoke_session_is_the_one_that_joined_under_its_process_since_the_test_began(tmp_path: Path) -> None:
+def test_the_smoke_session_is_the_one_that_joined_under_its_process(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
     home.memberships.mkdir(parents=True)
     # The test's own process stands for the `claude` the smoke run started.
@@ -174,15 +175,12 @@ def test_the_smoke_session_is_the_one_that_joined_under_its_process_since_the_te
         record = {"pid": pid, "cwd": str(tmp_path), "transcript_path": f"/t/{session}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
         home.membership(session).write_text(json.dumps(record))
 
-    member(OTHER, started)
-    before = frozenset({OTHER})
-    assert asyncio.run(joined(home, before, started)) is None
     # A session of another process's in the same folder, and one being written.
-    member(SessionId("0844f3f7-d8fe-5134-a45d-fa50e00dc5ec"), 1)
+    member(OTHER, 1)
     home.membership(SessionId("0998fa11-3723-4c9a-bb7a-b454ae05dfca")).write_text('{"pid": ')
-    assert asyncio.run(joined(home, before, started)) is None
+    assert joined(members(home), started, process_table()) is None
     member(SESSION, started)
-    found = asyncio.run(joined(home, before, started))
+    found = joined(members(home), started, process_table())
     assert found is not None and (found.id, found.fritter) == (SESSION, Path("/tmp/f/session.sock"))
 
 

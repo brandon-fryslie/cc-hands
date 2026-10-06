@@ -37,10 +37,12 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
 from hands.core.session import Membership, SessionId
-from hands.sessions.startsession import NotStarted, as_from_a_terminal, joined
+from hands.sessions.startsession import as_from_a_terminal, joined
+from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
+from hands.sessions.membership import parse_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
@@ -328,10 +330,9 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         pass
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
-    before = frozenset(path.stem for path in home.memberships.glob("*.json"))
     session = await on_terminal([claude], folder, {**as_from_a_terminal(environment), "HANDS_HOME": str(home.root)})
     try:
-        member = await _joined(smoked, folder, before, claude, session)
+        member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         caller = Caller(peer, peer.createDataChannel("talk", ordered=True))
         try:
@@ -349,14 +350,23 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         await session.stop()
 
 
-async def _joined(smoked: Run, folder: Path, before: frozenset[str], claude: str, session: ClaudeCode) -> Membership:
+def members(home: Home) -> list[Membership]:
+    """The home's memberships as written: hands smoke runs beside the daemon, so it reads them, not the daemon's registry."""
+    written: list[Membership] = []
+    for path in sorted(home.memberships.glob("*.json")):
+        try:
+            written.append(parse_membership(SessionId(path.stem), path.read_bytes()))
+        except (OSError, Rejected):
+            # Being written, or already removed: read again at the next poll.
+            continue
+    return written
+
+
+async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -> Membership:
     home = smoked.home
 
     async def found() -> Membership | None:
-        try:
-            return await joined(home, before, session.pid)
-        except NotStarted as why:
-            raise NotReached("joined", str(why)) from why
+        return joined(members(home), session.pid, process_table())
 
     member = await until(
         "joined", JOIN_SECONDS, found,
