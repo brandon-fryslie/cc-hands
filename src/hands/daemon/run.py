@@ -190,7 +190,7 @@ async def mind(
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
             yield Mind(
-                build_llm(backend, instruction=intermediary_instruction(config.personality), max_tokens=config.max_reply_tokens),
+                build_llm(backend, instruction=intermediary_instruction(config.personality), max_tokens=config.max_reply_tokens, record=record),
                 # [LAW:one-source-of-truth] noted from the readers the brain's stage is given.
                 (Noting(front, modality, record),),
                 (),

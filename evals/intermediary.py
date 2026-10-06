@@ -136,7 +136,7 @@ def asker(backend: LLMBackend) -> Ask:
     tools = intermediary_tools(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None), SummaryStore(Sentences(scratch / "sentences.db")), Home(scratch), Recounts(), Player(lambda _entry: None))
     match backend:
         case OpenAICompatibleBackend(base_url=base_url, api_key=api_key):
-            service = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS)
+            service = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS, record=lambda _entry: None)
             # build_llm makes this variant's service; the narrowing only tells the checker what the match already did.
             assert isinstance(service, OpenAILLMService)
             client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
@@ -159,7 +159,7 @@ def asker(backend: LLMBackend) -> Ask:
 
             return from_openai
         case AnthropicBackend(base_url=base_url, api_key=api_key, model=model):
-            service_ = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS)
+            service_ = build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=MAX_REPLY_TOKENS, record=lambda _entry: None)
             assert isinstance(service_, AnthropicLLMService)
             client_ = AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0, timeout=TIMEOUT_SECONDS)
 
