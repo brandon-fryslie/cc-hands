@@ -88,7 +88,7 @@ from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
 from hands.daemon.starting import CannotStart, Ended, Start, invocation, keep_beating, start
-from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
+from hands.voice.intermediary_instruction import brain_instruction, intermediary_instruction
 from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
@@ -130,7 +130,7 @@ def configured_from(home: Home, settings: Settings, environment: Mapping[str, st
         llm = backend(settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
-    return Configured(VoiceConfig(llm=llm, voice=_voice(home)), settings)
+    return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality), settings)
 
 
 def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
@@ -186,7 +186,7 @@ async def mind(
     match config.llm:
         case AnthropicBackend() | OpenAICompatibleBackend() as backend:
             yield Mind(
-                build_llm(backend, instruction=INTERMEDIARY_INSTRUCTION, max_tokens=config.max_reply_tokens),
+                build_llm(backend, instruction=intermediary_instruction(config.personality), max_tokens=config.max_reply_tokens),
                 # [LAW:one-source-of-truth] noted from the readers the brain's stage is given.
                 (Noting(front, modality, record),),
                 (),
@@ -203,7 +203,7 @@ async def mind(
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
-                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), talk), record)
+                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall, config.personality), server.config(), talk), record)
                 except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error
@@ -319,12 +319,13 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     config = read.voice
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the collector they name, the
-    # server and model the run reaches and the brain's account (None for a keyed variant), never its key, and the voice it
-    # starts speaking in, the one the user kept or the default.
+    # server and model the run reaches and the brain's account (None for a keyed variant), never its key, the voice it
+    # starts speaking in, the one the user kept or the default, and the personality it comes across in, None for hands' own.
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
         backend=type(config.llm).__name__, base_url=backends.server(config.llm), model=config.llm.model, account=backends.account(config.llm), voice=config.voice,
+        personality=config.personality,
     )
     return config
 

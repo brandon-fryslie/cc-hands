@@ -184,7 +184,13 @@ url = "https://..."           # another server, for anthropic and openai
 
 [telemetry]
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address
+
+[talk]
+personality = "Dry and wry, with a bit of wit."   # how hands comes across, in your own words
 ```
+
+`personality` changes hands' tone and choice of words, and nothing else: replies stay short and
+spoken, and hands does only what you tell it to. Leave it out and hands talks in its own plain way.
 
 With a collector set, each wide event `hands run` writes to its audit log is also sent there as a span, straight to that address and past any proxy, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the

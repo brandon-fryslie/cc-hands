@@ -9,6 +9,9 @@ run runs starts the run again, on the file as edited.
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
 
+    [talk]
+    personality = "Dry and wry, with a bit of wit."   # how hands comes across, in the user's words; hands' own by default
+
 A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
 keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
 and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
@@ -79,10 +82,11 @@ type LLM = Anthropic | OpenAI | Claude
 @dataclass(frozen=True)
 class Config:
     """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
-    but the audit log."""
+    but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own."""
 
     llm: LLM = Anthropic()
     collector: str | None = None
+    personality: str | None = None
 
 
 @dataclass(frozen=True)
@@ -252,10 +256,16 @@ def parse(text: str, model: str | None = None) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "telemetry"))
+    _known(top, "the file", ("llm", "telemetry", "talk"))
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
-    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry))
+    talk = _table(top, "talk")
+    _known(talk, "[talk]", ("personality",))
+    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk))
+
+
+def _personality(table: Mapping[str, object]) -> str | None:
+    return _text(table, "[talk]", "personality", "") if "personality" in table else None
 
 
 def _collector(table: Mapping[str, object]) -> str | None:

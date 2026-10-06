@@ -68,6 +68,8 @@ class VoiceConfig:
 
     llm: LLMBackend
     voice: voices.Voice
+    # How the model comes across, in the user's words; None is hands' own.
+    personality: str | None = None
     max_reply_tokens: int = 300
 
 
