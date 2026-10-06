@@ -17,7 +17,7 @@ from pipecat.observers.base_observer import FramePushed
 
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
-from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
+from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved
 
 
 async def observed(*frames: Frame) -> tuple[list[str], list[Mark]]:
@@ -39,6 +39,15 @@ async def logged(*frames: Frame) -> list[str]:
     return lines
 
 
+def opened(number: int) -> TurnOpened:
+    return TurnOpened(hold=Hold(number, "held key"))
+
+
+def resolved(number: int) -> TurnResolved:
+    # The latency observer reads which hold resolved, never whether it was transcribed.
+    return TurnResolved(hold=Hold(number, "held key"), transcribed=False)
+
+
 async def told(*frames: Frame) -> list[Mark]:
     _, marks = await observed(*frames)
     return marks
@@ -50,20 +59,20 @@ async def test_an_answered_turn_is_told_mark_by_mark_each_once_however_often_its
     token = LLMTextFrame("Hi")
     speaking = BotStartedSpeakingFrame()
     ended = UserStoppedSpeakingFrame()
-    marks = await told(TurnOpened(hold=1), release, release, transcript, transcript, TurnResolved(hold=1), ended, ended, token, token, speaking, speaking)
+    marks = await told(opened(1), release, release, transcript, transcript, resolved(1), ended, ended, token, token, speaking, speaking)
     assert marks == ["released", "transcript", "first LLM token", "first audio"]
 
 
 async def test_a_hold_thrown_away_is_told_as_discarded_once_and_never_as_released() -> None:
     discarded = HoldDiscarded()
-    assert await told(TurnOpened(hold=1), discarded, discarded, TurnResolved(hold=1), UserStoppedSpeakingFrame()) == ["discarded"]
+    assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == ["discarded"]
 
 
 async def test_a_turn_with_no_words_in_it_is_told_and_what_hands_says_next_is_no_answer_to_it() -> None:
     """Nothing is sent to the model for it, so the page would wait on a reply that is not coming; and left open, its
     window would time the next announcement as that reply."""
     ended = UserStoppedSpeakingFrame()
-    lines, marks = await observed(TurnOpened(hold=1), VADUserStoppedSpeakingFrame(), TurnResolved(hold=1), ended, ended, BotStartedSpeakingFrame())
+    lines, marks = await observed(opened(1), VADUserStoppedSpeakingFrame(), resolved(1), ended, ended, BotStartedSpeakingFrame())
     assert marks == ["released", "no words"]
     assert lines[-1] == "latency: first audio, answering no user turn"
 
@@ -72,13 +81,13 @@ async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_trans
     """A press thrown away while the hold before it is with Whisper is done with at once; the earlier hold's words are
     still to come."""
     marks = await told(
-        TurnOpened(hold=1),
+        opened(1),
         VADUserStoppedSpeakingFrame(),
-        TurnOpened(hold=2),
+        opened(2),
         HoldDiscarded(),
-        TurnResolved(hold=2),
+        resolved(2),
         TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
-        TurnResolved(hold=1),
+        resolved(1),
         UserStoppedSpeakingFrame(),
     )
     assert marks == ["released", "discarded", "transcript"]
@@ -88,13 +97,13 @@ async def test_a_hold_with_no_words_in_a_turn_that_has_some_is_still_answered_an
     """A press while Whisper is on the hold before joins that hold's turn. Its own silence sends nothing more, but the
     turn is sent with the earlier hold's words, and the reply is the answer to the release the user made last."""
     lines, marks = await observed(
-        TurnOpened(hold=1),
+        opened(1),
         VADUserStoppedSpeakingFrame(),
-        TurnOpened(hold=2),
+        opened(2),
         TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
-        TurnResolved(hold=1),
+        resolved(1),
         VADUserStoppedSpeakingFrame(),
-        TurnResolved(hold=2),
+        resolved(2),
         UserStoppedSpeakingFrame(),
         LLMTextFrame("Hi"),
         BotStartedSpeakingFrame(),
@@ -107,14 +116,14 @@ async def test_a_press_thrown_away_after_a_turn_was_sent_says_nothing_of_the_rep
     """The turn the thrown-away press opened ends with no words, and it released nothing: the window still open is the
     turn's before it."""
     lines, marks = await observed(
-        TurnOpened(hold=1),
+        opened(1),
         VADUserStoppedSpeakingFrame(),
         TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
-        TurnResolved(hold=1),
+        resolved(1),
         UserStoppedSpeakingFrame(),
-        TurnOpened(hold=2),
+        opened(2),
         HoldDiscarded(),
-        TurnResolved(hold=2),
+        resolved(2),
         UserStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
     )
@@ -126,7 +135,7 @@ async def test_a_stage_failing_while_a_release_waits_is_told_as_failed_and_never
     """Whisper pushes its error and then says it is done with the hold, so the turn ends with no words in it: the page
     and the log would both say the user said nothing. What hands says next is the failure, and no answer."""
     error = ErrorFrame("Whisper could not transcribe hold 1")
-    lines, marks = await observed(TurnOpened(hold=1), VADUserStoppedSpeakingFrame(), error, error, TurnResolved(hold=1), UserStoppedSpeakingFrame(), BotStartedSpeakingFrame())
+    lines, marks = await observed(opened(1), VADUserStoppedSpeakingFrame(), error, error, resolved(1), UserStoppedSpeakingFrame(), BotStartedSpeakingFrame())
     assert marks == ["released", "failed"]
     assert lines[-1] == "latency: first audio, answering no user turn"
 
@@ -136,14 +145,14 @@ async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_a
     upstream after the turn has ended, and is the same failure it was."""
     error = ErrorFrame("Whisper could not transcribe hold 1")
     lines, marks = await observed(
-        TurnOpened(hold=1),
+        opened(1),
         VADUserStoppedSpeakingFrame(),
-        TurnOpened(hold=2),
+        opened(2),
         VADUserStoppedSpeakingFrame(),
         error,
-        TurnResolved(hold=1),
+        resolved(1),
         TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
-        TurnResolved(hold=2),
+        resolved(2),
         UserStoppedSpeakingFrame(),
         error,
         LLMTextFrame("Hi"),
@@ -155,16 +164,16 @@ async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_a
 
 async def test_an_error_with_no_release_waiting_says_nothing_of_the_next_turn() -> None:
     """A narration nobody asked for failing is no failure of the hold pressed after it."""
-    marks = await told(ErrorFrame("no voice"), TurnOpened(hold=1), VADUserStoppedSpeakingFrame(), TurnResolved(hold=1), UserStoppedSpeakingFrame())
+    marks = await told(ErrorFrame("no voice"), opened(1), VADUserStoppedSpeakingFrame(), resolved(1), UserStoppedSpeakingFrame())
     assert marks == ["released", "no words"]
 
 
 async def test_the_model_failing_after_the_words_were_heard_is_told_as_failed() -> None:
     marks = await told(
-        TurnOpened(hold=1),
+        opened(1),
         VADUserStoppedSpeakingFrame(),
         TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
-        TurnResolved(hold=1),
+        resolved(1),
         UserStoppedSpeakingFrame(),
         ErrorFrame("LLM completion timeout"),
     )

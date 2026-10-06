@@ -22,6 +22,7 @@ from aiohttp import web
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
+    InterruptionFrame,
     LLMContextFrame,
     TextFrame,
     TTSSpeakFrame,
@@ -30,15 +31,16 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
+from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Endpoint, ServeApi, events, running, unprimed
 from hands.core.front import FrontUnread, InFront, SessionInFront
-from hands.core.place import Place
 from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.beside import Noting
-from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
+from hands.sessions.audit import CutOff, Entry, FalseBargeIn, HoldHeard, Levels, Unsaid
 from hands.voice import transcription
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
@@ -49,8 +51,10 @@ from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
 from hands.voice.refocus import Refocus
+from hands.voice import player as played
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
+from hands.voice.trigger import Edge, place_of
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
@@ -61,6 +65,7 @@ from hands.voice import whisper
 from hands.voice.whisper import Whisper
 from test_llm import Shape, anthropic_stream, openai_stream
 from test_narrator import heard
+from test_playback import spoken
 from hands.voice import voices
 
 CLOSING = "that is all"
@@ -82,6 +87,8 @@ class Recorded(FrameProcessor):
         self.stopped = 0
         self.holds: list[int] = []
         self.resolved: list[int] = []
+        # How many interruptions the user's turns broadcast to what stands behind them.
+        self.interrupted = 0
         # How many holds have ended, sent or thrown away.
         self.released = 0
         # The user's turn and what hands said around it, in the order the model's stage would take them.
@@ -110,11 +117,13 @@ class Recorded(FrameProcessor):
             case TextFrame(text=text):
                 self.order.append(text)
             case TurnResolved(hold=hold):
-                self.resolved.append(hold)
+                self.resolved.append(hold.number)
             case TurnOpened(hold=hold):
-                self.holds.append(hold)
+                self.holds.append(hold.number)
             case VADUserStoppedSpeakingFrame():
                 self.released += 1
+            case InterruptionFrame():
+                self.interrupted += 1
             case _:
                 pass
         await self.push_frame(frame, direction)
@@ -164,10 +173,10 @@ class Rig:
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
 
-    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, at: Place = "desk", captured: bytes | None = None) -> None:
-        """A frame captured under each key, counted as the gate counts them: the key leaving down for a rest sends the
-        turn, and for a press (a key pressed while it was held) or "dropped" throws it away. `captured` is the sound
-        before the echo canceller, where the canceller changed it."""
+    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Edge = "held key", captured: bytes | None = None) -> None:
+        """A frame captured under each key, by `by`'s microphone, counted as the gate counts them: the key leaving down
+        for a rest sends the turn, and for a press (a key pressed while it was held) or "dropped" throws it away; a hold
+        it opens is opened by `by`. `captured` is the sound before the echo canceller, where the canceller changed it."""
         frames: list[KeyedAudio] = []
         for held in keys:
             match self.gate.key, held:
@@ -177,8 +186,8 @@ class Rig:
                     self.gate = replace(self.gate, dropped=self.gate.dropped + 1)
                 case _:
                     pass
-            self.gate = replace(self.gate, key="up" if held == "dropped" else held)
-            frames.append(self.gate.framed(sound, sound if captured is None else captured, 16000, 1, at))
+            self.gate = replace(self.gate, key="up" if held == "dropped" else held, opened=by)
+            frames.append(self.gate.framed(sound, sound if captured is None else captured, 16000, 1, place_of(by)))
         await self.worker.queue_frames(frames)
 
     async def capture(self, gate: Gate, sound: bytes) -> None:
@@ -215,8 +224,11 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
 
 
 @asynccontextmanager
-async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, noting: list[FrameProcessor], behind: list[FrameProcessor]) -> AsyncGenerator[Rig]:
-    """The rig, what Whisper heard passed through `noting` on its way to the user's turns, with `behind` run behind what records them."""
+async def rigged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, noting: list[FrameProcessor], behind: list[FrameProcessor], watching: Sequence[BaseObserver] = ()
+) -> AsyncGenerator[Rig]:
+    """The rig, what Whisper heard passed through `noting` on its way to the user's turns, with `behind` run behind what
+    records them, and `watching` beside the latency observer."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
@@ -246,7 +258,7 @@ async def rigged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProc
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
     told: list[Mark] = []
-    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), *noting, voice.user_turns, out, *behind], [LatencyObserver(told.append)]) as run:
+    async with running([voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), *noting, voice.user_turns, out, *behind], [LatencyObserver(told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told)
 
 
@@ -277,7 +289,7 @@ async def test_a_hold_of_digital_silence_has_no_level_and_a_hold_at_the_phone_ha
     await rig.texts.put("")
     await rig.until(lambda: len(holds_heard(rig)) == 1)
     quiet = struct.pack("<h", 3277) * 320  # a tenth of full scale
-    await rig.hold(["down", "up"], sound=quiet, at="phone")
+    await rig.hold(["down", "up"], sound=quiet, by="phone button")
     await rig.texts.put("hello")
     await rig.until(lambda: len(holds_heard(rig)) == 2)
     assert [hold.levels for hold in holds_heard(rig)] == [Levels(None, None), Levels(-20.0, -20.0)]
@@ -365,7 +377,7 @@ async def test_a_phone_turn_opened_while_the_desk_listens_hears_nothing_the_desk
     room, said = (bytes([n, n]) * 320 for n in (1, 3))
     listening: list[Key] = ["listening"]
     await rig.hold(listening * 20, sound=room)
-    await rig.hold(["down", "down", "up"], sound=said, at="phone")
+    await rig.hold(["down", "down", "up"], sound=said, by="phone button")
     await rig.texts.put("what time is it")
     assert await rig.everything_sent(holds=1) == ["what time is it"]
     assert room not in rig.heard[0]
@@ -374,13 +386,95 @@ async def test_a_phone_turn_opened_while_the_desk_listens_hears_nothing_the_desk
 async def test_a_turn_ended_and_the_next_armed_between_two_frames_is_sent(rig: Rig) -> None:
     # The verdict ends an engaged turn and the voice arms the next before the microphone captures a frame at rest.
     said, more = (bytes([n, n]) * 320 for n in (3, 5))
-    turn = Gate().after("listen", "desk").after("arm", "desk").after("start", "desk")
+    turn = Gate().after("listen", "engaged conversation").after("arm", "engaged conversation").after("start", "engaged conversation")
     for _ in range(3):
         await rig.capture(turn, said)
-    await rig.capture(turn.after("stop", "desk").after("arm", "desk"), more)
+    await rig.capture(turn.after("stop", "engaged conversation").after("arm", "engaged conversation"), more)
     await rig.texts.put("what time is it")
     assert await rig.everything_sent(holds=1) == ["what time is it"]
     assert rig.heard[0].startswith(said * 3) and more not in rig.heard[0]
+
+
+class Speaker(FrameProcessor):
+    """Stands in for the output transport: a mark waits here, as behind audio still playing, until a barge-in drops it."""
+
+    def __init__(self) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self.playing: list[played.Mark] = []
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        match frame:
+            case played.Mark():
+                self.playing.append(frame)
+            case InterruptionFrame():
+                self.playing.clear()
+                await self.push_frame(frame, direction)
+            case _:
+                await self.push_frame(frame, direction)
+
+
+@asynccontextmanager
+async def reading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[tuple[Rig, list[Entry], "asyncio.Task[bool]"]]:
+    """The rig with the player behind it, as the pipeline stands it ahead of the speaker, partway through reading a reply,
+    and a line said through `heard` waiting on the speaker: what the player records, and that line's waiter."""
+    cut: list[Entry] = []
+    player, speaker, output = Player(cut.append), IdentityFilter(), Speaker()
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [], [player.lines, speaker, output], [player.watching(speaker, output)]) as rig:
+        await rig.worker.queue_frames([spoken("The parser is fixed."), spoken("Its tests pass.")])
+        line = asyncio.create_task(player.heard("Shall I push it?"))
+        await rig.until(lambda: len(output.playing) == 1)
+        yield rig, cut, line
+        line.cancel()
+
+
+# Hands' own reply heard back through the echo canceller, or someone speaking: either way the desk's detector opens it.
+OPENED_BY_THE_VOICE: list[Captured] = ["listening", "arming", "down", "down", "listening"]
+
+
+async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_is_a_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
+        await rig.texts.put("")
+        await rig.until(lambda: FalseBargeIn(1) in rig.recorded)
+        # No turn, so no interruption: the model's reply streams on, the reading plays on, and the line still waits.
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+        assert await rig.everything_sent(holds=1) == []
+        # The closing hold is the held key's, which cut the reading at once.
+        assert [entry for entry in rig.recorded if isinstance(entry, FalseBargeIn)] == [FalseBargeIn(1)]
+
+
+async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_in_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
+        await rig.until(lambda: rig.out.released == 1)
+        await rig.texts.put("wait, not yet")
+        assert await line is False
+        assert cut == [CutOff("The parser is fixed.", 1)] and rig.out.interrupted == 1
+        assert await rig.everything_sent(holds=1) == ["wait, not yet"]
+        assert not any(isinstance(entry, FalseBargeIn) for entry in rig.recorded)
+
+
+async def test_a_turn_started_by_one_holds_words_ends_once_a_wordless_hold_opened_in_it_resolves(rig: Rig) -> None:
+    await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
+    await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
+    await rig.until(lambda: rig.out.released == 2)
+    await rig.texts.put("turn it off")
+    await rig.texts.put("")
+    assert await rig.everything_sent(holds=2) == ["turn it off"]
+    assert [entry for entry in rig.recorded if isinstance(entry, FalseBargeIn)] == [FalseBargeIn(2)]
+
+
+@pytest.mark.parametrize("by", ["held key", "phone button", "wake word"])
+async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_without_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["down", "down", "up"], by=by)
+        # Cut before Whisper has heard anything: its transcription waits on the test.
+        assert await line is False
+        assert cut == [CutOff("The parser is fixed.", 1)]
+        await rig.texts.put("")
+        assert await rig.everything_sent(holds=1) == []
+        assert not any(isinstance(entry, FalseBargeIn) for entry in rig.recorded)
 
 
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:

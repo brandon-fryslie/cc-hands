@@ -19,12 +19,22 @@ from pipecat.frames.frames import (
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
+from hands.voice.trigger import Edge
+
+
+@dataclass(frozen=True)
+class Hold:
+    """One hold, by the number Whisper gave it as it opened, and the edge that opened it."""
+
+    number: int
+    edge: Edge
+
 
 @dataclass(kw_only=True)
 class TurnOpened(VADUserStartedSpeakingFrame):
-    """The user started speaking: the key went down, opening the hold with this number."""
+    """The user started speaking: the key went down, opening this hold."""
 
-    hold: int
+    hold: Hold
 
 
 class HoldDiscarded(VADUserStoppedSpeakingFrame):
@@ -33,13 +43,15 @@ class HoldDiscarded(VADUserStoppedSpeakingFrame):
 
 @dataclass(kw_only=True)
 class TurnResolved(DataFrame, UninterruptibleFrame):
-    """Whisper is done with the hold with this number: whatever text it had has been pushed ahead of this.
+    """Whisper is done with this hold: whatever text it had has been pushed ahead of this, and `transcribed` says whether
+    there was any.
 
     Nothing else ends a turn, so the interruption a turn's start broadcasts cannot drop it on its way: a hold dropped at
     once resolves right behind its own start.
     """
 
-    hold: int
+    hold: Hold
+    transcribed: bool
 
 
 class KeyTurnStop(BaseUserTurnStopStrategy):
@@ -49,7 +61,7 @@ class KeyTurnStop(BaseUserTurnStopStrategy):
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:one-source-of-truth] Whisper opens and resolves the holds; this is the set it has opened and not yet
         # resolved. A set, because a dropped hold is resolved at once, ahead of an earlier one still being transcribed.
-        self._open: set[int] = set()
+        self._open: set[Hold] = set()
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame:

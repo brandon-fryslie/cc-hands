@@ -361,7 +361,7 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
     # Three turns sent, one for each transcription below.
     gate = Gate()
     for _ in range(3):
-        for gate in (gate.after("start", "desk"), gate.after("start", "desk").after("stop", "desk")):
+        for gate in (gate.after("start", "held key"), gate.after("start", "held key").after("stop", "held key")):
             await whisper.process_audio_frame(gate.framed(b"\x00\x00", b"\x00\x00", 16000, 1, "desk"), FrameDirection.DOWNSTREAM)
     # Every transcription ends with Whisper done with its hold, and one it heard nothing in yields nothing else: no
     # frame that could reach the speaker. (Every frame has an id of its own, so frames made here are told by their kind.)

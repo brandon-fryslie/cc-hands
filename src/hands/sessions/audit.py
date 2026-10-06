@@ -139,6 +139,14 @@ class CutOff:
 
 
 @dataclass(frozen=True)
+class FalseBargeIn:
+    """A hold the voice opened that Whisper heard no words in, by its number: nobody cut in, so it started no turn, cut
+    nothing off, and sent the model nothing."""
+
+    hold: int
+
+
+@dataclass(frozen=True)
 class Announced:
     """A fact the system channel gave the user, and whether it was spoken or, with speech down, posted to the screen."""
 
@@ -243,6 +251,7 @@ Entry = (
     | Primed
     | Replied
     | CutOff
+    | FalseBargeIn
     | Announced
     | Cued
     | Refocused
@@ -274,7 +283,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Rolled()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | FalseBargeIn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:
