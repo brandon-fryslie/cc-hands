@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     LLMTextFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -56,7 +57,8 @@ class Window:
 @dataclass
 class Turn:
     """The user's turn being taken in, since the last one ended: whether any hold of it had words, whether a stage
-    failed while it was taken in, and the window its last release opened.
+    failed while it was taken in, whether it took over from hands (`hands.voice.turnstart`), the window its last release
+    opened, and the window its first release found open.
 
     A turn is Pipecat's and takes in every hold pressed before Whisper was done with the one before (see
     hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one hold: a hold
@@ -65,7 +67,9 @@ class Turn:
 
     said: bool = False
     failed: bool = False
+    took_over: bool = False
     released: Window | None = None
+    found: Window | None = None
 
 
 class LatencyObserver(BaseObserver):
@@ -105,6 +109,8 @@ class LatencyObserver(BaseObserver):
                 # Opened on the frame, the second push would throw away the marks the first push's window had
                 # taken and restart the measurement from a later zero, logging a milestone twice and timing it
                 # from a moment the user was already done speaking at.
+                if self._turn.released is None:
+                    self._turn.found = self._window
                 self._window = self._turn.released = Window(released=now)
                 self._told("released")
             self._holding = False
@@ -134,7 +140,11 @@ class LatencyObserver(BaseObserver):
                 # nothing said in it, or failed on it. The window closes with it, so the next thing hands says, the
                 # failure included, is not timed as its answer.
                 self._take(self._window, "failed" if turn.failed else "no words", now)
-                self._window = None
+                # A turn that never took over cut nothing off, so the reply it found on its way is still coming.
+                self._window = None if turn.took_over else turn.found
+            return
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._turn.took_over = True
             return
         if isinstance(frame, ErrorFrame):
             # One error is one failure, however many boundaries its frame crosses: taken by the frame's identity, since

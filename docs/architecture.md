@@ -1654,7 +1654,10 @@ engaged conversation the desk's detector hears through the echo canceller, and t
 reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
 on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
 reading held no words for Whisper. Such a turn cuts nothing, so nothing has to be
-undone. A cut can land while the turn's words, and the note beside them, are still on
+undone: until it cuts, nothing behind the user aggregator hears that the user started
+speaking, so the reply on its way plays on and runs on a tool's result as if no turn
+had opened, while Floor holds what hands tells of the sessions from the hold's opening.
+A cut can land while the turn's words, and the note beside them, are still on
 their way to the model, so those are uninterruptible: an interruption stops hands, never
 the user. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
 long after it opened it did, or that it never did. A turn ends once Whisper is done with every

@@ -13,7 +13,7 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
@@ -24,6 +24,7 @@ from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, default_input
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.turnstop import Hold, TurnOpened
 
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
@@ -487,8 +488,9 @@ async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking
     await devices.speaker.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
     await devices.speaker.push_frame(BotStoppedSpeakingFrame())
     assert devices.speaker.quiet.is_set()
-    # The user's turn is speech too: quiet waits for both sides, whichever stops last.
-    await devices.speaker.push_frame(UserStartedSpeakingFrame())
+    # The user's turn is speech too, from its first hold's opening, whether or not it has cut hands off: quiet waits for
+    # both sides, whichever stops last.
+    await devices.speaker.push_frame(TurnOpened(hold=Hold(1, "engaged conversation")))
     await devices.speaker.push_frame(BotStartedSpeakingFrame())
     await devices.speaker.push_frame(BotStoppedSpeakingFrame())
     assert not devices.speaker.quiet.is_set()

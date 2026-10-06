@@ -205,12 +205,13 @@ class Rig:
 
         Whether a hold joins the turn the one before it is still open in depends on whether its opening, a system
         frame, overtakes the last one's resolution, a data frame, so what is waited for is every hold resolved and
-        every turn that started ended, not a number of turns. The aggregator says a turn stopped, a system frame,
+        every turn that took over ended, not a number of turns; a test with a turn that took nothing over, which says
+        only that it stopped, waits for its line. The aggregator says a turn stopped, a system frame,
         ahead of what it sends the model, a data frame, which keeps its order among the data; so once the closing
         hold's words are in, so is everything sent before them.
         """
         out = self.out
-        await self.until(lambda: len(out.holds) == len(out.resolved) == holds and out.started == out.stopped)
+        await self.until(lambda: len(out.holds) == len(out.resolved) == holds and out.started <= out.stopped)
         await self.hold(["down", "up"])
         await self.texts.put(CLOSING)
         await self.until(lambda: CLOSING in self.out.sent)
@@ -442,8 +443,9 @@ async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_
         await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.texts.put("")
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
-        # The turn took the floor and cut nothing: the model's reply streams on, the reading plays on, and the line waits.
-        assert (rig.out.started, rig.out.stopped, rig.out.interrupted, cut, line.done()) == (1, 1, 0, [], False)
+        # The turn took the floor and nothing over: nothing behind it heard the user start, so the model's reply streams
+        # on and runs on a tool's result, the reading plays on, and the line waits.
+        assert (rig.out.started, rig.out.stopped, rig.out.interrupted, cut, line.done()) == (0, 1, 0, [], False)
         assert await rig.everything_sent(holds=1) == []
         # The closing hold is the held key's, which cut the reading at once.
         assert user_turns(rig) == [("on words", False), ("on the hold", True)]
@@ -453,11 +455,11 @@ async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_i
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.until(lambda: rig.out.released == 1)
-        # The turn is the user's from the hold's opening, but nothing is cut off until its words are heard.
-        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (1, 0, [], False)
+        # The turn is the user's from the hold's opening, but it takes nothing over until its words are heard.
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
         await rig.texts.put("wait, not yet")
         assert await line is False
-        assert cut == [CutOff("The parser is fixed.", 1)] and rig.out.interrupted == 1
+        assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
         assert await rig.everything_sent(holds=1) == ["wait, not yet"]
         assert user_turns(rig)[0] == ("on words", True)
 
@@ -658,14 +660,18 @@ HOLDS: list[tuple[Edge, list[Captured], list[Captured]]] = [
 ]
 
 
-@pytest.mark.parametrize(("by", "held", "let_go_of"), HOLDS)
+@pytest.mark.parametrize(("by", "held", "let_go_of", "order"), [
+    # The held key's turn takes over as it opens; the voice's only once its words are heard, so after the floor held.
+    (*HOLDS[0], ["started", "marker", "stopped"]),
+    (*HOLDS[1], ["marker", "started", "stopped"]),
+])
 async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(
-    rig: Rig, by: Edge, held: list[Captured], let_go_of: list[Captured]
+    rig: Rig, by: Edge, held: list[Captured], let_go_of: list[Captured], order: list[str]
 ) -> None:
     rig.clock.now = 10.0
-    # A turn the voice opens holds the floor from its opening, though it cuts nothing off until its words are heard.
+    # A turn the voice opens holds the floor from its opening, though it takes nothing over until its words are heard.
     await rig.hold(held, by=by)
-    await rig.until(lambda: rig.out.started == 1)
+    await rig.until(lambda: rig.out.holds == [1])
     gone = waiting()
     await rig.worker.queue_frames([gone, TextFrame("marker")])
     # Frames keep their order, so the marker past the floor with the announcement not is the announcement held.
@@ -674,7 +680,7 @@ async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_t
     await rig.hold(let_go_of, by=by)
     await rig.texts.put("what time is it")
     await rig.until(lambda: "said: The session api is gone." in rig.out.order)
-    assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "said: The session api is gone."]
+    assert rig.out.order == [*order, "sent: what time is it", "said: The session api is gone."]
     assert let_go(gone) == {"held_ms": 3500.0, "told": "SessionGone", "folded": 1}
 
 

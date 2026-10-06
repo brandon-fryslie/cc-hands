@@ -1,19 +1,21 @@
 """The start of a user turn, and the cut: the moment it cuts off what hands is saying, which the edge that opened it decides.
 
-Every turn starts as the hold that opens it opens, Pipecat's VAD start, so the floor is the user's from the moment they
-speak, whatever opened it. Starting is not cutting. The cut is the interruption that stops the speaker, cancels the reply
-still streaming from the model and its calls in flight, and settles a line waiting to be heard as cut off. A turn the
-user's hand opened cuts as it opens; one the voice opened cuts once Whisper pushes words for it, Pipecat's transcription
-start. A turn that ends uncut has cut nothing off, so nothing has to be undone. The cut can land while the turn's own
-words and their note are on their way, so those are uninterruptible (`hands.voice.turnstop.Words`,
-`hands.voice.beside.Note`): an interruption stops hands, never the user.
+Every turn starts as the hold that opens it opens, so its words gather from the first hold and the floor is the user's
+from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
+start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
+the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
+heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once Whisper pushes words for
+it, Pipecat's transcription start. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
+be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
+land while the turn's own words and their note are on their way, so those are uninterruptible
+(`hands.voice.turnstop.Words`, `hands.voice.beside.Note`): an interruption stops hands, never the user.
 """
 
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pipecat.frames.frames import Frame
+from pipecat.frames.frames import Frame, UserStartedSpeakingFrame
 from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import BaseUserTurnStartStrategy
@@ -38,7 +40,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     (`hands.voice.trigger.turn_start`).
 
     [LAW:single-enforcer] the one place a turn's start and its cut are decided: the pipeline runs no other start strategy,
-    and Pipecat broadcasts no interruption of its own as the turn starts.
+    and Pipecat says nothing of its own as the turn starts, neither that the user started speaking nor an interruption.
     """
 
     def __init__(self, record: Record, clock: Callable[[], float] = time.monotonic) -> None:
@@ -55,7 +57,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
             case TurnOpened(hold=hold), None:
                 start = turn_start(hold.edge)
                 self._turn = _Open(start, self._now())
-                await self.trigger_user_turn_started()
+                await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._cut_where(start, self._turn)
             case TurnOpened(hold=hold), _Open() as turn:
                 # A hold pressed while Whisper is still on the last joins its turn, and cuts as its own edge says.
@@ -100,11 +102,14 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
 def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
     """Have `turns`, the user aggregator `start` is the start strategy of, broadcast each cut `start` makes.
 
-    The aggregator broadcasts it as it broadcasts the interruption of a turn Pipecat starts: inline, from within the frame
-    being processed, so it is pushed ahead of anything behind that frame. Queued as a frame of its own, the turn's context
-    could leave for the model ahead of it, and the interruption would then cancel the reply to the very words that made it.
+    The aggregator broadcasts it as it broadcasts the start of a turn Pipecat starts, in the same order: that the user
+    started speaking, which the assistant side reads as the user having taken over, so it runs the model on no tool's
+    result until the turn is sent; then the interruption. Both go inline, from within the frame being processed, so they
+    are pushed ahead of anything behind that frame. Queued as frames of their own, the turn's context could leave for the
+    model ahead of them, and the interruption would then cancel the reply to the very words that made it.
     """
 
     @start.event_handler("on_cut")
     async def cut(_start: EdgeTurnStart) -> None:  # pyright: ignore[reportUnusedFunction]
+        await turns.broadcast_frame(UserStartedSpeakingFrame)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         await turns.broadcast_interruption()

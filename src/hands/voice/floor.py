@@ -19,12 +19,13 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
-from pipecat.frames.frames import DataFrame, Frame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import DataFrame, Frame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core.pending import coalesce
 from hands.core.session import Session, SessionId
 from hands.voice.speech import Names, Telling, Unprompted, frames, sent
+from hands.voice.turnstop import TurnOpened
 
 
 @dataclass
@@ -63,10 +64,12 @@ class Floor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame, self._taken:
-            case UserStartedSpeakingFrame(), None:
+            # [LAW:one-source-of-truth] a turn starts as its first hold opens, and cuts hands off only later where the
+            # voice opened it, so the floor is taken as the hold opens: the user is speaking from then.
+            case TurnOpened(), None:
                 self._taken = _Taken()
                 await self.push_frame(frame, direction)
-            case UserStartedSpeakingFrame(), _Taken() as taken:
+            case TurnOpened(), _Taken() as taken:
                 # A press before what the last turn held was given back: it waits out this turn as well.
                 taken.open = True
                 await self.push_frame(frame, direction)

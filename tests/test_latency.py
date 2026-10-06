@@ -8,6 +8,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     LLMTextFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -73,6 +74,19 @@ async def test_a_turn_with_no_words_in_it_is_told_and_what_hands_says_next_is_no
     lines, marks = await observed(opened(1), VADUserStoppedSpeakingFrame(), resolved(1), ended, ended, BotStartedSpeakingFrame())
     assert marks == ["released", "no words"]
     assert lines[-1] == "latency: first audio, answering no user turn"
+
+
+@pytest.mark.parametrize(("took_over", "answered"), [(False, True), (True, False)])
+async def test_a_wordless_turn_that_took_nothing_over_leaves_the_reply_on_its_way_timed_from_its_own_release(
+    took_over: bool, answered: bool
+) -> None:
+    """A turn the voice opened that heard no words cut nothing off, so the reply still coming answers the turn before;
+    one that took over cut that reply off, so what hands says next answers nothing."""
+    asked: list[Frame] = [opened(1), UserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame(), Words(text="hello", user_id="u", timestamp="t"), resolved(1), UserStoppedSpeakingFrame()]
+    noise: list[Frame] = [opened(2), *([UserStartedSpeakingFrame()] if took_over else []), VADUserStoppedSpeakingFrame(), resolved(2), UserStoppedSpeakingFrame()]
+    lines, marks = await observed(*asked, *noise, LLMTextFrame("Hi"), BotStartedSpeakingFrame())
+    assert marks == ["released", "transcript", "released", "no words", *(["first LLM token", "first audio"] if answered else [])]
+    assert (lines[-1] == "latency: first audio, answering no user turn") is not answered
 
 
 async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_transcribed() -> None:
