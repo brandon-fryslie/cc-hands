@@ -1082,7 +1082,7 @@ the turn's own words are told: a line the user spoke over before it came to be s
 
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), and in which
-conversation (`conversation`: `resumed`, or `fresh` with the one held before it whose transcript was gone, `gone`), or
+conversation (`conversation`: `resumed`, or `fresh` with the one held before it that Claude Code has no transcript of, `untranscribed`), or
 with what failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
 (`brain.run`), a part of the launch, runs from then until its process ends, with its exit code and the last of what it
 showed. Each turn typed into it (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its

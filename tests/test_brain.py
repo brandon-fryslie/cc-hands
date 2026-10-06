@@ -297,7 +297,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
         "session": "b1", "account": "brain@example.com", "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
-        "conversation": "fresh", "gone": None, "fritter": fritter, "pid": brain.pid,
+        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "pid": brain.pid,
     }
     # Held once the brain is up, for the next start to resume.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Fresh(SessionId("b2"), SessionId("b1"))
@@ -320,7 +320,7 @@ def test_a_brain_starts_new_until_one_has_held_a_conversation_and_resumes_it_whi
     brain.mkdir()
     assert conversation(brain, SessionId("n1")) == Fresh(SessionId("n1"), None)
     (brain / "conversation").write_text("c1\n")
-    # A conversation Claude Code has no transcript of has nothing to resume: the one held is named as gone.
+    # A conversation Claude Code has no transcript of has nothing to resume: the one held is named as untranscribed.
     assert conversation(brain, SessionId("n1")) == Fresh(SessionId("n1"), SessionId("c1"))
     transcript(brain, "c1")
     assert conversation(brain, SessionId("n1")) == Resumed(SessionId("c1"))

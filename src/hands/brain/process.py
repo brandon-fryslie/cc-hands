@@ -149,13 +149,14 @@ class Launch:
 
 @dataclass(frozen=True)
 class Fresh:
-    """A conversation begun new, under a session chosen by hands; `gone` is the one held before it, whose transcript
-    Claude Code no longer has, when there was one."""
+    """A conversation begun new, under a session chosen by hands; `untranscribed` is the one held before it, when there
+    was one, which Claude Code has no transcript of: it never had a turn (Claude Code writes none until one), or its
+    transcript was cleaned away."""
 
     # [LAW:one-source-of-truth] chosen by hands, so the brain's requests are known as its own from the first one on the
     # wire, and its hooks from the first one posted.
     session: SessionId
-    gone: SessionId | None
+    untranscribed: SessionId | None
 
 
 @dataclass(frozen=True)
@@ -182,7 +183,7 @@ def conversation(config_dir: Path, new: SessionId) -> Conversation:
     except FileNotFoundError:
         return Fresh(new, None)
     # [LAW:one-source-of-truth] Claude Code's own transcript says whether there is a conversation to resume: named by
-    # its session, under whichever project directory Claude Code names the brain's cwd by.
+    # its session, under any project directory, as Claude Code finds the session it resumes (2.1.289, measured).
     if glob.glob(glob.escape(str(config_dir / "projects")) + f"/*/{glob.escape(session)}.jsonl"):
         return Resumed(session)
     return Fresh(new, session)
@@ -899,8 +900,8 @@ async def start(launch: Launch, record: Record) -> Brain:
     with unit("brain.launch", record):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
         match launch.conversation:
-            case Fresh(gone=gone):
-                annotate(conversation="fresh", gone=gone)
+            case Fresh(untranscribed=untranscribed):
+                annotate(conversation="fresh", untranscribed=untranscribed)
             case Resumed():
                 annotate(conversation="resumed")
         # [LAW:one-source-of-truth] the fritter built with this hands, never a copy installed apart from it: what hands
