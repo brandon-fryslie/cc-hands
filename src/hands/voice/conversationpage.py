@@ -47,15 +47,13 @@ class Conversation:
         # [LAW:no-shared-mutable-globals] one read of the log at a time folds into the one set of moments.
         self._folding = asyncio.Lock()
 
-    async def caught_up(self) -> int:
+    async def caught_up(self) -> tuple[int, list[Moment]]:
         """Fold in every line the log has gained since it was last read, off the loop; how many changes the moments have
-        had, which moves whenever they do."""
+        had, which moves whenever they do, and the moments as they stand at that count."""
         async with self._folding:
             await asyncio.to_thread(self._catch_up)
-        return self._moments.changes
-
-    def newest(self) -> list[Moment]:
-        return self._moments.moments()
+            # Read under the lock: another read's fold, on its thread, would change them while they are read.
+            return self._moments.changes, self._moments.moments()
 
     def _catch_up(self) -> None:
         while True:
@@ -115,13 +113,12 @@ def conversation_routes(conversation: Conversation, typed: Callable[[str], Await
                 fail(str(error))
                 return web.Response(status=400, text=str(error))
             began = time.monotonic()
-            changes = await conversation.caught_up()
+            changes, moments = await conversation.caught_up()
             # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is
             # never missed: it is answered at once with whatever has changed since.
             while changes == seen and time.monotonic() - began < WAIT_SECONDS:
                 await asyncio.sleep(POLL_SECONDS)
-                changes = await conversation.caught_up()
-            moments = conversation.newest()
+                changes, moments = await conversation.caught_up()
             annotate(seen=seen, changes=changes, waited_ms=round((time.monotonic() - began) * 1000, 1))
             count(moments=len(moments))
             return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})

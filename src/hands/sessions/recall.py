@@ -159,7 +159,10 @@ class Moments:
             case {"type": "Replied", "at": str(at), "text": str(text)} if text.strip():
                 self._add(_Said(datetime.fromisoformat(at), "said", "you", None, text))
             case {"type": "Typing", "at": str(at), "effect": {"session": str(session), "input": object() as typed} as effect}:
-                self._sending[json.dumps(effect, sort_keys=True)] = self._taken
+                sending = json.dumps(effect, sort_keys=True)
+                # Taken out first, so a send made again goes to the back, where the newest are.
+                self._sending.pop(sending, None)
+                self._sending[sending] = self._taken
                 self._add(_Said(datetime.fromisoformat(at), "sent", "sent to", session, _typed(typed)))
             case {"type": "TypingFailed", "effect": object() as effect, "reason": str(reason)}:
                 if (taken := self._sending.pop(json.dumps(effect, sort_keys=True), None)) is not None:

@@ -119,9 +119,9 @@ async def test_the_conversation_is_read_on_across_the_segments_the_log_rolls_to(
     for said in ("first", "second", "third", "fourth"):
         log.record(Transcribed(said))
         rolled |= set(segments(tmp_path))
-        await conversation.caught_up()
+        _, moments = await conversation.caught_up()
     assert len(rolled) > 2
-    assert [moment.text for moment in conversation.newest()] == ["first", "second", "third", "fourth"]
+    assert [moment.text for moment in moments] == ["first", "second", "third", "fourth"]
 
 
 @pytest.mark.parametrize("path", ["/conversation/moments", "/conversation/typed"])
