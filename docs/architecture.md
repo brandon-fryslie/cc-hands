@@ -1061,6 +1061,14 @@ still emits its event, cancelled, with what it had done.
 The event also says what was typed into the brain (`asked`), and, where the user barged in, the calls running then
 (`running`) and whether the brain was told to stop at once (`stopped`).
 
+A user's turn whose call is still running `ACKNOWLEDGE_SECONDS` (2 s) after it started is acknowledged, unless the user
+has already heard something of the turn: a word, a permission question, an earlier acknowledgement, or their own barge-in.
+hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
+a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
+question does, and is kept out of the context, since the brain never said it. A call that comes straight back, a turn
+that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says the
+line (`acknowledged`) and how long the user had waited for it (`acknowledged_ms`).
+
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), or with what
 failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
