@@ -386,7 +386,7 @@ def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool
 
         Call this before you send keys to a session at a dialog hands let go of, to see the dialog and its options, and
         when the user asks what such a dialog asks: say what it asks and its options in a sentence or two, never the
-        screen whole. `screen` is the pane's text, its last line the bottom of the screen; `tmux` is the pane it was read
+        screen whole. `screen` is the pane's text, down to its last line drawn on; `tmux` is the pane it was read
         from, as list_sessions names it. A session in no tmux pane has no screen hands can read, and the error says so.
 
         Args:

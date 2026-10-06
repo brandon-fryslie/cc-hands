@@ -21,7 +21,7 @@ from hands.sessions import audit, wide
 from hands.sessions.child import Ran, run
 from hands.sessions.home import Home
 from hands.sessions.terminals import Process, process_table
-from hands.sessions.tmux import shown
+from hands.sessions.tmux import ran_at, shown
 from hands.sessions.untap import untap_script, untapped
 
 # What a session gives each process it runs, naming itself as their parent: Claude Code's (2.1.288), and fritter's
@@ -113,7 +113,7 @@ async def start(home: Home, record: audit.Record, folder: Path, model: str | Non
         # fritter, so hands can type into it.
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", *(() if model is None else (f"--model={model}",))]
         made, window = await _opened(tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
-        wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane)
+        wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane, tmux_socket=window.socket)
         member = await _joined(members, where, tmux, terminal, window)
         wide.annotate(session=member.id, under_fritter=member.fritter is not None)
         if member.fritter is None:
@@ -161,6 +161,8 @@ async def _opened(tmux: str, terminal: Mapping[str, str], name: str, folder: Pat
 def _window(opened: Ran) -> _Window:
     # The socket last: the one field that may hold a space.
     pane, pid, socket = opened.out.decode().rstrip("\n").split(" ", 2)
+    if not socket:
+        raise NotStarted(f"tmux opened pane {pane} without saying which server's socket holds it: a tmux older than 3.2?")
     return _Window(pane, int(pid), Path(socket))
 
 
@@ -168,12 +170,17 @@ async def _joined(members: Callable[[], Iterable[Membership]], folder: Path, tmu
     pane = window.pane
     deadline = time.monotonic() + JOIN_SECONDS
     while (member := joined(members(), window.pid, _processes())) is None:
-        # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6).
-        state = await _tmux(tmux, terminal, "list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")
-        if state.returncode != 0:
-            raise NotStarted(f"`claude` in {folder} ended before it joined hands, and its window closed with it")
-        if state.out.decode().strip() == "1":
-            raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{await _shown(terminal, window)}")
+        # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6); asked of
+        # the server that opened the pane, the one its id names a pane of.
+        match await ran_at(tmux, window.socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
+            case Unanswered(reason=reason):
+                raise NotStarted(f"whether `claude` in {folder} still runs in tmux pane {pane} could not be read: {reason}")
+            case Ran(returncode=returncode) if returncode != 0:
+                raise NotStarted(f"`claude` in {folder} ended before it joined hands, and its window closed with it")
+            case Ran(out=out) if out.strip() == b"1":
+                raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{await _shown(terminal, window)}")
+            case Ran():
+                pass
         if time.monotonic() > deadline:
             raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{await _shown(terminal, window)}")
         await asyncio.sleep(LOOK_SECONDS)

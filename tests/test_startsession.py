@@ -129,11 +129,14 @@ def test_a_session_is_started_in_the_tmux_session_named_for_its_folder_and_named
     assert tmux_name(folder) == "billing_api"
     assert tmux("list-windows", "-t", "=billing_api", "-F", "#{pane_current_path}").split() == [str(folder.resolve())] * 2
     assert (first["outcome"], first["facts"]["made_tmux_session"], second["facts"]["made_tmux_session"]) == ("ok", True, False)
-    # [LAW:nothing-unseen] which session joined, where, and on what model, on the start's event and in what it returned.
+    # [LAW:nothing-unseen] which session joined, where, and on what model, on the start's event and in what it returned;
+    # the server's socket beside the pane, whose id names a pane only of that server.
     assert results[0]["session"] != results[1]["session"]
+    # As tmux names it, its links resolved.
+    socket = str((Path(os.environ["TMUX_TMPDIR"]) / f"tmux-{os.getuid()}" / "default").resolve())
     for event, result in zip((first, second), results):
         assert result == {"session": event["facts"]["session"], "tmux_session": "billing_api", "pane": event["facts"]["pane"]}
-        assert (event["facts"]["tmux_session"], event["facts"]["under_fritter"], event["facts"]["folder"]) == ("billing_api", True, str(folder))
+        assert (event["facts"]["tmux_session"], event["facts"]["under_fritter"], event["facts"]["folder"], event["facts"]["tmux_socket"]) == ("billing_api", True, str(folder), socket)
     assert (first["facts"]["model"], second["facts"]["model"]) == ("opus", None)
     # Only the model it was asked for, as one argument; the window reports to this home, not the tmux server's.
     assert (folder / "claude-args").read_text() == ""

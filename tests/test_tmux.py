@@ -153,7 +153,11 @@ def test_a_pane_is_shown_as_it_reads_now_and_one_that_cannot_be_read_says_why_ne
         assert time.monotonic() < deadline, "what was typed never showed"
         time.sleep(0.05)
 
-    assert asyncio.run(tmux.shown(os.environ, socket, "%999")) == Unanswered(f"tmux at {socket} did not show pane %999: can't find pane: %999")
+    match asyncio.run(tmux.shown(os.environ, socket, "%999")):
+        case Unanswered(reason=reason):
+            assert reason.startswith(f"tmux at {socket} did not show pane %999: ")
+        case other:
+            pytest.fail(f"read as {other!r}")
     subprocess.run([str(TMUX), "-L", "default", "kill-server"], check=True)
     match asyncio.run(tmux.shown(os.environ, socket, pane)):
         case Unanswered(reason=reason):

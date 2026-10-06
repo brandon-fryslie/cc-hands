@@ -49,7 +49,7 @@ def socket_directory(environment: Mapping[str, str]) -> Path:
 
 
 async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
-    match await _ran(tmux, socket, arguments):
+    match await ran_at(tmux, socket, arguments):
         case Ran(returncode=0, out=out):
             return Answered(socket, out.decode().splitlines())
         case Ran(err=err) if err.startswith(_NO_SERVER):
@@ -61,13 +61,13 @@ async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
 
 
 async def shown(environment: Mapping[str, str], socket: Path, pane: str) -> str | Unanswered:
-    """The text tmux pane `pane` of the server at `socket` shows now, its last line the bottom of the screen, or why it
-    could not be read; `environment` says where tmux is."""
+    """The text tmux pane `pane` of the server at `socket` shows now, down to its last line drawn on, the blank rows below
+    left off, or why it could not be read; `environment` says where tmux is."""
     tmux = shutil.which("tmux", path=environment.get("PATH"))
     if tmux is None:
         return Unanswered(f"no tmux is on the PATH to read pane {pane} of tmux at {socket}")
     # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
-    match await _ran(tmux, socket, ("capture-pane", "-p", "-t", pane)):
+    match await ran_at(tmux, socket, ("capture-pane", "-p", "-t", pane)):
         case Ran(returncode=0, out=out):
             return out.decode(errors="replace").rstrip()
         case Ran(err=err):
@@ -76,7 +76,8 @@ async def shown(environment: Mapping[str, str], socket: Path, pane: str) -> str 
             return unanswered
 
 
-async def _ran(tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
+async def ran_at(tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
+    """How the tmux server at `socket` exited from `arguments`, or why it gave no answer: wedged, or `tmux` not run."""
     try:
         return await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS)
     except TimeoutError:
