@@ -1124,19 +1124,36 @@ async def test_a_reply_asked_again_that_opens_otherwise_is_said_whole_and_the_br
     await rig.say({"role": "user", "content": "what were you saying?"})
     rig.brain.end()
     await rig.say({"role": "user", "content": "thanks"})
-    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand on rocky", then your reply again from its start. Say nothing about this unless the user asks.'
+    note = '[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "Lighthouses stand on rocky". Say nothing about this unless the user asks.'
     # Told once: the turn after it broke nothing.
     assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?"), heard("thanks")]
 
 
 async def test_a_reply_broken_before_it_said_a_word_is_asked_again_with_nothing_to_tell(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "tell me about lighthouses"})
-    broken_then_asked_again(rig, (), "Lighthouses stand on rocky coasts.")
+    _, retry = broken_then_asked_again(rig, (), "Lighthouses stand on rocky coasts.")
     await rig.until(lambda: len(rig.out.said()) == 1)
     rig.brain.end()
+    await rig.until(lambda: len(turns(rig.recorded)) == 1)
     assert rig.out.said() == ["Lighthouses stand on rocky coasts."]
+    assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, ""),)
     await rig.say({"role": "user", "content": "go on"})
     assert rig.brain.asked[1:] == [heard("go on")]
+    rig.brain.end()
+
+
+async def test_a_turn_that_fails_after_a_reply_was_asked_again_tells_the_brain_all_the_user_heard_of_it(rig: Rig) -> None:
+    await rig.say({"role": "user", "content": "tell me about lighthouses"})
+    _, retry = broken_then_asked_again(rig, ("Lighthouses stand ", "on rocky"), "Most lighthouses stand on rocky coasts.")
+    await rig.until(lambda: len(rig.out.said()) == 3)
+    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, "Lighthouses stand on rocky"),)
+    await rig.say({"role": "user", "content": "what were you saying?"})
+    # The turn's failure says all of it, the broken reply's words with the rest: one note, not one more for the break.
+    spoken = "Lighthouses stand on rocky\n\nMost lighthouses stand on rocky coasts."
+    note = f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.'
+    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?")]
     rig.brain.end()
 
 

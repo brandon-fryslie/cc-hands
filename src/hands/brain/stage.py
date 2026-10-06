@@ -19,7 +19,7 @@ from functools import partial
 from itertools import cycle
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol, cast
 
@@ -152,7 +152,7 @@ class _Call:
     is_error: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class Broken:
     """A reply the API broke before any block of it finished, which Claude Code asked again whole (2.1.289): the request
     that asked it again, what the user heard of it, and whether the reply asked again opened with that, so the user heard
@@ -481,7 +481,7 @@ class BrainStage(FrameProcessor):
             return failure.error
         # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is told it
         # with its next turn, unless the reply asked again opened with it.
-        self._broken_off = "\n\n".join(note for broken in turn.broken if not broken.repeated and (note := _broken_off(broken.heard, "your reply again from its start")))
+        self._broken_off = "\n\n".join(_asked_again(broken.heard) for broken in turn.broken if broken.heard and not broken.repeated)
         return None
 
     def _account(self, turn: _Turn, asker: Asker, arrived: Seconds, released: Seconds | None, taken: Seconds, ended: Seconds) -> None:
@@ -678,11 +678,11 @@ class BrainStage(FrameProcessor):
             case Heard(exchange=exchange, event=BlockStarted(block={"type": "text"})) if exchange in turn.exchanges:
                 turn.ahead = turn.between
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
-                again = next((broken for broken in turn.broken if broken.retry == exchange and not turn.reply and broken.heard and text.startswith(broken.heard)), None)
+                again = next((at for at, broken in enumerate(turn.broken) if not turn.reply and broken.retry == exchange and broken.heard and text.startswith(broken.heard)), None)
                 match again:
-                    case Broken(heard=heard):
-                        again.repeated = True
-                        turn.said.put_nowait(text.removeprefix(heard))
+                    case int():
+                        turn.broken[again] = replace(turn.broken[again], repeated=True)
+                        turn.said.put_nowait(text.removeprefix(turn.broken[again].heard))
                     case None:
                         turn.said.put_nowait(turn.ahead + text)
                 turn.reply += text
@@ -747,10 +747,15 @@ def _failed(turn: _Turn, error: str | None) -> _Failure | None:
     return None
 
 
-def _broken_off(spoken: str, then: str = "that it failed") -> str:
-    """The note that tells the brain what the user heard of a turn broken off before its end, and what they heard after;
-    none when nothing of it was said."""
-    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then {then}. Say nothing about this unless the user asks.' if spoken else ""
+def _broken_off(spoken: str) -> str:
+    """The note that tells the brain what the user heard of a turn broken off before its end; none when nothing of it was said."""
+    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
+
+
+def _asked_again(heard: str) -> str:
+    """The note that tells the brain what the user heard of a reply that broke and was asked again, which its history holds
+    only as the reply asked again: true however the turn went on from there."""
+    return f'[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "{heard}". Say nothing about this unless the user asks.'
 
 
 def _result(answer: ToolAnswer) -> Result | None:

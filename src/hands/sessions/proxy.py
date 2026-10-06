@@ -43,6 +43,7 @@ from hands.core.wire import (
     Unreached,
     edited,
     is_stream,
+    streams,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 from hands.sessions.wide import root
@@ -268,7 +269,7 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
         "stop_sequence": None,
         "usage": {"input_tokens": 0, "output_tokens": 0},
     }
-    if request.get("stream") is not True:
+    if not streams(request):
         return "application/json", json.dumps({**message, "content": [{"type": "text", "text": said}], "stop_reason": "end_turn"}).encode()
     events: list[tuple[str, Mapping[str, object]]] = [
         ("message_start", {"type": "message_start", "message": message}),
