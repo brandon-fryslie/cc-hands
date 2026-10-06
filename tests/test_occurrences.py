@@ -117,9 +117,9 @@ def test_what_a_hook_says_of_a_session_already_ended_is_a_line_and_told_nothing(
     assert reduce(gone, Occurred(SID, DENIED)) == (gone, [Audit(AfterEnd(Occurred(SID, DENIED)))])
 
 
-@pytest.mark.parametrize(("source", "told"), [("clear", [Tell(SID, Cleared())]), ("startup", []), ("resume", []), ("compact", [])])
+@pytest.mark.parametrize(("source", "told"), [("clear", [Tell(SID, Cleared())]), ("startup", []), ("resume", []), ("compact", []), ("fork", [])])
 def test_only_a_start_from_clear_is_told(source: StartSource, told: list[Tell]) -> None:
-    """A session's first start, a resume, and compaction starting it again are no news; a /clear is."""
+    """A session's first start, a resume, compaction starting it again, and a fork are no news; a /clear is."""
     _, effects = reduce(EMPTY, Joined(MEMBER, source))
     assert [effect for effect in effects if isinstance(effect, Tell)] == told
 

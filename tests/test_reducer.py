@@ -381,10 +381,15 @@ def test_a_compacted_session_is_kept_whole_under_its_new_membership(before: Sess
 
 
 @pytest.mark.parametrize("before", [*[holding(state, Opened(TURN)) for state in LIVE], GONE])
-@pytest.mark.parametrize("source", ["startup", "resume", "clear"])
+@pytest.mark.parametrize("source", ["startup", "resume", "clear", "fork"])
 def test_any_start_but_compaction_waits_for_its_status_to_be_read(before: Registry, source: StartSource) -> None:
     # a session resumed after a crash never sent the Stop or SessionEnd the registry is still waiting for
     assert reduce(before, Joined(ONE, source))[0] == holding(Unreported())
+
+
+def test_a_fork_joins_as_a_new_session_beside_the_one_it_was_forked_from() -> None:
+    parent = Session(ONE, IDLE, mode=None)
+    assert reduce(registry(parent), Joined(TWO, "fork"))[0] == registry(parent, Session(TWO, Unreported(), mode=None))
 
 
 def test_an_ended_session_compacting_waits_for_its_status_to_be_read() -> None:

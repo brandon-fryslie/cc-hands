@@ -209,7 +209,7 @@ _KNOWN_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in get_args(Pe
 
 def _start_source(source: str) -> StartSource:
     match source:
-        case "startup" | "resume" | "clear" | "compact":
+        case "startup" | "resume" | "clear" | "compact" | "fork":
             return source
         case other:
             raise Rejected(f"SessionStart source {other!r} is not one hands knows")

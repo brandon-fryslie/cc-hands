@@ -10,7 +10,8 @@ from hands.core.status import Report, Stamp
 from hands.core.turn import AgentTask
 
 
-StartSource = Literal["startup", "resume", "clear", "compact"]
+# `fork` starts a new session forked from another, under its own id.
+StartSource = Literal["startup", "resume", "clear", "compact", "fork"]
 # Why Claude Code 2.1.270 says a session ended. `other` is what a closed terminal reports.
 EndReason = Literal["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other"]
 

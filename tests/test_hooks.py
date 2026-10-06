@@ -45,6 +45,7 @@ def home(tmp_path: Path) -> Home:
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
     assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionStart", SID, None, Joined(MEMBER, "startup"))
     assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(MEMBER, "compact")
+    assert parse(home, body(hook_event_name="SessionStart", source="fork")) == Joined(MEMBER, "fork")
 
 
 def test_a_start_with_no_membership_file_is_rejected(home: Home) -> None:
