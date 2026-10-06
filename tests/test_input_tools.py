@@ -18,8 +18,9 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
-from hands.core.events import Ended, Joined, StatusReported
-from hands.core.session import CommandName, Membership, PromptText, SessionId
+from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
+from hands.core.session import CommandName, Membership, PromptId, PromptText, RequestId, SessionId
+from hands.core.turn import AgentId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.sessions.typing import Untyped
@@ -408,6 +409,23 @@ async def test_stop_presses_escape_in_a_working_session_and_nothing_in_one_at_it
     await sessions.apply(StatusReported(id, Report(Busy(), Stamp(2)), 1.0))
     assert await call(tools, "interrupt_session", session=id) == {"readback": "Typed Escape into cc-hands."}
     assert typed == [Type(id, Fritter(tmp_path / "f.sock", 4242), Key("escape"))]
+
+
+async def test_stop_presses_nothing_in_a_session_at_its_prompt_while_a_subagent_works_in_the_background(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    turn = PromptId("p1")
+    for event in (
+        StatusReported(id, Report(Idle(), Stamp(1)), 0.0),
+        Prompted(id, at=1.0, mode=None, prompt=turn),
+        StatusReported(id, Report(Busy(), Stamp(2)), 1.0),
+        Launched(id, AgentId("a1"), Stamp(3)),
+        Stopped(id, "Started it.", mode=None, prompt=turn, again=False, heard=Stamp(4), request=RequestId("stop")),
+    ):
+        await sessions.apply(event)
+    readback = "cc-hands is at its prompt, so there is nothing to interrupt. It has one subagent working in the background, which Escape does not stop, so nothing was typed."
+    assert await call(keyboard_tools(sessions), "interrupt_session", session=id) == {"readback": readback}
+    assert typed == []
 
 
 async def test_a_command_fritter_could_not_type_is_said_with_why(tmp_path: Path) -> None:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from hands.core.effects import Command, Fritter, Key, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
-from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId
+from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId, delegating
 from hands.core.status import Waiting
 from hands.core.tmux import Keyboard, Pane
 
@@ -32,7 +32,16 @@ class NothingRunning:
     session: SessionId
 
 
-KeyboardOutcome = Unreached | NothingRunning | Typed[Command | Key] | NotTyped[Command | Key]
+@dataclass(frozen=True)
+class InBackground:
+    """The session is at its prompt, with subagents it started in the background still working: Escape there stops
+    none of them, so there is nothing it would interrupt."""
+
+    session: SessionId
+    subagents: int
+
+
+KeyboardOutcome = Unreached | NothingRunning | InBackground | Typed[Command | Key] | NotTyped[Command | Key]
 
 
 def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> KeyboardOutcome | Type[Command | Key]:
@@ -45,7 +54,7 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
             return UnknownSession(id)
         case Gone():
             return SessionEnded(id)
-        case Session(state=state, membership=member):
+        case Session(state=state, membership=member, background=background) as session:
             match (request, state, writer(member, pane)):
                 case (_, _, Unwrapped() as unwrapped):
                     return unwrapped
@@ -53,10 +62,13 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
                     # A dialog takes the command's characters and its Return as the answer to what it asked.
                     return AtItsDialog(id)
                 case (SendCommand(command=command), _, Fritter() | Pane() as by):
-                    # A working session queues it, and runs it as a command once its turn ends (measured on 2.1.283).
+                    # A working session queues it, and runs it as a command once its turn ends (measured on 2.1.283); one at
+                    # its prompt runs it at once, though a subagent works in the background.
                     return Type(id, by, command)
                 case (Interrupt(), Idle(), _):
                     return NothingRunning(id)
+                case (Interrupt(), _, _) if delegating(session):
+                    return InBackground(id, len(background))
                 case (Interrupt(), _, Fritter() | Pane() as by):
                     # [LAW:types-are-the-program] Escape is the one key a request can press, and at a dialog it is the
                     # dialog's own "no": it closes and the turn stops, which is what stop means (a question, 2.1.283).

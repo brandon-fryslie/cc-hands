@@ -62,8 +62,8 @@ class Unknown:
 Status = Idle | Busy | Waiting | Shell | Unknown
 # At its prompt, where a typed prompt runs at once: no turn runs, whatever its background shells do.
 AtPrompt = Idle | Shell
-# Every other status: whatever the session is doing, it is not known to be at its prompt; busy can be, while a background
-# subagent works.
+# Every other status: whatever the session is doing, Claude Code does not say it is at its prompt; busy can be, while a
+# background subagent works, which only its turns and its subagents' reports tell (session.delegating).
 Going = Busy | Waiting | Unknown
 
 

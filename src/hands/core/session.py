@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Literal, NewType, Self
 
 from hands.core.progress import Doing, Gathering
-from hands.core.status import AtPrompt, Going, Stamp
-from hands.core.turn import AgentTask
+from hands.core.status import AtPrompt, Busy, Going, Stamp
+from hands.core.turn import AgentId, AgentTask
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -170,7 +170,8 @@ Dialog = Held | LetGo
 
 # [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and
 # only a status read moves a session between these. Hooks and records say which turn it is and what it did (see Turn),
-# never whether it runs. [LAW:types-are-the-program] each variant carries only what is true under it.
+# never whether it runs; only where Claude Code's busy covers a subagent in the background too do they say which of the
+# two it is (`delegating`). [LAW:types-are-the-program] each variant carries only what is true under it.
 @dataclass(frozen=True)
 class Unreported:
     """Heard of, with no status read for it yet."""
@@ -295,6 +296,24 @@ class Session:
     # What each subagent did that nobody has been told of yet. Kept here, and not on the turn: a subagent run in the
     # background works on after the turn that started it ends, and its progress is news whatever phase its parent is in.
     subagents: Mapping[AgentTask, Gathering] = field(default_factory=dict[AgentTask, Gathering])
+    # Every subagent it started in the background that has not reported back: from the result of the call that launched
+    # it until the notification of its end, completed or stopped.
+    background: frozenset[AgentId] = frozenset()
+
+
+def delegating(session: Session) -> bool:
+    """Whether the session is at its prompt, where a typed prompt runs at once, with only subagents it started in the
+    background working.
+
+    Claude Code says busy from a background subagent's launch until the turn reporting it back ends, so it is the turn
+    that says none runs: none is open. [LAW:one-source-of-truth] read off the status, the turn and the subagents out,
+    never held beside them. Busy with no turn open and no subagent out is a turn whose Stop fired before Claude Code wrote
+    its idle, which is still running."""
+    match session:
+        case Session(state=Running(status=Busy()), turn=Untold() | Told(), background=background):
+            return bool(background)
+        case _:
+            return False
 
 
 @dataclass(frozen=True)

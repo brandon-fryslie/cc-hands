@@ -12,7 +12,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Tell, Type, Typed, Holding, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Tell, Type, Typed, Holding, Overtaken, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -487,3 +487,5 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
             return "DEBUG", f"Stop of turn {prompt} in session {session} is held until a record names its id"
         case Unsettled(session=session, prompt=prompt):
             return "INFO", f"Stop of turn {prompt} in session {session} ended nothing: its session ended or started again before a record named its id"
+        case Overtaken(session=session, agents=agents):
+            return "DEBUG", f"subagents {sorted(agents)} of session {session} were launched in the background before Claude Code last set it idle, so they are not out"

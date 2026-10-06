@@ -35,6 +35,15 @@ def spoken_count(many: int) -> str:
     """
     return _CARDINALS[many] if 0 <= many < len(_CARDINALS) else str(many)
 
+
+def counted(many: int, thing: str) -> str:
+    """A count and the thing counted, with the number as the word the instruction asks the model for.
+
+    No filter downstream turns a digit back into a word, and these clauses are the ones no model wrote, so a
+    digit written here is a digit the listener gets in the middle of a sentence of words.
+    """
+    return f"{spoken_count(many)} {thing}{'' if many == 1 else 's'}"
+
 # Each rule asks for a tell that ordinary English does not have, because a rule that mangles a sentence
 # costs more than the code name it fixes [LAW:carrying-cost]. That is why a diff must announce itself, a
 # table must be two rows rather than one line with a pipe in it, and a hash must carry a digit and a letter

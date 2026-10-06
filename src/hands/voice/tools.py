@@ -30,13 +30,14 @@ from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutco
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.progress import Doing, said
-from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
+from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
+from hands.core.spoken import counted
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
@@ -471,8 +472,10 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         live = sessions.live_session(member.id)
         # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
         # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
-        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good.
-        over = live is None or isinstance(live.state, Idle)
+        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good. One whose
+        # only work is subagents in the background is at its prompt too, though Claude Code says busy.
+        delegates = live is not None and delegating(live)
+        over = live is None or isinstance(live.state, Idle) or delegates
         entries: list[dict[str, object]] = []
         due: list[Due] = []
         for number in range(start + 1, end + 1):
@@ -488,7 +491,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
             "turns": entries,
             "earlier": start,
             "unsummarised": len(due),
-            "working": live is not None and isinstance(live.state, Running),
+            "working": live is not None and isinstance(live.state, Running) and not delegates,
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:
@@ -699,13 +702,13 @@ def describe_listing(listing: Listing[Session]) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
         "name": identifier(listing),
-        "state": _spoken_state(listing.session.state, listing.session.dialog, listing.session.turn),
+        "state": _spoken_state(listing.session),
         "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }
 
 
-def _spoken_state(state: SessionState, dialog: Dialog | None, turn: Turn) -> str:
-    match (dialog, state, turn):
+def _spoken_state(session: Session) -> str:
+    match (session.dialog, session.state, session.turn):
         case (Held(on=on), _, _):
             # Said by what it asks, though the status saying it waits may not have been read yet.
             return _waiting_on(on)
@@ -718,7 +721,10 @@ def _spoken_state(state: SessionState, dialog: Dialog | None, turn: Turn) -> str
         case (None, Idle(status=status.Idle()), Opened()):
             # A turn opened at its prompt, before the status that says it is busy is read.
             return "working"
-        case (None, _, _):
+        case (None, _, _) if delegating(session):
+            # No turn runs: a prompt typed at it runs at once, and each subagent's report opens a turn of its own.
+            return f"idle, with {counted(len(session.background), 'subagent')} it started in the background still working"
+        case (None, state, _):
             return _stated(state)
 
 
@@ -774,7 +780,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts, refocus: Refocus) -> 
         if live is None:
             return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
         name = spoken_name(sessions, id)
-        now = _spoken_state(live.state, live.dialog, live.turn)
+        now = _spoken_state(live)
         match recounts.of(id):
             case None:
                 # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
@@ -1256,7 +1262,7 @@ def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
                     return {"closed": name}
                 case closesession.LeftRunning(session=found):
                     # [LAW:one-source-of-truth] what it was found doing, as list_sessions says it.
-                    return {"left_running": name, "state": _spoken_state(found.state, found.dialog, found.turn)}
+                    return {"left_running": name, "state": _spoken_state(found)}
         except closesession.NotClosed as why:
             return {"error": str(why)}
 
@@ -1268,8 +1274,8 @@ def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
         Args:
             sessions: Each session's id, from list_sessions. They are closed together, so one call closes them all.
             asked: `named` when the user named these sessions: each ends whatever it is doing. `done` when they asked for
-                the sessions that are done: each ends only at its prompt, with no dialog up and no shell running in the
-                background, and is otherwise left running, which its result says.
+                the sessions that are done: each ends only at its prompt, with no dialog up and no shell or subagent
+                running in the background, and is otherwise left running, which its result says.
         """
         return {"sessions": list(await asyncio.gather(*(closed(SessionId(session), asked) for session in sessions)))}
 

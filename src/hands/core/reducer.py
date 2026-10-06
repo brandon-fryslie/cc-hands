@@ -23,6 +23,7 @@ from hands.core.effects import (
     DeadlineNear,
     Expired,
     Holding,
+    Overtaken,
     Reply,
     SessionGone,
     Speak,
@@ -51,7 +52,9 @@ from hands.core.events import (
     Closed,
     Taken,
     Joined,
+    Launched,
     Read,
+    ReportedBack,
     Displayed,
     PermissionRequested,
     Prompted,
@@ -67,7 +70,7 @@ from hands.core.occurrences import Cleared
 from hands.core.progress import Doing, Gathering
 from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
 from hands.core.status import AtPrompt, Going, Report, Stamp
-from hands.core.turn import AgentTask
+from hands.core.turn import AgentId, AgentTask
 
 # How long before a permission's deadline the one warning is spoken.
 WARNING_LEAD_SECONDS = 10.0
@@ -123,7 +126,7 @@ def _started(membership: Membership, source: StartSource, previous: Known | None
     # after a crash was never told it stopped. SessionStart carries no permission_mode, and a session started or resumed
     # in a new process may have been given any mode.
     match (source, previous):
-        case ("compact", Session(state=Unreported() | Idle() | Running()) as previous):
+        case ("compact", Session() as previous):
             return replace(previous, membership=membership)
         case (_, Session(turn=Untold() as untold, earlier=earlier)):
             # A turn ended before the restart is still told. One that ended was told as it ended.
@@ -229,14 +232,15 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
     # is heard at the session's next hook, whatever that hook moves the session to.
     mode = held if reported is None else reported
-    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog, registry.permission_deadline))
+    background, overtaken = _backgrounded(event, was)
+    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog, registry.permission_deadline), background=background)
     moved, stopped = _stopped(moved, event)
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
     after = replace(after, earlier=was.earlier | (ids(was.turn) - ids(after.turn)))
     # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode
     # it was asked in; a turn left untold is told before what the event calls for, so before a prompt marks the next.
-    return registry.put(after), [*_remoded(membership.id, held, mode), *_transition(was, after), *told, *stopped, *settled]
+    return registry.put(after), [*_remoded(membership.id, held, mode), *_transition(was, after), *told, *stopped, *settled, *overtaken]
 
 
 def _stopped(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
@@ -300,6 +304,35 @@ def _stated(event: Moving, was: Session) -> SessionState:
             return state
 
 
+def _backgrounded(event: Moving, was: Session) -> tuple[frozenset[AgentId], list[Effect]]:
+    """The subagents the session started in the background that have not reported back, after the event."""
+    match event:
+        case Launched(agent=agent, written=written) if _since_idle(was.state, written):
+            return was.background | {agent}, []
+        case Launched(agent=agent):
+            # From before Claude Code's last idle, which it sets none of while a subagent works: over by then, and its
+            # report read already or in what is read next. [LAW:nothing-unseen] the decision is a line.
+            return was.background, [Audit(Overtaken(was.membership.id, frozenset({agent})))]
+        case ReportedBack(task=task):
+            return was.background - {task}, []
+        case StatusReported(report=Report(status=at)) if isinstance(at, AtPrompt) and was.background:
+            # [LAW:one-source-of-truth] Claude Code sets no idle while a subagent works, so its idle says none does,
+            # whether or not each report has been read yet.
+            return frozenset(), [Audit(Overtaken(was.membership.id, was.background))]
+        case _:
+            return was.background, []
+
+
+def _since_idle(state: SessionState, written: Stamp | None) -> bool:
+    """Whether a record was written since Claude Code last set the session idle, on its own clock; with no idle read, or
+    no time on the record, it is not known to be older."""
+    match state:
+        case Idle(stamp=idled) | Running(idled=idled):
+            return idled is None or written is None or written >= idled
+        case Unreported():
+            return True
+
+
 def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | None:
     """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it."""
     match (event, dialog):
@@ -357,7 +390,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # A flush's id: an Escape sends a message queued behind the turn on in the same turn, under the message's own
             # id, which the interrupt record carries first (2.1.281). Nothing waits behind the turn now running.
             return replace(opened, others=opened.others | {prompt}, queued=False), []
-        case (Taken(prompt=prompt, written=written), Untold() | Told()) if _opens(was.state, turn, prompt, written):
+        case (Taken(prompt=prompt, written=written), Untold() | Told()) if _opens(was, prompt, written):
             # A turn no hook opened: a message queued behind a turn, a `!` command, a command such as /compact
             # (2.1.282). Named, so its Stop ends it. Not marked here, where a mark could land after Claude has begun
             # changing the repository: a queued message was marked while the Stop hook before it held Claude Code
@@ -447,7 +480,7 @@ def _reported(event: Moving) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Closed() | Taken() | Interrupted() | Continued() | Read() | StatusReported():
+        case Closed() | Taken() | Interrupted() | Continued() | Launched() | ReportedBack() | Read() | StatusReported():
             return None
 
 
@@ -482,18 +515,20 @@ def _heard(session: Session, prompt: PromptId) -> bool:
     return _names(session.turn, prompt) or prompt in session.earlier
 
 
-def _opens(state: SessionState, turn: Turn, prompt: PromptId, written: Stamp | None) -> bool:
-    """Whether a prompt taken with no turn open opens one no hook opened: under an id the last turn does not go by,
-    written since Claude Code last set the session idle."""
+def _opens(session: Session, prompt: PromptId, written: Stamp | None) -> bool:
+    """Whether a prompt taken with no turn open opens one no hook opened: under an id no turn told went by, written
+    since Claude Code last set the session idle."""
     # [LAW:one-source-of-truth] Claude Code's own two clocks, never the order hands read them in: a record written before
     # the idle it set is of a turn over by then. It sets idle for ~3 ms between a turn and the message queued behind it
     # (2.1.282), which a read can land on, and which came first; and it stamps a `!` command's record before the busy it
     # sets for it. Whether a record is from before hands followed the session is the tail's to say (see Tails._read).
-    match state:
+    # [LAW:single-enforcer] a turn told is over, which `earlier` says of every one: a record of it read late opens
+    # nothing, though no idle came between, as none does while a subagent works in the background.
+    match session.state:
         case Idle(stamp=idled) | Running(idled=idled):
             # With no idle read, as for a session running since hands first read it, the turn its transcript is in is
             # the one running.
-            return not _names(turn, prompt) and (idled is None or (written is not None and written >= idled))
+            return not _heard(session, prompt) and (idled is None or (written is not None and written >= idled))
         case Unreported():
             # No status says whether any turn runs. The catch-up reads no session before its status (see Tails.catch_up); a
             # Stop's telling may, of the turn that Stop ends.
@@ -527,7 +562,7 @@ def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> lis
 def _unheard(event: SessionEvent, record: AuditRecord) -> list[Effect]:
     """What an event for a session the registry does not hold live calls for."""
     match event:
-        case Taken() | Interrupted() | Continued() | Progressed() | Read() | Displayed():
+        case Taken() | Interrupted() | Continued() | Launched() | ReportedBack() | Progressed() | Read() | Displayed():
             # Read from a transcript the tail goes on reading a moment after its session ends, or displayed after it:
             # behind, not wrong.
             return []

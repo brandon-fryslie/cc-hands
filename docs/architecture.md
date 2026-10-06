@@ -115,6 +115,7 @@ class Session:
     mode: PermissionMode      # from each hook payload that carries it
     turn: Turn                # which turn it is, as hooks and records say
     dialog: Dialog | None     # the dialog it is at, as its hooks say; an idle ends it
+    background: frozenset[AgentId]  # subagents it started in the background, launched and not reported back
 
 # An ended session has no status, turn, or dialog: its last turn was told and its held
 # hook let go as it ended. It starts again as a new Session.
@@ -123,7 +124,9 @@ class Gone:      membership: Membership
 Known = Session | Gone        # what the registry holds per session
 
 # Only a status read moves a session between these: whether it runs is Claude Code's
-# word, never inferred from a hook or a record.
+# word, never inferred from a hook or a record. Its busy also covers a subagent working
+# in the background (2.1.289), so busy with no turn open and a subagent out is read as
+# delegating(session): at its prompt. Its idle says no subagent is out.
 SessionState = Unreported | Idle | Running
 @dataclass(frozen=True)
 class Idle:      status: Idle | Shell; stamp: Stamp; after: PromptId | None  # one idle period; Shell: a background shell runs
@@ -1679,7 +1682,7 @@ no longer holds the session (it ended, its pid was reused, or a /clear moved it 
 the registry no longer lists the session, 10 seconds at most. Whatever ran that `claude` goes as it
 would at a terminal: a window hands opened ran nothing else, so tmux closes it, and a shell the user ran it from gives
 them their prompt back. A close is asked one of two ways: `named`, which ends the session whatever it is doing, or
-`done`, which ends it only at its prompt with no dialog up, no turn opened, and no background shell running, and
+`done`, which ends it only at its prompt with no dialog up, no turn opened, and no background shell or subagent running, and
 otherwise leaves it, saying what it is doing. The registry's state is read as the close runs, so a session that began a
 turn after the brain listed it is left alone, even before its busy status is read. Each close is a `session.close` event.
 

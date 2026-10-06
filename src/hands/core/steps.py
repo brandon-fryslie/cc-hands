@@ -112,7 +112,7 @@ def _delegated(call: Call) -> Step | None:
         return None
     structured = _structured(call)
     # An agent launched to run in the background reports back later as a notification, which opens a turn of its own.
-    launched = structured is not None and structured.get("isAsync") is True
+    launched = structured is not None and in_background(structured)
     report = None if launched or call.result is None else call.result.text
     return Delegated(call.ref, _text(call.input.get("subagent_type")), description, report, _agent(structured))
 
@@ -128,8 +128,19 @@ def _forked(call: Call) -> Step | None:
     asked = " ".join(part for part in (f"/{name}", _text(call.input.get("args"))) if part)
     # Run in the background, it reports back as a notification, as an async agent does; run in the foreground, its
     # result is its report, which the record holds apart from the line Claude Code heads it with.
-    report = None if structured.get("background") is True else _text(structured.get("result"))
+    report = None if in_background(structured) else _text(structured.get("result"))
     return Delegated(call.ref, name, asked, report, _agent(structured))
+
+
+def in_background(structured: Mapping[str, object]) -> bool:
+    """Whether a call's result says it started a subagent in the background, which reports back as a notification: an
+    async agent's launch, or a skill forked to run in the background (2.1.289)."""
+    return structured.get("isAsync") is True or structured.get("background") is True
+
+
+def launched(structured: Mapping[str, object]) -> AgentId | None:
+    """The subagent a call's result says it started in the background; None for any other result."""
+    return _agent(structured) if in_background(structured) else None
 
 
 def _agent(structured: Mapping[str, object] | None) -> AgentId | None:
