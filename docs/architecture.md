@@ -2275,7 +2275,11 @@ key's release. LowTalker (~/code/low-talker) serves the same weights from the Ne
 Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
 alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The default
 LLM is Claude Sonnet 5 through the Anthropic API, or any server that speaks it; OpenAI's
-chat completions API is the other backend variant. Measured on 2026-09-12, full
+chat completions API is the other backend variant. On the Anthropic API the request asks
+for prompt caching, so its instruction and tools are read from the cache after the first
+request, and each request is one `model.request` event carrying the usage the API reported,
+cache reads and writes included, read off the stream itself because Pipecat 1.10.0 double
+counts the input. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.
 

@@ -9,9 +9,9 @@ the whole variability of the pipeline as data.
 import asyncio
 import math
 from itertools import takewhile
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -43,6 +43,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from hands.sessions.audit import Record
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
+from hands.sessions.wide import annotate, fail, unit
 from hands.voice.transcript import TranscriptObserver
 from hands.voice.wakeword import Pretrained, Word
 from hands.voice.floor import Floor
@@ -130,8 +131,42 @@ def _cancelling() -> bool:
     return task.cancelling() > 0
 
 
+# What a reply's usage says the request read fresh, wrote to the prompt cache, read from it, and what the model wrote back.
+USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
 class AnthropicService(EmptyReplyFails, AnthropicLLMService):
-    """Claude through Pipecat's Anthropic service, whose request that timed out is said as the OpenAI-compatible one's is."""
+    """Claude through Pipecat's Anthropic service, whose request that timed out is said as the OpenAI-compatible one's is,
+    and each of whose requests is one wide event saying what the API reported it cost."""
+
+    def __init__(self, *args: Any, record: Record, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self._record = record
+        # A request is being answered, its event open in this task.
+        self._requesting = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if not isinstance(frame, LLMContextFrame):
+            await super().process_frame(frame, direction)
+            return
+        # [LAW:nothing-unseen] every request is asked by a context frame, and answered in this task before it returns.
+        with unit("model.request", self._record):
+            self._requesting = True
+            try:
+                await super().process_frame(frame, direction)
+            finally:
+                self._requesting = False
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        if isinstance(frame, ErrorFrame) and frame.processor is self and self._requesting:
+            # [LAW:no-silent-failure] Pipecat catches what the API raised and says it as this frame alone, so the
+            # request's event fails by it rather than ending ok.
+            fail(frame.error)
+        await super().push_frame(frame, direction)
+
+    async def _create_message_stream(self, api_call: Any, params: Any) -> AsyncIterator[Any]:
+        stream = await super()._create_message_stream(api_call, params)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in Pipecat)
+        return _usage_annotated(cast(AsyncIterator[Any], stream))
 
     async def _call_event_handler(self, event_name: str, *args: Any, **kwargs: Any) -> None:
         if event_name == "on_completion_timeout":
@@ -139,6 +174,25 @@ class AnthropicService(EmptyReplyFails, AnthropicLLMService):
             # (1.10.0), where the OpenAI one pushes an error too. A timeout is the model out of reach, not an empty reply.
             await self.push_error("LLM completion timeout", exception=TimeoutError())  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         await super()._call_event_handler(event_name, *args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
+
+async def _usage_annotated(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
+    """The stream as it came, with the usage its events report annotated on the request's event as each arrives.
+
+    Read here, not from Pipecat's figures: Pipecat adds message_delta's usage to message_start's (1.10.0), and the API
+    reports message_delta's cumulatively, so its input count is twice what was read. Each later report replaces an
+    earlier one, field by field; a field an event leaves out is not one it reported."""
+    async for event in stream:
+        match event.type:
+            case "message_start":
+                usage = event.message.usage
+            case "message_delta":
+                usage = event.usage
+            case _:
+                usage = None
+        if usage is not None:
+            annotate(**{name: value for name in USAGE if (value := getattr(usage, name)) is not None})
+        yield event
 
 
 class FailFastOpenAILLMService(EmptyReplyFails, OpenAILLMService):
@@ -152,7 +206,7 @@ class FailFastOpenAILLMService(EmptyReplyFails, OpenAILLMService):
 
 
 def build_llm(
-    backend: AnthropicBackend | OpenAICompatibleBackend, *, instruction: str, max_tokens: int
+    backend: AnthropicBackend | OpenAICompatibleBackend, *, instruction: str, max_tokens: int, record: Record
 ) -> AnthropicLLMService | OpenAILLMService:
     """The one place an API backend's variant is inspected."""
     # [LAW:one-type-per-behavior] both services speak the same frame protocol
@@ -163,8 +217,11 @@ def build_llm(
                 api_key=api_key,
                 # Reported at once, as for the OpenAI-compatible model: a retry with backoff is silence in a voice turn.
                 client=AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0),
+                record=record,
                 settings=AnthropicService.Settings(
-                    model=model, system_instruction=instruction, max_tokens=max_tokens
+                    # Pipecat marks the last two user messages, and the cache is a prefix: the tools and the instruction
+                    # ahead of them are read from it on every request after the first, at a tenth of the input price.
+                    model=model, system_instruction=instruction, max_tokens=max_tokens, enable_prompt_caching=True
                 ),
             )
         case OpenAICompatibleBackend(base_url=base_url, api_key=api_key, model=model):

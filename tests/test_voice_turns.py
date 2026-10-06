@@ -838,7 +838,7 @@ async def served(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: Se
 
     api = await api_server(answering(openai_stream("words")), answering(anthropic_stream("words")))
     backend = OpenAICompatibleBackend(base_url=api.url, api_key="k", model="m") if shape == "openai" else AnthropicBackend(base_url=api.anthropic_url, api_key="k", model="m")
-    llm = built.build_llm(backend, instruction="Speak.", max_tokens=50)
+    llm = built.build_llm(backend, instruction="Speak.", max_tokens=50, record=lambda _entry: None)
     noted: list[Entry] = []
     async with rigged(monkeypatch, tmp_path, llm, [Noting(front, lambda: "audio-only", noted.append)], [llm]) as rig:
         yield Served(rig, requests, noted)
