@@ -204,6 +204,8 @@ Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is re
 `claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
 whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, and it does not start without one.
+A restart resumes the brain's conversation rather than starting it over; to start it over, remove `~/.hands/brain/conversation`
+before starting hands.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
 there; then, on a brain Claude Code has not finished its first run on, it runs that first run in the directory the brain
 runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,

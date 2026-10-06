@@ -234,7 +234,7 @@ if sys.argv[1:3] == ["auth", "status"]:
     print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": os.environ.get("AUTH_METHOD", "claude.ai"), "email": "brain@example.com"}}))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
-session = sys.argv[sys.argv.index("--session-id") + 1]
+session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
 def post(event, **fields):
     [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
     body = json.dumps({{"session_id": session, "hook_event_name": event, **fields}}).encode()

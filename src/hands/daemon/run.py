@@ -98,7 +98,7 @@ from hands.voice.tool import Tool
 from hands.voice.tools import audited, intermediary_tools
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
-from hands.brain.process import Brain, Launch, Station, Unstartable, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.core.session import SessionId
@@ -198,7 +198,7 @@ async def mind(
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
-                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), SessionId(str(uuid4()))), record)
+                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), conversation(config_dir, SessionId(str(uuid4())))), record)
                 except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error
