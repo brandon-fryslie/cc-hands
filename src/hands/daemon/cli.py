@@ -150,8 +150,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
-    logging_in = commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it is logged in after")
-    logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log a brain already set up in with an Anthropic Console key, billed to the API, rather than a Claude plan; a home's first run offers both on its own login screen")
+    logging_in = commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
+    logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
@@ -647,9 +647,10 @@ def login(home: Home, method: "Method", record: audit.Record) -> int:
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
-    # [LAW:nothing-unseen] a login is a unit of work: whether it wrote the brain's settings, whether it took Claude Code's
-    # first run, and the account it ended on.
+    # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
+    # it took Claude Code's first run, and the account it ended on.
     with wide.unit("brain.login", record):
+        wide.annotate(asked=method)
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))

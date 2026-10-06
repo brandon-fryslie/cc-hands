@@ -46,12 +46,12 @@ The same page sets the conditions a paid hands has to meet:
 hands meets the first two conditions only in part. fritter wraps Claude Code in a
 pseudo-terminal and leaves the binary unchanged, and the brain signs in through Claude
 Code's own flow (`hands login`), on any login Claude Code takes from Anthropic: a Claude
-plan, or an Anthropic Console key (`hands login --console`). Only a cloud provider is
-refused, because its requests bypass hands' proxy (`logged_in`,
-`src/hands/brain/process.py`). Two things do not fit as built:
+plan, an Anthropic Console key (`hands login --console`), or a token. Only a provider
+other than Anthropic's API is refused, because hands' proxy forwards to that API alone
+(`logged_in`, `src/hands/brain/process.py`). Two things do not fit as built:
 
 - **The brain's proxy edits plan-billed requests.** The brain's `ANTHROPIC_BASE_URL`
-  is hands' own proxy (`src/hands/brain/process.py:270`), and a brain logged in on a
+  is hands' own proxy (`src/hands/brain/process.py:274`), and a brain logged in on a
   Claude plan has its requests billed to that plan. The proxy rewrites request bodies, answers some requests itself
   with a reply written as the model's (`src/hands/sessions/proxy.py:141`), and turns
   some API refusals into its own final 502. That is hands sitting between a
