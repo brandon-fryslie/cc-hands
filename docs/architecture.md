@@ -2183,7 +2183,11 @@ voice. hands has no session id, so a choice aimed at hands itself is a tool of i
 `config.toml` (`OwnModel`): `[llm] model` is set and every other line stays as written.
 It is weighed by the same `backend` check before it is written, so a refusal is said
 while the user is there, and it is written only once the user has heard hands say it is
-switching (`Player.heard`). The run then starts again on it as on any edit. The permission timeout is declared in the hook
+switching (`Player.heard`). The run then starts again on it as on any edit. `hands run
+--model` names a model that outranks the file's for that run and every restart of it (each
+re-exec passes the flag again). It is applied where the file is parsed, through the same
+offered-model check, and the watch weighs edits on it, so an edit to the file's model alone is
+no edit while it holds; a choice by voice is refused naming the flag. The permission timeout is declared in the hook
 config, which `hooks.json` is generated from.
 
 ## Stack

@@ -126,6 +126,16 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
     assert 'model = "claude-opus-5-5"' in kept.read_text()
 
 
+def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text(SPOKEN_FILE)
+    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"), lambda _config: None)
+    assert flagged.running() == "claude-haiku-4-5-20251001"
+    with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
+        flagged.weigh("claude-opus-5-5")
+    assert home.config.read_text() == SPOKEN_FILE
+
+
 async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)

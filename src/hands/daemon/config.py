@@ -12,7 +12,8 @@ run runs starts the run again, on the file as edited.
 A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
 keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
 and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
-that choice is an edit to this file (OwnModel), taken as any edit is.
+that choice is an edit to this file (OwnModel), taken as any edit is. `hands run --model` names one that outranks the
+file's for as long as that run runs, its restarts included.
 
 [LAW:no-mode-explosion] the settings cap: every key names a variant or a value, and there are no flags. A key that
 would be a flag is a variant with a real alternative, or it does not exist.
@@ -21,7 +22,7 @@ would be a flag is a variant with a real alternative, or it does not exist.
 import asyncio
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -86,20 +87,25 @@ class Config:
 
 @dataclass(frozen=True)
 class Settings:
-    """The settings a run starts on: the file's bytes as it read them, None where there was no file, and what they hold."""
+    """The settings a run starts on: the file's bytes as it read them, None where there was no file, and what they hold
+    with `model` in place of the file's, the one `hands run --model` named, None where the run was given none."""
 
     held: bytes | None
     config: Config
+    model: str | None = None
 
     def path(self, home: Home) -> Path | None:
         """The file the settings were read from, None where they are every default."""
         return None if self.held is None else home.config
 
 
-def load(home: Home) -> Settings:
-    """The settings `home` holds, read once as a run starts; raises Rejected naming the file and what is wrong in it."""
+def load(home: Home, model: str | None = None) -> Settings:
+    """The settings `home` holds, on `model` where one is given, read once as a run starts; raises Rejected naming the
+    file and what is wrong in it, or --model and why hands cannot run on it."""
     held = _readable(home, _held(home))
-    return Settings(held, _settings(home, held))
+    config = _settings(home, held, model)
+    # [LAW:parse-dont-validate] the flag as parsed, which a restart runs on again.
+    return Settings(held, config, None if model is None else config.llm.model)
 
 
 async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, period: float = EDIT_SECONDS) -> SettingsEdited:
@@ -123,7 +129,9 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
         if now == weighed:
             continue
         try:
-            settings = _settings(home, _readable(home, now))
+            # [LAW:one-source-of-truth] weighed on the run's --model, as the run's own settings were, so an edit to the
+            # file's model alone is no edit while one outranks it.
+            settings = _settings(home, _readable(home, now), running.model)
             if settings != running.config:
                 # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
                 await off_loop(partial(reachable, settings), "weighing a settings edit")
@@ -157,6 +165,10 @@ class OwnModel:
         """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
         a start on it could not reach its model: weighed here as `edited` weighs an edit by hand, so a choice by voice is
         refused while the user is there to hear why, never written to be refused after."""
+        if self._running.model is not None:
+            # [LAW:one-source-of-truth] the file's model is not the run's while --model outranks it, so an edit to it would
+            # change nothing until hands is started without the flag.
+            raise Rejected(f"hands was started with --model {self._running.model}, which it keeps over {self._home.config} until it is started without it")
         model = model.strip()
         # A model is named by its id; one with a space is a name as said aloud, which no backend serves. Only here, where a
         # name said aloud enters: a model named in the file by hand may be a local server's path, spaces and all.
@@ -216,8 +228,19 @@ def _readable(home: Home, held: bytes | _Unreadable | None) -> bytes | None:
             return held
 
 
-def _settings(home: Home, held: bytes | None) -> Config:
-    # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared.
+def _settings(home: Home, held: bytes | None, model: str | None = None) -> Config:
+    # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared, on the
+    # same --model.
+    config = _file(home, held)
+    if model is None:
+        return config
+    try:
+        return replace(config, llm=_on(config.llm, _text({"model": model}, "--model", "model", "")))
+    except Rejected as error:
+        raise Rejected(f"--model {model!r}: {error}") from error
+
+
+def _file(home: Home, held: bytes | None) -> Config:
     if held is None:
         return Config()
     try:
@@ -271,18 +294,29 @@ def _llm(table: Mapping[str, object]) -> LLM:
             url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
             if url.endswith("/v1"):
                 raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
-            model = _text(table, "[llm]", "model", ANTHROPIC_MODEL)
-            # Another server serves models of its own, which hands has no list of.
-            return Anthropic(url=url, model=_offered(model) if url == ANTHROPIC_URL else model)
+            return _on(Anthropic(url=url), _text(table, "[llm]", "model", ANTHROPIC_MODEL))
         case "openai":
             _known(table, "[llm] for openai", ("backend", "model", "url"))
-            return OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL), model=_text(table, "[llm]", "model", OPENAI_MODEL))
+            return _on(OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL)), _text(table, "[llm]", "model", OPENAI_MODEL))
         case "claude":
             # A url would be ignored, its requests going through hands' proxy to Anthropic's API, so it is refused.
             _known(table, "[llm] for claude", ("backend", "model"))
-            return Claude(model=_offered(_text(table, "[llm]", "model", ANTHROPIC_MODEL)))
+            return _on(Claude(), _text(table, "[llm]", "model", ANTHROPIC_MODEL))
         case _:
             raise Rejected(f"[llm] backend {backend!r} is not one of: anthropic, openai, claude")
+
+
+def _on(llm: LLM, model: str) -> LLM:
+    """`llm` on `model`. [LAW:single-enforcer] the one place a model is refused that hands does not offer, whether the
+    file or --model named it."""
+    match llm:
+        case Anthropic(url=url):
+            # Another server serves models of its own, which hands has no list of.
+            return replace(llm, model=_offered(model) if url == ANTHROPIC_URL else model)
+        case OpenAI():
+            return replace(llm, model=model)
+        case Claude():
+            return replace(llm, model=_offered(model))
 
 
 def _offered(model: str) -> str:

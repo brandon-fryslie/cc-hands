@@ -172,7 +172,9 @@ edit while hands runs and it restarts on it, keeping its sessions; an edit it ca
 naming a backend whose key or login it lacks, or one naming a Claude model hands does not offer, is
 said in `hands log`, and hands runs on as it was.
 You can also ask hands by voice to change its own model ("switch yourself to Opus"). It says it is
-switching, writes `model` into this file, and restarts on it:
+switching, writes `model` into this file, and restarts on it. `hands run --model claude-opus-5-5`
+runs on that model instead of the file's, until you quit it; while it does, hands refuses a model
+chosen by voice, since the file's model would change nothing:
 
 ```toml
 [llm]
@@ -361,6 +363,7 @@ without `uv run`.
 ```
 uv sync
 uv run hands run                        # the backend ~/.hands/config.toml names; hold Right Shift in any app to talk, release to send; q in its terminal quits
+uv run hands run --model claude-opus-5-5  # on that model in place of the one config.toml names, until it quits
 uv run --env-file .env hands run        # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
 uv run hands status                     # up, stopped, refused to start (and why), not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
