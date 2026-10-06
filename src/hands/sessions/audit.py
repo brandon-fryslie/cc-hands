@@ -138,6 +138,20 @@ class CutOff:
     waiting: int
 
 
+# When a user turn cuts off what hands is saying: as the hold that opens it opens, Pipecat's VAD start; or once Whisper
+# hears words in it, Pipecat's transcription start.
+TurnStart = Literal["on the hold", "on words"]
+
+
+@dataclass(frozen=True)
+class UserTurn:
+    """A user turn as it ended: when the edge that opened it had it cut off what hands was saying, and how many seconds
+    after it opened it did; None where it never did, a turn the voice opened that Whisper heard no words in."""
+
+    start: TurnStart
+    cut: float | None
+
+
 @dataclass(frozen=True)
 class Announced:
     """A fact the system channel gave the user, and whether it was spoken or, with speech down, posted to the screen."""
@@ -243,6 +257,7 @@ Entry = (
     | Primed
     | Replied
     | CutOff
+    | UserTurn
     | Announced
     | Cued
     | Refocused
@@ -274,7 +289,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | Announced() | Cued() | Rolled()
+            | Transcribed() | HoldHeard() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

@@ -21,7 +21,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     LLMTextFrame,
-    TranscriptionFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -29,13 +29,13 @@ from pipecat.frames.frames import (
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from hands.voice.mark import Mark
-from hands.voice.turnstop import HoldDiscarded
+from hands.voice.turnstop import HoldDiscarded, Words
 
 # The first arrival of each of these frame types in an open window is a mark. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
 # once per processor boundary it crosses.
 _MILESTONES: dict[type[Frame], Mark] = {
-    TranscriptionFrame: "transcript",
+    Words: "transcript",
     LLMTextFrame: "first LLM token",
 }
 
@@ -57,7 +57,8 @@ class Window:
 @dataclass
 class Turn:
     """The user's turn being taken in, since the last one ended: whether any hold of it had words, whether a stage
-    failed while it was taken in, and the window its last release opened.
+    failed while it was taken in, whether it took over from hands (`hands.voice.turnstart`), the window its last release
+    opened, and the window its first release found open.
 
     A turn is Pipecat's and takes in every hold pressed before Whisper was done with the one before (see
     hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one hold: a hold
@@ -66,7 +67,12 @@ class Turn:
 
     said: bool = False
     failed: bool = False
+    took_over: bool = False
     released: Window | None = None
+    found: Window | None = None
+    # The id of the stop that ended the turn before: Pipecat numbers every frame from one count, so a cut of this turn's
+    # is a frame numbered past it, and the last turn's cut, still crossing boundaries, is not.
+    since: int = -1
 
 
 class LatencyObserver(BaseObserver):
@@ -106,6 +112,8 @@ class LatencyObserver(BaseObserver):
                 # Opened on the frame, the second push would throw away the marks the first push's window had
                 # taken and restart the measurement from a later zero, logging a milestone twice and timing it
                 # from a moment the user was already done speaking at.
+                if self._turn.released is None:
+                    self._turn.found = self._window
                 self._window = self._turn.released = Window(released=now)
                 self._told("released")
             self._holding = False
@@ -117,6 +125,9 @@ class LatencyObserver(BaseObserver):
             return
         if isinstance(frame, BotStoppedSpeakingFrame):
             self._speaking = False
+            if self._turn.found is not None and "first audio" in self._turn.found.marks:
+                # So is a window the turn found open, which the turn gives back if it takes nothing over.
+                self._turn.found = None
             if self._window is not None and "first audio" in self._window.marks:
                 # The window closes when the audio it was waiting for has finished, so the next utterance with
                 # no user behind it is recognised as one. Left open, the first turn of a session stays open for
@@ -129,13 +140,17 @@ class LatencyObserver(BaseObserver):
             # The user aggregator says the turn ended, ahead of sending the model whatever words it had. The turn taken
             # in from here is a new one, which is also what makes the later pushes of this frame say nothing: they
             # find a turn nothing was released in.
-            turn, self._turn = self._turn, Turn()
+            turn, self._turn = self._turn, Turn(since=frame.id)
             if self._window is not None and self._window is turn.released and not turn.said:
                 # A turn with no words sends the model nothing, so no reply is coming to wait for: Whisper found
                 # nothing said in it, or failed on it. The window closes with it, so the next thing hands says, the
                 # failure included, is not timed as its answer.
                 self._take(self._window, "failed" if turn.failed else "no words", now)
-                self._window = None
+                # A turn that never took over cut nothing off, so the reply it found on its way is still coming.
+                self._window = None if turn.took_over else turn.found
+            return
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._turn.took_over |= frame.id > self._turn.since
             return
         if isinstance(frame, ErrorFrame):
             # One error is one failure, however many boundaries its frame crosses: taken by the frame's identity, since
@@ -156,7 +171,7 @@ class LatencyObserver(BaseObserver):
                         self._take(window, "failed", now)
                         self._window = None
             return
-        if isinstance(frame, TranscriptionFrame):
+        if isinstance(frame, Words):
             self._turn.said = True
         mark = _MILESTONES.get(type(frame))
         if mark is not None and self._window is not None:

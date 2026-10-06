@@ -8,9 +8,10 @@ keys change. The key is also the mute: the microphone bytes are silence unless
 the key is pressed (applied where they are captured, in
 `hands.voice.microphone`), and a hold's audio begins at its press, so what was
 said before the hold meant talk is kept. Audio frames always flow; only their
-content and their key follow the key. The stock VAD turn strategies open and
-close the user turn on those frames and broadcast the interruption that flushes
-queued speech on barge-in. While the key is up, whatever the microphone hears,
+content and their key follow the key. The turn strategies open and close the
+user turn on those frames (`hands.voice.turnstart`, `hands.voice.turnstop`),
+and its cut broadcasts the interruption that flushes queued speech on
+barge-in. While the key is up, whatever the microphone hears,
 including the pipeline's own speech, is silence to the pipeline.
 
 The key is pressed at a place: the desk, by the talk key, or the phone, by its page's button. The gate holds where the
@@ -51,6 +52,8 @@ class KeyedAudio(InputAudioRawFrame):
     sent: int
     dropped: int
     place: Place
+    # The edge that opened the last hold, as it opened it.
+    opened: Edge
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,9 @@ class Gate:
     # every 20 ms and a turn can end and the next arm between two of them, so Whisper ends each turn as these move.
     sent: int = 0
     dropped: int = 0
+    # [LAW:no-ambient-temporal-coupling] the edge that opened the last turn travels with the audio, as the key does, so
+    # what reads a hold's opening reads the edge that opened it, whichever is in use by the time its words arrive.
+    opened: Edge = "held key"
 
     def took(self, move: Move, at: Place) -> Move | None:
         """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
@@ -90,8 +96,9 @@ class Gate:
             case False, _, _:
                 return None
 
-    def after(self, move: Move, at: Place) -> "Gate":
-        """The gate once a hold at `at` has moved the turn."""
+    def after(self, move: Move, by: Edge) -> "Gate":
+        """The gate once a hold made by `by` has moved the turn."""
+        at = place_of(by)
         rest = self._rest(at, self.listens)
         match self.took(move, at):
             case None:
@@ -106,7 +113,7 @@ class Gate:
             case "disarm":
                 return replace(self, key=rest, place=at)
             case "start":
-                return replace(self, key="down", place=at)
+                return replace(self, key="down", place=at, opened=by)
             case "stop":
                 return replace(self, key=rest, place=at, sent=self.sent + 1)
             case "drop" | "expire":
@@ -144,7 +151,7 @@ class Gate:
         """Audio captured at `place`, as the pipeline hears it and as the microphone `captured` it, tagged with this gate."""
         return KeyedAudio(
             audio=self.audible(audio), captured=self.audible(captured), sample_rate=sample_rate, num_channels=num_channels,
-            key=self.key, sent=self.sent, dropped=self.dropped, place=place,
+            key=self.key, sent=self.sent, dropped=self.dropped, place=place, opened=self.opened,
         )
 
 
@@ -158,18 +165,13 @@ class PushToTalk:
     def __init__(self, record: Record) -> None:
         self._gate = Gate()
         self._modality: Modality = modality_at(self._gate.place)
-        # The edge that opened the last turn, as it opened it: a trigger switched since does not rewrite it.
-        self._opened: Edge = "held key"
         self._record = record
 
     def move(self, move: Move, by: Edge) -> Move | None:
         """Report what the hold made by `by` did to the turn, and get back what the gate took it as, to cue and tell: the
         desk's edge and the phone's button call this."""
-        at = place_of(by)
-        taken = self._gate.took(move, at)
-        if taken == "start":
-            self._opened = by
-        self._become(self._gate.after(move, at), "turn")
+        taken = self._gate.took(move, place_of(by))
+        self._become(self._gate.after(move, by), "turn")
         return taken
 
     def go(self, to: Place) -> None:
@@ -201,5 +203,6 @@ class PushToTalk:
 
     @property
     def opened(self) -> Edge:
-        return self._opened
+        """The edge that opened the last turn, as it opened it: a trigger switched since does not rewrite it."""
+        return self._gate.opened
 

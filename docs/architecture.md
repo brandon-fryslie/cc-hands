@@ -1637,9 +1637,33 @@ arm between two of them. The key is also the mute: microphone bytes become silen
 of the same length unless the key is pressed. Frames flow at full rate either way;
 only their content changes. The microphone opens on the press, and a hold's audio
 begins there, so words said before the hold means talk are kept; they are thrown
-away if the press turns out to be Shift. The hold opens the turn, the release ends
-it and is final, and a hold opened during playback broadcasts the interruption that
-flushes queued audio. That is barge-in. A turn ends once Whisper is done with every
+away if the press turns out to be Shift. The hold opens the turn, so the floor is the
+user's from then on, and the release ends it and is final. The turn's cut is the
+interruption that flushes queued audio, cancels the reply still streaming from the
+model and its calls in flight, and settles a line said through the player's `heard()`
+as cut off. That is barge-in.
+
+When a turn cuts is the edge's that opened its hold (`turn_start` in
+`hands.voice.trigger`, enforced by `EdgeTurnStart`), and each hold carries that edge
+from the gate, as it carries the key. A hold the user's hand opens, the held key or the
+phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
+nothing said is how the user stops hands. So does the wake word's, said on purpose,
+whose detector hears nothing while hands speaks. A hold engaged conversation opens cuts
+only once Whisper pushes words for it, Pipecat's transcription start, because under
+engaged conversation the desk's detector hears through the echo canceller, and the
+reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
+on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
+reading held no words for Whisper. Such a turn cuts nothing, so nothing has to be
+undone: until it cuts, nothing behind the user aggregator hears that the user started
+speaking, so the reply on its way plays on and runs on a tool's result as if no turn
+had opened, while Floor holds what hands tells of the sessions from the hold's opening.
+A cut can land while the turn's words, and the note beside them, are still on
+their way to the model, so those are uninterruptible: an interruption stops hands, never
+the user. And the user aggregator takes none of them in until the assistant aggregator,
+at the end of the pipeline, says the reply the cut stopped is written to the context as
+cut off (`CutWritten`), so the context reads that reply ahead of the words that cut it
+off, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
+long after it opened it did, or that it never did. A turn ends once Whisper is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
 one: Pipecat's user aggregator would end a turn itself after 5 s with no speech and no

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pipecat.frames.frames import (
     DataFrame,
     Frame,
+    TranscriptionFrame,
     UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -19,27 +20,42 @@ from pipecat.frames.frames import (
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
+from hands.voice.trigger import Edge
+
+
+@dataclass(frozen=True)
+class Hold:
+    """One hold, by the number Whisper gave it as it opened, and the edge that opened it."""
+
+    number: int
+    edge: Edge
+
 
 @dataclass(kw_only=True)
 class TurnOpened(VADUserStartedSpeakingFrame):
-    """The user started speaking: the key went down, opening the hold with this number."""
+    """The user started speaking: the key went down, opening this hold."""
 
-    hold: int
+    hold: Hold
 
 
 class HoldDiscarded(VADUserStoppedSpeakingFrame):
     """The user stopped speaking, and what the hold recorded is thrown away: nothing of it is transcribed or sent."""
 
 
+class Words(TranscriptionFrame, UninterruptibleFrame):
+    """What Whisper heard said in a hold. The user's own, so no interruption drops it: one can land while the turn's words
+    are still on their way to it, since a turn the voice opened cuts hands off only once they are heard."""
+
+
 @dataclass(kw_only=True)
 class TurnResolved(DataFrame, UninterruptibleFrame):
-    """Whisper is done with the hold with this number: whatever text it had has been pushed ahead of this.
+    """Whisper is done with this hold: whatever text it had has been pushed ahead of this.
 
-    Nothing else ends a turn, so the interruption a turn's start broadcasts cannot drop it on its way: a hold dropped at
-    once resolves right behind its own start.
+    Nothing else ends a turn, so the interruption a turn broadcasts cannot drop it on its way: a hold dropped at once
+    resolves right behind its own start.
     """
 
-    hold: int
+    hold: Hold
 
 
 class KeyTurnStop(BaseUserTurnStopStrategy):
@@ -49,7 +65,7 @@ class KeyTurnStop(BaseUserTurnStopStrategy):
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:one-source-of-truth] Whisper opens and resolves the holds; this is the set it has opened and not yet
         # resolved. A set, because a dropped hold is resolved at once, ahead of an earlier one still being transcribed.
-        self._open: set[int] = set()
+        self._open: set[Hold] = set()
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame:

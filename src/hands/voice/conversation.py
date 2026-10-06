@@ -25,6 +25,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from hands.sessions.audit import Record, Replied, Transcribed
+from hands.voice.turnstart import CutWritten
 
 
 class AssistantTurns(LLMAssistantAggregator):
@@ -76,6 +77,12 @@ class AssistantTurns(LLMAssistantAggregator):
             case _:
                 pass
         await super().process_frame(frame, direction)
+        match frame:
+            case InterruptionFrame():
+                # Written as cut off: the user's turn that made the cut is taken in behind it (`hands.voice.turnstart`).
+                await self.push_frame(CutWritten(), FrameDirection.UPSTREAM)
+            case _:
+                pass
         # Whatever the frame, so whichever one closes the model's turn writes what was said inside it: a line itself,
         # which the output transport passes on once its audio has played, where no turn is open.
         if self._aggregation and not self._open:

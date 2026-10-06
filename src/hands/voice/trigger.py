@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from hands.core.place import Place
+from hands.sessions.audit import TurnStart
 from hands.voice import wake
 
 # Right Shift held alone for each turn (`hands.voice.hold`); or held once to engage, after which the user's voice opens
@@ -28,6 +29,21 @@ def place_of(edge: Edge) -> Place:
             return "desk"
         case "phone button":
             return "phone"
+
+
+def turn_start(edge: Edge) -> TurnStart:
+    """When a turn `edge` opens cuts off what hands is saying.
+
+    Sound the desk heard can be nobody: hands' own reply left over from the echo canceller, a cough, a door. So a turn the
+    voice opens cuts only once Whisper hears words in it. One the user's hand opens cuts at once, since holding a key or a
+    button and letting go with nothing said is how the user stops hands; and so does one the wake word opens, said on
+    purpose, whose detector hears nothing while hands speaks.
+    """
+    match edge:
+        case "engaged conversation":
+            return "on words"
+        case "held key" | "phone button" | "wake word":
+            return "on the hold"
 
 
 class Triggers:

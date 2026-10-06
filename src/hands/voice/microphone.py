@@ -34,7 +34,7 @@ from typing import Literal, Protocol, cast
 
 import pyaudio
 from loguru import logger
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -53,6 +53,7 @@ from hands.sessions.wide import annotate, count, unit
 from hands.voice.echo import COUNTS, Echo, EchoCanceller
 from hands.voice.phone import Phone
 from hands.voice.ptt import PushToTalk
+from hands.voice.turnstop import TurnOpened
 from hands.threads import SerialThread, off_loop
 
 Instant = float  # seconds on the monotonic clock
@@ -220,7 +221,8 @@ class Speaker(LocalAudioOutputTransport):
                 self._speaking.add("hands")
             case BotStoppedSpeakingFrame():
                 self._speaking.discard("hands")
-            case UserStartedSpeakingFrame():
+            case TurnOpened():
+                # The user is speaking from their turn's first hold, before it cuts anything off.
                 self._speaking.add("user")
             case UserStoppedSpeakingFrame():
                 self._speaking.discard("user")

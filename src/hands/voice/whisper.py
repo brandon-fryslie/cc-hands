@@ -15,7 +15,6 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InputAudioRawFrame,
-    TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -32,7 +31,7 @@ from hands.core.place import Place
 from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved
+from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved, Words
 
 # What every hold is said in, as Pipecat names it.
 LANGUAGE = Language(transcription.LANGUAGE)
@@ -80,11 +79,11 @@ class Whisper(SegmentedSTTService):
         self._heard_at: Place = "desk"
         self._sent = 0
         self._dropped = 0
-        # The number of the last hold the key opened.
-        self._opened = 0
+        # The last hold the key opened; numbered from 1, so none has opened while this is hold 0.
+        self._opened = Hold(0, "held key")
         # The holds whose audio is queued for transcription, oldest first, each with how loud it was. Pipecat transcribes
         # its queue one segment at a time, in order, so each transcription is of the oldest.
-        self._transcribing: deque[tuple[int, Levels]] = deque()
+        self._transcribing: deque[tuple[Hold, Levels]] = deque()
         # [LAW:nothing-unseen] the microphone's audio before the echo canceller, for the very frames Pipecat's
         # `_audio_buffer` holds, so a hold is measured on both sides of the canceller over the audio it is transcribed from.
         self._uncancelled = bytearray()
@@ -140,7 +139,7 @@ class Whisper(SegmentedSTTService):
                 # A start that was only a noise: the desk listens on, and its last second is kept as Pipecat keeps it.
                 self._user_speaking = False
             case "up" | "listening" | "arming", "down":
-                self._opened += 1
+                self._opened = Hold(self._opened.number + 1, frame.opened)
                 opened = TurnOpened(hold=self._opened)
                 await super()._handle_user_started_speaking(opened)
                 await self.push_frame(opened)
@@ -174,7 +173,7 @@ class Whisper(SegmentedSTTService):
         bound = asyncio.timeout(TRANSCRIBING_SECONDS)
         try:
             async with bound:
-                heard = await self._heard(hold, levels, audio)
+                heard = await self._heard(hold.number, levels, audio)
             # Recorded, so "I spoke and nothing happened" can be looked into.
             self._record(heard)
             match heard.said:
@@ -183,11 +182,11 @@ class Whisper(SegmentedSTTService):
                     pass
                 case said:
                     await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
-                    yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), LANGUAGE)
+                    yield Words(said, self._user_id, time_now_iso8601(), LANGUAGE)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
-            yield ErrorFrame(error=f"Whisper could not transcribe hold {hold}: {why}", exception=error)
+            yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
         yield TurnResolved(hold=hold)
 
