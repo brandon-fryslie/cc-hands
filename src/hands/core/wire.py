@@ -943,9 +943,8 @@ class Uncopied:
 
 @dataclass(frozen=True)
 class Unfinished:
-    """The proxy stopped waiting on the API before its answer's head came: the client hung up, hands stopped, or the proxy
-    failed, and `reason` says which. Whether the API ever saw the request is not known here, and the client was answered
-    nothing."""
+    """The proxy stopped before the API's answer had a head: the client hung up, hands stopped, or the proxy failed, and
+    `reason` says which. Whether the API ever saw the request is not known here, and the client had no answer from it."""
 
     reason: str
     stopped_at: Seconds
