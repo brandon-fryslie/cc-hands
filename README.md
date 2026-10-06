@@ -411,7 +411,7 @@ and says it is done or what does it: the native `claude` on this `PATH`; PortAud
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
 backend's key or login; this terminal's Input Monitoring grant; hands running; each running session hands
-knows of that cannot be typed into; and each running session hands has no record of, such
+knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 says the same lines as it starts, the backend as it reached it. An up daemon is not a
 working hands: `hands status` says only whether the daemon is running.

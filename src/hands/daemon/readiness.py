@@ -21,7 +21,10 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import get_args
 
+from hands.core.effects import Fritter
 from hands.core.events import Attached
+from hands.core.reach import Unwrapped, through, writer
+from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
@@ -51,6 +54,9 @@ class Unknown:
 
 Finding = Ready | Missing | Unknown
 
+# The tmux pane whose keys reach each of a list of processes, as `hands.sessions.tmux.keyboards` reads it.
+Keyboards = Callable[[Sequence[int]], list[Keyboard]]
+
 # `claude plugin list` answers in a quarter of a second; one that has not answered in this long is not going to.
 LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
@@ -58,11 +64,12 @@ VERSION_TIMEOUT_SECONDS = 30.0
 INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 
-def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding) -> list[Finding]:
+def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
     """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, this terminal's grant;
-    `reached`, whether the settings' backend has its key or login; `running`, whether hands is up."""
+    `reached`, whether the settings' backend has its key or login; `running`, whether hands is up; `keyboards`, what
+    reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, grant(granted), running, sessions(home, path)]
+    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, grant(granted), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -226,8 +233,9 @@ def grant(granted: bool) -> Ready | Missing:
     )
 
 
-def sessions(home: Home, path: str) -> Finding:
-    """Whether every running session can be typed into, those hands knows of and those it does not. Nothing is removed or dialled."""
+def sessions(home: Home, path: str, keyboards: Keyboards) -> Finding:
+    """Whether every running session can be typed into, those hands knows of and those it does not, each by the fritter
+    that wrapped it or the tmux pane in front of it, as `keyboards` reads them. Nothing is removed or dialled."""
     try:
         records, unreadable = liveness.recorded(home)
         started = process_starts({record.membership.pid for record in records})
@@ -239,7 +247,11 @@ def sessions(home: Home, path: str) -> Finding:
         listening = {member.fritter for member in running if member.fritter is not None and member.fritter.is_socket()}
     except OSError as error:
         return Unknown(f"cannot look at the running sessions in {home.memberships}: {error}")
-    return sessions_found(running, listening, unreadable, unrecorded(home, path, {member.pid for member in running}))
+    found = unrecorded(home, path, {member.pid for member in running})
+    # One read of the panes, for every session the check looks at.
+    joining = found.sessions if isinstance(found, Unrecorded) else []
+    pids = [*(member.pid for member in running), *(session.process.pid for session in joining)]
+    return sessions_found(running, listening, unreadable, found, dict(zip(pids, keyboards(pids), strict=True)))
 
 
 @dataclass(frozen=True)
@@ -249,10 +261,10 @@ class Unfindable:
 
 @dataclass(frozen=True)
 class Unjoined:
-    """A running session hands has no record of, and whether hands could type into it once it joins."""
+    """A running session hands has no record of, and the fritter that wrapped it, if one did."""
 
     process: Terminal
-    under_fritter: bool
+    fritter: Terminal | None
 
 
 @dataclass(frozen=True)
@@ -336,7 +348,7 @@ def unjoined(
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
     ran: list[tuple[Terminal, wrapper.Run]] = [(process, wrapper.run(process.arguments, reads)) for process, reads in described]
     return Unrecorded(
-        [Unjoined(process, process.parent in by_pid and by_pid[process.parent].executable == fritter) for process, why in ran if why == "session"],
+        [Unjoined(process, wrapped if (wrapped := by_pid.get(process.parent)) and wrapped.executable == fritter else None) for process, why in ran if why == "session"],
         Counter(why for _, why in ran if why != "session"),
         [
             *(each for each in terminals.unread if each.pid not in members and not runs_claude(each.parent)),
@@ -360,49 +372,77 @@ def sessions_found(
     listening: Collection[Path],
     unreadable: Sequence[liveness.Unreadable],
     unrecorded: Unrecorded | Unfindable,
+    keyboards: Mapping[int, Keyboard],
 ) -> Finding:
-    """What the running sessions are to hands, given which fritter sockets are there, which files did not parse, and
-    which sessions at a terminal hands has no record of."""
+    """What the running sessions are to hands, given which fritter sockets are there, which files did not parse, which
+    sessions at a terminal hands has no record of, and the tmux pane in front of each session, by its pid."""
     match unrecorded:
         case Unfindable(said):
-            unknown, unseen, beside = [], [f"a session hands has no record of cannot be found: {said}"], ""
-        case Unrecorded(sessions, others, unread):
+            unjoined, unread, beside = [], [Unknown(f"a session hands has no record of cannot be found: {said}")], ""
+        case Unrecorded(sessions, others, undescribed):
             # [LAW:nothing-unseen] a claude at a terminal set aside as no session is counted by why, so none goes unseen;
             # nor does a process the kernel would not describe, which may be a session.
             counts = ", ".join(f"{why} {others[why]}" for why in get_args(wrapper.NotASession))
-            unknown, beside = [_unjoined(session) for session in sessions], f", runs of claude at a terminal that are none: {counts}"
-            said = ", ".join(f"pid {each.pid} ({each.call}: {os.strerror(each.errno)})" for each in unread)
-            unseen = [f"the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: {said}"] if unread else []
-    unreached = [
-        *(line for member in running for line in _untypable(member, listening)),
-        *(f"{file.path} names no session hands can read ({file.error}): hands run removes it" for file in unreadable),
-        *unknown,
+            unjoined, beside = [_unjoined(session, keyboards[session.process.pid]) for session in sessions], f", runs of claude at a terminal that are none: {counts}"
+            said = ", ".join(f"pid {each.pid} ({each.call}: {os.strerror(each.errno)})" for each in undescribed)
+            unread = [Unknown(f"the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: {said}")] if undescribed else []
+    lines = [
+        *(_typable(member, listening, keyboards[member.pid]) for member in running),
+        *(Missing(f"{file.path} names no session hands can read ({file.error}): hands run removes it") for file in unreadable),
+        *unjoined,
+        *unread,
     ]
+    unreached = [line.said for line in lines if isinstance(line, Missing)]
+    unseen = [line.said for line in lines if isinstance(line, Unknown)]
     known = f"running sessions hands knows of: {len(running)}{beside}"
     # [LAW:no-silent-failure] sessions that could not be looked for are said, never taken for none.
     if unreached:
         return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in [*unreached, *unseen]))
     if unseen:
-        return Unknown(f"{known}, and each can be typed into, but {unseen[0]}")
+        return Unknown(f"{known}, and whether hands can reach these is unknown:" + "".join(f"\n    {line}" for line in unseen))
     return Ready(f"{known}, and each can be typed into")
 
 
-def _unjoined(session: Unjoined) -> str:
+def _unjoined(session: Unjoined, pane: Keyboard) -> Missing:
     where = f"{session.process.cwd} (pid {session.process.pid}) is a session hands has no record of"
-    if session.under_fritter:
-        return f"{where}, so it cannot be reached: /reload-plugins in it"
-    return f"{where}, started outside fritter, so it cannot be typed into: {_RESTART}"
+    # [LAW:single-enforcer] whether it can be typed into once it joins is decided as a joined session's writer is.
+    match through(session.fritter, pane):
+        case Terminal() | Pane():
+            return Missing(f"{where}, so it cannot be reached: /reload-plugins in it")
+        case Behind(pane=behind):
+            return Missing(f"{where}, started outside fritter, {_behind(behind)}, so it cannot be typed into: {_FRONT}, then /reload-plugins in it")
+        case NotInTmux():
+            return Missing(f"{where}, started outside fritter and in no tmux pane, so it cannot be typed into: {_RESTART}")
+        case PaneUnread(reason):
+            return Missing(
+                f"{where}, started outside fritter, and which tmux pane it runs in could not be read ({reason}): "
+                f"/reload-plugins in it joins it, and whether it can be typed into then is unknown"
+            )
 
 
 _RESTART = "restart it from a PATH whose `claude` is hands' shim"
+_FRONT = "bring it back to the front of its pane"
 
 
-def _untypable(member: Membership, listening: Collection[Path]) -> list[str]:
+def _behind(pane: Pane) -> str:
+    return f"and another program has the keyboard of the tmux pane it runs in, {pane.id} (window {pane.window} of {pane.session})"
+
+
+def _typable(member: Membership, listening: Collection[Path], pane: Keyboard) -> Finding:
     where = f"{member.cwd} (pid {member.pid})"
-    match member.fritter:
-        case None:
-            return [f"{where} was started outside fritter, so it cannot be typed into: {_RESTART}"]
-        case socket if socket not in listening:
-            return [f"{where} has lost its fritter, whose socket {socket} is gone, so it cannot be typed into: {_RESTART}"]
-        case _:
-            return []
+    # [LAW:single-enforcer] a session's reach is judged by the writer that would type into it, and by no other test.
+    match writer(member, pane):
+        case Fritter(socket) if socket not in listening:
+            return Missing(f"{where} has lost its fritter, whose socket {socket} is gone, so it cannot be typed into: {_RESTART}")
+        case Fritter():
+            return Ready(f"{where} is typed into through its fritter")
+        case Pane(id=id):
+            return Ready(f"{where} is typed into through its tmux pane {id}")
+        case Unwrapped(pane=missing):
+            match missing:
+                case Behind(pane=behind):
+                    return Missing(f"{where} was started outside fritter, {_behind(behind)}, so it cannot be typed into: {_FRONT}, or {_RESTART}")
+                case NotInTmux():
+                    return Missing(f"{where} was started outside fritter and runs in no tmux pane, so it cannot be typed into: {_RESTART}")
+                case PaneUnread(reason):
+                    return Unknown(f"{where} was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: {reason}")
