@@ -21,7 +21,6 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     LLMTextFrame,
-    TranscriptionFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -29,13 +28,13 @@ from pipecat.frames.frames import (
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from hands.voice.mark import Mark
-from hands.voice.turnstop import HoldDiscarded
+from hands.voice.turnstop import HoldDiscarded, Words
 
 # The first arrival of each of these frame types in an open window is a mark. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
 # once per processor boundary it crosses.
 _MILESTONES: dict[type[Frame], Mark] = {
-    TranscriptionFrame: "transcript",
+    Words: "transcript",
     LLMTextFrame: "first LLM token",
 }
 
@@ -156,7 +155,7 @@ class LatencyObserver(BaseObserver):
                         self._take(window, "failed", now)
                         self._window = None
             return
-        if isinstance(frame, TranscriptionFrame):
+        if isinstance(frame, Words):
             self._turn.said = True
         mark = _MILESTONES.get(type(frame))
         if mark is not None and self._window is not None:

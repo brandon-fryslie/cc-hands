@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TranscriptionFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TranscriptionFrame, UninterruptibleFrame, VADUserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core.beside import beside
@@ -24,6 +24,11 @@ class _Read:
 
     modality: Modality
     front: asyncio.Task[InFront]
+
+
+class Note(LLMMessagesAppendFrame, UninterruptibleFrame):
+    """The note beside the user's words: theirs as the words are, so the interruption that lands behind the words of a
+    turn the voice opened drops neither."""
 
 
 class Noting(FrameProcessor):
@@ -54,7 +59,7 @@ class Noting(FrameProcessor):
                 front = reading.result() if reading.done() else _NOT_YET_READ
                 self._let_go()
                 # Behind the words and ahead of the hold's end, so it is in the context before the turn that writes them.
-                await self.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": beside(front, modality)}], run_llm=False))
+                await self.push_frame(Note([{"role": "user", "content": beside(front, modality)}], run_llm=False))
             case _:
                 pass
 

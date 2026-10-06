@@ -12,7 +12,7 @@ import httpx2
 import openai
 import pytest
 from loguru import logger
-from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame, TTSSpeakFrame
+from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
@@ -47,7 +47,7 @@ from hands.voice.system import (
 from hands.voice.microphone import Devices
 from hands.voice.hold import Move
 from hands.voice.ptt import Gate
-from hands.voice.turnstop import TurnResolved
+from hands.voice.turnstop import TurnResolved, Words
 from hands.voice.whisper import Whisper
 
 
@@ -368,7 +368,7 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
     said.append(None)
     assert [type(frame) async for frame in whisper.run_stt(b"")] == [TurnResolved]
     said.append("what time is it")
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [TranscriptionFrame, TurnResolved]
+    assert [type(frame) async for frame in whisper.run_stt(b"")] == [Words, TurnResolved]
     said.append(RuntimeError("model failed"))
     assert [type(frame) async for frame in whisper.run_stt(b"")] == [ErrorFrame, TurnResolved]
 

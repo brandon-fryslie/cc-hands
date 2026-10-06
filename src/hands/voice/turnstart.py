@@ -1,49 +1,110 @@
-"""The start of a user turn: the moment it cuts off what hands is saying, which the edge that opened its hold decides.
+"""The start of a user turn, and the cut: the moment it cuts off what hands is saying, which the edge that opened it decides.
 
-Pipecat names both starts this chooses between: a VAD start (`VADUserTurnStartStrategy`), as the hold opens, and a
-transcription start (`TranscriptionUserTurnStartStrategy`), once Whisper pushes words. Starting the turn is what
-interrupts: the user aggregator broadcasts the interruption that stops the speaker, cancels the reply still streaming
-from the model and its calls in flight, and settles a line waiting to be heard as cut off. A hold whose start waits on
-words and that Whisper hears none in starts nothing, so none of that happens, and nothing has to be undone.
+Every turn starts as the hold that opens it opens, Pipecat's VAD start, so the floor is the user's from the moment they
+speak, whatever opened it. Starting is not cutting. The cut is the interruption that stops the speaker, cancels the reply
+still streaming from the model and its calls in flight, and settles a line waiting to be heard as cut off. A turn the
+user's hand opened cuts as it opens; one the voice opened cuts once Whisper pushes words for it, Pipecat's transcription
+start. A turn that ends uncut has cut nothing off, so nothing has to be undone. The cut can land while the turn's own
+words and their note are on their way, so those are uninterruptible (`hands.voice.turnstop.Words`,
+`hands.voice.beside.Note`): an interruption stops hands, never the user.
 """
 
-from pipecat.frames.frames import Frame, TranscriptionFrame
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from pipecat.frames.frames import Frame
+from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import BaseUserTurnStartStrategy
 
-from hands.sessions.audit import FalseBargeIn, Record
+from hands.sessions.audit import Record, TurnStart, UserTurn
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import TurnOpened, TurnResolved
+from hands.voice.turnstop import TurnOpened, Words
+
+
+@dataclass
+class _Open:
+    """The turn open: when the edge that opened it has it cut, when it opened, and how long after that it cut, None until
+    it has."""
+
+    start: TurnStart
+    opened: float
+    cut: float | None = None
 
 
 class EdgeTurnStart(BaseUserTurnStartStrategy):
-    """Starts the user turn as the edge that opened its hold says (`hands.voice.trigger.turn_start`).
+    """Starts the user turn as its first hold opens, and cuts hands off when the edge that opened each hold says
+    (`hands.voice.trigger.turn_start`).
 
-    [LAW:single-enforcer] the one place a turn's start is decided: the pipeline runs no other start strategy.
+    [LAW:single-enforcer] the one place a turn's start and its cut are decided: the pipeline runs no other start strategy,
+    and Pipecat broadcasts no interruption of its own as the turn starts.
     """
 
-    def __init__(self, record: Record) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+    def __init__(self, record: Record, clock: Callable[[], float] = time.monotonic) -> None:
+        super().__init__(enable_interruptions=False)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         self._record = record
+        self._now = clock
+        # Between turns, None: Pipecat ends a turn, and this is told so (`handle_user_turn_stopped`).
+        self._turn: _Open | None = None
+        # Each cut, for the user aggregator to broadcast (`interrupting`).
+        self._register_event_handler("on_cut", sync=True)
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
-        match frame:
-            case TurnOpened(hold=hold):
-                match turn_start(hold.edge):
-                    case "on the hold":
-                        await self.trigger_user_turn_started()
-                    case "on words":
-                        pass
-            case TranscriptionFrame():
-                # Words, in whichever hold, are someone speaking. Pipecat starts an open turn no second time.
+        match frame, self._turn:
+            case TurnOpened(hold=hold), None:
+                start = turn_start(hold.edge)
+                self._turn = _Open(start, self._now())
                 await self.trigger_user_turn_started()
-            case TurnResolved(hold=hold, transcribed=False):
-                match turn_start(hold.edge):
-                    case "on words":
-                        # [LAW:nothing-unseen] a hold that cut nothing off is a line, as every barge-in is.
-                        self._record(FalseBargeIn(hold.number))
-                    case "on the hold":
-                        pass
+                await self._cut_where(start, self._turn)
+            case TurnOpened(hold=hold), _Open() as turn:
+                # A hold pressed while Whisper is still on the last joins its turn, and cuts as its own edge says.
+                await self._cut_where(turn_start(hold.edge), turn)
+            case Words(), _Open() as turn:
+                # Words, in whichever hold, are someone speaking.
+                await self._cut(turn)
+            case Words(), None:
+                # [LAW:no-silent-failure] a turn ends only once Whisper is done with every hold, behind each one's words.
+                raise RuntimeError("Whisper heard words outside any user turn")
             case _:
                 pass
         return ProcessFrameResult.CONTINUE
+
+    async def handle_user_turn_stopped(self) -> None:
+        match self._turn:
+            case _Open(start=start, cut=cut):
+                # [LAW:nothing-unseen] every turn is a line: how its edge had it cut, and when, or that it cut nothing.
+                self._record(UserTurn(start, cut))
+                self._turn = None
+            case None:
+                # [LAW:no-silent-failure] Pipecat stops only a turn it started, and nothing but this starts one.
+                raise RuntimeError("Pipecat stopped a user turn this never started")
+
+    async def _cut_where(self, start: TurnStart, turn: _Open) -> None:
+        match start:
+            case "on the hold":
+                await self._cut(turn)
+            case "on words":
+                pass
+
+    async def _cut(self, turn: _Open) -> None:
+        """Cut hands off, once a turn."""
+        match turn.cut:
+            case None:
+                turn.cut = self._now() - turn.opened
+                await self._call_event_handler("on_cut")  # pyright: ignore[reportUnknownMemberType]  (Pipecat's *args is untyped)
+            case _:
+                pass
+
+
+def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
+    """Have `turns`, the user aggregator `start` is the start strategy of, broadcast each cut `start` makes.
+
+    The aggregator broadcasts it as it broadcasts the interruption of a turn Pipecat starts: inline, from within the frame
+    being processed, so it is pushed ahead of anything behind that frame. Queued as a frame of its own, the turn's context
+    could leave for the model ahead of it, and the interruption would then cancel the reply to the very words that made it.
+    """
+
+    @start.event_handler("on_cut")
+    async def cut(_start: EdgeTurnStart) -> None:  # pyright: ignore[reportUnusedFunction]
+        await turns.broadcast_interruption()

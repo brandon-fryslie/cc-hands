@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pipecat.frames.frames import (
     DataFrame,
     Frame,
+    TranscriptionFrame,
     UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -41,17 +42,20 @@ class HoldDiscarded(VADUserStoppedSpeakingFrame):
     """The user stopped speaking, and what the hold recorded is thrown away: nothing of it is transcribed or sent."""
 
 
+class Words(TranscriptionFrame, UninterruptibleFrame):
+    """What Whisper heard said in a hold. The user's own, so no interruption drops it: one can land while the turn's words
+    are still on their way to it, since a turn the voice opened cuts hands off only once they are heard."""
+
+
 @dataclass(kw_only=True)
 class TurnResolved(DataFrame, UninterruptibleFrame):
-    """Whisper is done with this hold: whatever text it had has been pushed ahead of this, and `transcribed` says whether
-    there was any.
+    """Whisper is done with this hold: whatever text it had has been pushed ahead of this.
 
-    Nothing else ends a turn, so the interruption a turn's start broadcasts cannot drop it on its way: a hold dropped at
-    once resolves right behind its own start.
+    Nothing else ends a turn, so the interruption a turn broadcasts cannot drop it on its way: a hold dropped at once
+    resolves right behind its own start.
     """
 
     hold: Hold
-    transcribed: bool
 
 
 class KeyTurnStop(BaseUserTurnStopStrategy):

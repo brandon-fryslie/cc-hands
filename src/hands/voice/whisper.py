@@ -15,7 +15,6 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InputAudioRawFrame,
-    TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -32,7 +31,7 @@ from hands.core.place import Place
 from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved
+from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved, Words
 
 # What every hold is said in, as Pipecat names it.
 LANGUAGE = Language(transcription.LANGUAGE)
@@ -123,7 +122,7 @@ class Whisper(SegmentedSTTService):
                 self._user_speaking = False
                 self._audio_buffer.clear()
                 await self.push_frame(HoldDiscarded())
-                await self.push_frame(TurnResolved(hold=self._opened, transcribed=False))
+                await self.push_frame(TurnResolved(hold=self._opened))
                 self._captured = "up"
             case _:
                 pass
@@ -168,8 +167,6 @@ class Whisper(SegmentedSTTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         hold, levels = self._transcribing.popleft()
-        # Whether the hold's words are pushed ahead of its resolution: not where it heard none, or failed.
-        transcribed = False
         # [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing but
         # Whisper resolving its holds ends one: it fails instead. A model that is running cannot be stopped, so the next
         # hold's transcription waits behind it, on the one thread, inside its own bound.
@@ -184,15 +181,14 @@ class Whisper(SegmentedSTTService):
                     # Not said: Brandon does not need to hear it (2026-09-27).
                     pass
                 case said:
-                    transcribed = True
                     await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
-                    yield TranscriptionFrame(said, self._user_id, time_now_iso8601(), LANGUAGE)
+                    yield Words(said, self._user_id, time_now_iso8601(), LANGUAGE)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
         # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
-        yield TurnResolved(hold=hold, transcribed=transcribed)
+        yield TurnResolved(hold=hold)
 
     async def _heard(self, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
         """What was said in a hold's WAV, primed with the vocabulary as it is now.

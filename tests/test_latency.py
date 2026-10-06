@@ -8,7 +8,6 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     LLMTextFrame,
-    TranscriptionFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -17,7 +16,7 @@ from pipecat.observers.base_observer import FramePushed
 
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
-from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved
+from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved, Words
 
 
 async def observed(*frames: Frame) -> tuple[list[str], list[Mark]]:
@@ -44,8 +43,7 @@ def opened(number: int) -> TurnOpened:
 
 
 def resolved(number: int) -> TurnResolved:
-    # The latency observer reads which hold resolved, never whether it was transcribed.
-    return TurnResolved(hold=Hold(number, "held key"), transcribed=False)
+    return TurnResolved(hold=Hold(number, "held key"))
 
 
 async def told(*frames: Frame) -> list[Mark]:
@@ -55,7 +53,7 @@ async def told(*frames: Frame) -> list[Mark]:
 
 async def test_an_answered_turn_is_told_mark_by_mark_each_once_however_often_its_frames_cross() -> None:
     release = VADUserStoppedSpeakingFrame()
-    transcript = TranscriptionFrame(text="hello", user_id="u", timestamp="t")
+    transcript = Words(text="hello", user_id="u", timestamp="t")
     token = LLMTextFrame("Hi")
     speaking = BotStartedSpeakingFrame()
     ended = UserStoppedSpeakingFrame()
@@ -86,7 +84,7 @@ async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_trans
         opened(2),
         HoldDiscarded(),
         resolved(2),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         resolved(1),
         UserStoppedSpeakingFrame(),
     )
@@ -100,7 +98,7 @@ async def test_a_hold_with_no_words_in_a_turn_that_has_some_is_still_answered_an
         opened(1),
         VADUserStoppedSpeakingFrame(),
         opened(2),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         resolved(1),
         VADUserStoppedSpeakingFrame(),
         resolved(2),
@@ -118,7 +116,7 @@ async def test_a_press_thrown_away_after_a_turn_was_sent_says_nothing_of_the_rep
     lines, marks = await observed(
         opened(1),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         resolved(1),
         UserStoppedSpeakingFrame(),
         opened(2),
@@ -151,7 +149,7 @@ async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_a
         VADUserStoppedSpeakingFrame(),
         error,
         resolved(1),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         resolved(2),
         UserStoppedSpeakingFrame(),
         error,
@@ -172,7 +170,7 @@ async def test_the_model_failing_after_the_words_were_heard_is_told_as_failed() 
     marks = await told(
         opened(1),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         resolved(1),
         UserStoppedSpeakingFrame(),
         ErrorFrame("LLM completion timeout"),
@@ -196,14 +194,14 @@ async def test_speech_that_answers_a_user_turn_is_measured_from_the_release_inst
     lines = await logged(
         VADUserStartedSpeakingFrame(),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         BotStartedSpeakingFrame(),
     )
     assert [line.split(" ")[1] for line in lines] == ["transcript", "first"]
     assert all("after key release" in line for line in lines)
 
 
-@pytest.mark.parametrize("frame", [BotStartedSpeakingFrame(), TranscriptionFrame(text="x", user_id="u", timestamp="t")])
+@pytest.mark.parametrize("frame", [BotStartedSpeakingFrame(), Words(text="x", user_id="u", timestamp="t")])
 async def test_nothing_is_measured_from_a_release_that_never_happened(frame: Frame) -> None:
     """A transcript with no user turn open has no release to be late from, so it is not reported as instant."""
     assert all("after key release" not in line for line in await logged(frame))
@@ -222,7 +220,7 @@ async def test_a_narration_after_a_user_turn_is_still_measured_as_answering_nobo
     lines = await logged(
         VADUserStartedSpeakingFrame(),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="hello", user_id="u", timestamp="t"),
+        Words(text="hello", user_id="u", timestamp="t"),
         BotStartedSpeakingFrame(),
         BotStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
@@ -239,12 +237,12 @@ async def test_a_barge_in_keeps_the_turn_it_opened_while_the_speaker_is_stopping
     lines = await logged(
         VADUserStartedSpeakingFrame(),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="first", user_id="u", timestamp="t"),
+        Words(text="first", user_id="u", timestamp="t"),
         BotStartedSpeakingFrame(),
         VADUserStartedSpeakingFrame(),
         BotStoppedSpeakingFrame(),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="second", user_id="u", timestamp="t"),
+        Words(text="second", user_id="u", timestamp="t"),
     )
     assert lines[-1].startswith("latency: transcript") and "after key release" in lines[-1]
 
@@ -261,7 +259,7 @@ async def test_a_barge_in_over_a_still_pushing_utterance_keeps_its_own_measureme
         BotStartedSpeakingFrame(),
         BotStoppedSpeakingFrame(),
         VADUserStoppedSpeakingFrame(),
-        TranscriptionFrame(text="wait", user_id="u", timestamp="t"),
+        Words(text="wait", user_id="u", timestamp="t"),
         BotStartedSpeakingFrame(),
     )
     assert [line.split(" ")[1] for line in lines] == ["first", "transcript", "first"]
@@ -279,7 +277,7 @@ async def test_an_announcement_that_starts_while_the_key_is_held_is_still_said()
         VADUserStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
         BotStoppedSpeakingFrame(),
-        TranscriptionFrame(text="held", user_id="u", timestamp="t"),
+        Words(text="held", user_id="u", timestamp="t"),
         BotStartedSpeakingFrame(),
     )
     assert lines[0] == "latency: first audio, answering no user turn"
@@ -294,6 +292,6 @@ async def test_one_release_is_one_window_however_often_it_crosses_a_boundary() -
     and restart the measurement from a later zero — so a milestone landing between two pushes is said twice,
     the second time timed from a moment the user had already finished speaking at."""
     release = VADUserStoppedSpeakingFrame()
-    transcript = TranscriptionFrame(text="once", user_id="u", timestamp="t")
+    transcript = Words(text="once", user_id="u", timestamp="t")
     lines = await logged(VADUserStartedSpeakingFrame(), release, transcript, release, transcript, BotStartedSpeakingFrame())
     assert [line.split(" ")[1] for line in lines] == ["transcript", "first"]

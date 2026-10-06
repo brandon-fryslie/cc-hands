@@ -40,7 +40,7 @@ from conftest import Endpoint, ServeApi, events, running, unprimed
 from hands.core.front import FrontUnread, InFront, SessionInFront
 from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
 from hands.voice.beside import Noting
-from hands.sessions.audit import CutOff, Entry, FalseBargeIn, HoldHeard, Levels, Unsaid
+from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
@@ -432,37 +432,57 @@ async def reading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGener
 OPENED_BY_THE_VOICE: list[Captured] = ["listening", "arming", "down", "down", "listening"]
 
 
+def user_turns(rig: Rig) -> list[tuple[TurnStart, bool]]:
+    """Each user turn's line, as it ended: when its edge had it cut, and whether it did."""
+    return [(entry.start, entry.cut is not None) for entry in rig.recorded if isinstance(entry, UserTurn)]
+
+
 async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_is_a_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.texts.put("")
-        await rig.until(lambda: FalseBargeIn(1) in rig.recorded)
-        # No turn, so no interruption: the model's reply streams on, the reading plays on, and the line still waits.
-        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+        await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        # The turn took the floor and cut nothing: the model's reply streams on, the reading plays on, and the line waits.
+        assert (rig.out.started, rig.out.stopped, rig.out.interrupted, cut, line.done()) == (1, 1, 0, [], False)
         assert await rig.everything_sent(holds=1) == []
         # The closing hold is the held key's, which cut the reading at once.
-        assert [entry for entry in rig.recorded if isinstance(entry, FalseBargeIn)] == [FalseBargeIn(1)]
+        assert user_turns(rig) == [("on words", False), ("on the hold", True)]
 
 
 async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_in_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.until(lambda: rig.out.released == 1)
+        # The turn is the user's from the hold's opening, but nothing is cut off until its words are heard.
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (1, 0, [], False)
         await rig.texts.put("wait, not yet")
         assert await line is False
         assert cut == [CutOff("The parser is fixed.", 1)] and rig.out.interrupted == 1
         assert await rig.everything_sent(holds=1) == ["wait, not yet"]
-        assert not any(isinstance(entry, FalseBargeIn) for entry in rig.recorded)
+        assert user_turns(rig)[0] == ("on words", True)
 
 
-async def test_a_turn_started_by_one_holds_words_ends_once_a_wordless_hold_opened_in_it_resolves(rig: Rig) -> None:
+async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_ends_once_every_hold_resolves(rig: Rig) -> None:
     await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
     await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
     await rig.until(lambda: rig.out.released == 2)
     await rig.texts.put("turn it off")
+    await rig.texts.put("and the lights")
+    # The cut lands behind the first hold's words, ahead of the second's: neither is dropped by it.
+    assert await rig.everything_sent(holds=2) == ["turn it off and the lights"]
+    assert rig.out.interrupted == 2  # the closing hold's is the second
+    assert user_turns(rig)[0] == ("on words", True)
+
+
+async def test_a_held_key_pressed_in_a_turn_the_voice_opened_cuts_at_once(rig: Rig) -> None:
+    await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
+    await rig.until(lambda: rig.out.released == 1)
+    await rig.hold(["down", "down", "up"])
+    await rig.until(lambda: rig.out.interrupted == 1)
     await rig.texts.put("")
-    assert await rig.everything_sent(holds=2) == ["turn it off"]
-    assert [entry for entry in rig.recorded if isinstance(entry, FalseBargeIn)] == [FalseBargeIn(2)]
+    await rig.texts.put("stop")
+    assert await rig.everything_sent(holds=2) == ["stop"]
+    assert user_turns(rig)[0] == ("on words", True)
 
 
 @pytest.mark.parametrize("by", ["held key", "phone button", "wake word"])
@@ -474,7 +494,7 @@ async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_
         assert cut == [CutOff("The parser is fixed.", 1)]
         await rig.texts.put("")
         assert await rig.everything_sent(holds=1) == []
-        assert not any(isinstance(entry, FalseBargeIn) for entry in rig.recorded)
+        assert user_turns(rig)[0] == ("on the hold", True)
 
 
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
@@ -631,16 +651,27 @@ def let_go(unprompted: Unprompted) -> dict[str, Fact]:
     return {key: value for key, value in utterance.facts.items() if key in ("held_ms", "told", "folded")} | settled
 
 
-async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(rig: Rig) -> None:
+# A hold the held key opens and lets go of, and one the voice opens and its end of turn closes.
+HOLDS: list[tuple[Edge, list[Captured], list[Captured]]] = [
+    ("held key", ["down", "down"], ["up"]),
+    ("engaged conversation", ["listening", "arming", "down", "down"], ["listening"]),
+]
+
+
+@pytest.mark.parametrize(("by", "held", "let_go_of"), HOLDS)
+async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(
+    rig: Rig, by: Edge, held: list[Captured], let_go_of: list[Captured]
+) -> None:
     rig.clock.now = 10.0
-    await rig.hold(["down", "down"])
+    # A turn the voice opens holds the floor from its opening, though it cuts nothing off until its words are heard.
+    await rig.hold(held, by=by)
     await rig.until(lambda: rig.out.started == 1)
     gone = waiting()
     await rig.worker.queue_frames([gone, TextFrame("marker")])
     # Frames keep their order, so the marker past the floor with the announcement not is the announcement held.
     await rig.until(lambda: "marker" in rig.out.order)
     rig.clock.now = 13.5
-    await rig.hold(["up"])
+    await rig.hold(let_go_of, by=by)
     await rig.texts.put("what time is it")
     await rig.until(lambda: "said: The session api is gone." in rig.out.order)
     assert rig.out.order == ["started", "marker", "stopped", "sent: what time is it", "said: The session api is gone."]
@@ -742,6 +773,18 @@ async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_
     # [LAW:nothing-unseen] the one hold let go is one event: what was read, and where the user was.
     [noted] = events(asked.noted, "front.read")
     assert noted.outcome == "ok" and noted.facts == {"front": SessionInFront("iTerm2", API, "api"), "modality": "audio-only"}
+
+
+@pytest.mark.parametrize(("by", "held", "let_go_of"), HOLDS)
+async def test_a_turns_note_reaches_the_model_beside_its_words_whenever_the_turn_cuts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, by: Edge, held: list[Captured], let_go_of: list[Captured]
+) -> None:
+    async with served(monkeypatch, tmp_path, api_server, "anthropic", api_in_front) as asked:
+        # A turn the voice opened cuts as its words arrive, with the note pushed right behind them.
+        await asked.rig.hold([*held, *let_go_of], by=by)
+        await asked.rig.texts.put("what time is it")
+        await asked.rig.until(lambda: len(asked.requests) == 1)
+    assert user_texts(asked.requests[0]) == [f"{IN_FRONT}\n\n{AUDIO_ONLY}", "what time is it"]
 
 
 async def test_a_turn_whose_screen_could_not_be_read_is_asked_with_where_the_user_is_alone_and_its_event_says_why(

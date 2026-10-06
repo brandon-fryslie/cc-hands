@@ -56,7 +56,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.tool import Tool
 from hands.voice.tools import RunsReplies, context_tools
-from hands.voice.turnstart import EdgeTurnStart
+from hands.voice.turnstart import EdgeTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import conversation, voices
 from hands.voice.whisper import Whisper
@@ -194,10 +194,10 @@ def build_voice(
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and Whisper reads it off each
     # frame to push the VAD frames the turn strategies act on, so the user
-    # aggregator runs no VAD of its own. The turn opens on the press, or on the
-    # hold's first words where the voice pressed it (`hands.voice.turnstart`),
-    # and closes on the release; the release is final, so there is no wait for
-    # the user to "say more".
+    # aggregator runs no VAD of its own. The turn opens on the press, and cuts
+    # hands off there or, where the voice pressed it, on its first words
+    # (`hands.voice.turnstart`); it closes on the release, which is final, so
+    # there is no wait for the user to "say more".
     params = PipelineParams(enable_metrics=True)
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
@@ -216,8 +216,9 @@ def build_voice(
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
 
+    start = EdgeTurnStart(record)
     turns = UserTurnStrategies(
-        start=[EdgeTurnStart(record)],
+        start=[start],
         stop=[KeyTurnStop()],
     )
     context = LLMContext(tools=context_tools(tools, player.lines, llm))
@@ -229,6 +230,7 @@ def build_voice(
         # failed, and fails one it cannot transcribe within TRANSCRIBING_SECONDS, so every turn ends.
         LLMUserAggregatorParams(user_turn_strategies=turns, user_turn_stop_timeout=math.inf),
     )
+    interrupting(start, user_aggregator)
 
     # The floor ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # context or the model's stage takes it, and follows the user's words when given back.

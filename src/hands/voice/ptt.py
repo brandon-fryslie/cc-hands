@@ -10,7 +10,7 @@ the key is pressed (applied where they are captured, in
 said before the hold meant talk is kept. Audio frames always flow; only their
 content and their key follow the key. The turn strategies open and close the
 user turn on those frames (`hands.voice.turnstart`, `hands.voice.turnstop`),
-and its start broadcasts the interruption that flushes queued speech on
+and its cut broadcasts the interruption that flushes queued speech on
 barge-in. While the key is up, whatever the microphone hears,
 including the pipeline's own speech, is silence to the pipeline.
 
