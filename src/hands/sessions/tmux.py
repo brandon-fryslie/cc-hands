@@ -48,6 +48,8 @@ async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
         ran = await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS)
     except TimeoutError:
         return Unanswered(f"tmux at {socket} did not answer {arguments[0]} in {ANSWER_SECONDS:.0f} seconds")
+    except OSError as error:
+        return Unanswered(f"{tmux} could not be run to ask tmux at {socket}: {error}")
     if ran.returncode != 0:
         if ran.err.startswith(_NO_SERVER):
             return Answered(socket, ())
@@ -60,13 +62,23 @@ async def servers(environment: Mapping[str, str]) -> list[Server]:
     # A dead pane, kept by remain-on-exit, runs nothing and keeps the name of a terminal that is gone or reused.
     # The session's name last: it is the one field that may hold a tab.
     answers = await asked(environment, "list-panes", "-a", "-f", "#{?pane_dead,0,1}", "-F", "#{pane_tty}\t#{pane_id}\t#{window_index}\t#{session_name}")
-    return [_listed(answer) if isinstance(answer, Answered) else answer for answer in answers]
+    return [listed(answer) if isinstance(answer, Answered) else answer for answer in answers]
 
 
-def _listed(answered: Answered) -> Server:
+def listed(answered: Answered) -> Server:
+    """The panes a server's list-panes answer names, by the device number of each one's terminal."""
     panes = [(tty, Pane(answered.socket, id, session, int(window))) for tty, id, window, session in (line.split("\t", 3) for line in answered.lines)]
     try:
-        return Listed({os.stat(tty).st_rdev: pane for tty, pane in panes})
+        terminals = [(_device(tty), pane) for tty, pane in panes]
     except OSError as error:
-        # A pane closed between its listing and the look at its terminal.
         return Unanswered(f"a terminal of a pane of tmux at {answered.socket} could not be read: {error}")
+    return Listed({device: pane for device, pane in terminals if device is not None})
+
+
+def _device(tty: str) -> int | None:
+    """The device number of a pane's terminal; none for a pane closed since it was listed, whose terminal is gone and
+    runs nothing."""
+    try:
+        return os.stat(tty).st_rdev
+    except FileNotFoundError:
+        return None

@@ -13,6 +13,7 @@ import pytest
 
 from hands.core.tmux import Listed, NotInTmux, Pane, PaneUnread, Unanswered, pane_of
 from hands.sessions import tmux
+from hands.sessions.tmux import Answered
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
 
 TMUX = shutil.which("tmux")
@@ -125,3 +126,22 @@ def test_a_dead_pane_kept_by_remain_on_exit_leaves_the_live_panes_of_its_server_
         assert time.monotonic() < deadline, "the window's command never exited"
         time.sleep(0.05)
     assert in_pane(worker) == Pane(sockets / "default", pane, "work", 0)
+
+
+def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_the_rest_of_its_server_read() -> None:
+    lines = ["/dev/null\t%1\t0\twork", "/dev/hands-no-such-terminal\t%2\t1\twork"]
+    assert tmux.listed(Answered(WORK, lines)) == Listed({os.stat("/dev/null").st_rdev: Pane(WORK, "%1", "work", 0)})
+
+
+@needs_tmux
+def test_a_tmux_that_cannot_be_run_leaves_its_servers_unread_and_says_why(sockets: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, worker = run_in("default", "work")
+    # An executable with no interpreter line and no machine code: exec refuses it.
+    (tmp_path / "tmux").write_bytes(b"\x00\x01")
+    (tmp_path / "tmux").chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    match in_pane(worker):
+        case PaneUnread(reason=reason):
+            assert reason.startswith(f"{tmp_path / 'tmux'} could not be run to ask tmux at {sockets / 'default'}: ")
+        case other:
+            pytest.fail(f"read as {other}")
