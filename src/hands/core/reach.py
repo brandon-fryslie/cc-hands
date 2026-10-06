@@ -1,7 +1,6 @@
 """What types into a session, or why a request to type into it did not reach it, whatever the request was."""
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from hands.core.effects import Fritter, Writer
 from hands.core.session import Membership, SessionId
@@ -37,15 +36,28 @@ class AtItsDialog:
 Unreached = UnknownSession | SessionEnded | Unwrapped | AtItsDialog
 
 
+def through[F](wrapper: F | None, pane: Keyboard) -> F | Pane | Behind | NotInTmux | PaneUnread:
+    """What keys typed for a process go through: the fritter that wrapped it whenever one did, else the tmux pane in
+    front of it, else why there is none.
+
+    [LAW:single-enforcer] the one rule for which way a process is typed into, for a session hands knows and for one it
+    has no record of alike; `wrapper` is the fritter as the caller knows it.
+    """
+    match (wrapper, pane):
+        case (None, Pane() | Behind() | NotInTmux() | PaneUnread()):
+            return pane
+        case (wrapped, _):
+            return wrapped
+
+
 def writer(membership: Membership, pane: Keyboard) -> Writer | Unwrapped:
     """What types into the session: the fritter that wrapped it whenever one did, else tmux into the pane in front of it.
 
     [LAW:single-enforcer] the one place a session's writer is chosen, for a draft, a command, and a key alike.
     """
-    match (membership.fritter, pane):
-        case (Path() as socket, _):
-            return Fritter(socket, membership.pid)
-        case (None, Pane()):
-            return pane
-        case (None, Behind() | NotInTmux() | PaneUnread()):
-            return Unwrapped(membership.id, pane)
+    fritter = None if membership.fritter is None else Fritter(membership.fritter, membership.pid)
+    match through(fritter, pane):
+        case Fritter() | Pane() as typed:
+            return typed
+        case Behind() | NotInTmux() | PaneUnread() as missing:
+            return Unwrapped(membership.id, missing)

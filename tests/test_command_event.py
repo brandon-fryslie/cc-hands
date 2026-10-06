@@ -3,6 +3,7 @@ how long it took, with the unit of work it ran in its trace."""
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -80,10 +81,11 @@ def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.C
     home = Home(tmp_path / "home")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     code = main(["--home", str(home.root), "check"])
-    printed = capsys.readouterr().out.splitlines()
+    # A finding's indented lines continue the one above them.
+    printed = re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))
     [command] = events(home)
     assert command["facts"]["exit_code"] == code != 0
-    # One finding a line printed, each on the event as the line says it.
+    # One finding a printed line, each on the event as the line says it.
     assert [finding["said"] for finding in command["facts"]["findings"]] == [line.split(None, 1)[1] for line in printed]
 
 

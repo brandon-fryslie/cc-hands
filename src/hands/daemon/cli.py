@@ -23,7 +23,8 @@ from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
-from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
+from hands.core.tmux import Keyboard
+from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
@@ -274,6 +275,10 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
         case "check":
             from hands.voice import talkkey
 
+            # In place of loguru's DEBUG default, so the debug lines of the tmux and process reads a check makes do not print
+            # over its findings; a read that broke still prints, as an error.
+            logger.remove()
+            to_terminal(sys.stderr)
             return check(home, talkkey.granted())
         case "log":
             return tail_log(home, arguments.lines)
@@ -504,7 +509,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing(f"hands cannot start on its settings: {error}")
-        survey(readiness.check(home, path, True, reached, running))
+        survey(readiness.check(home, path, True, reached, running, keyboards))
 
     return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
 
@@ -596,13 +601,18 @@ def report(home: Home) -> int:
 
 def check(home: Home, granted: bool) -> int:
     reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, datetime.now(UTC)))
+    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
     wide.annotate(findings=tuple(findings))
     for finding in findings:
         print(f"{display(finding)[0]:<8} {finding.said}")
     kinds = {type(finding) for finding in findings}
     # A piece known to be missing outranks one that could not be looked at: hands is not set up, whatever that one is.
     return 1 if readiness.Missing in kinds else 2 if readiness.Unknown in kinds else 0
+
+
+def keyboards(pids: Sequence[int]) -> list[Keyboard]:
+    """The tmux pane whose keys reach each of `pids`, read on a loop of its own: the readiness check runs on none."""
+    return asyncio.run(tmux.keyboards(pids, os.environ))
 
 
 def survey(findings: Sequence[readiness.Finding]) -> None:
