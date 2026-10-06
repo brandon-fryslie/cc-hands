@@ -52,6 +52,14 @@ def test_the_file_names_the_backend_its_server_and_model(tmp_path: Path) -> None
     assert config.parse('[llm]\nbackend = "claude"\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
 
 
+def test_the_file_names_how_hands_comes_across_in_the_users_words(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
+    assert run.configured_from(home, config.load(home), {"ANTHROPIC_API_KEY": "k"}).voice.personality == "Dry and wry."
+    # Left out, hands comes across as its own.
+    assert config.parse("").personality is None
+
+
 @pytest.mark.parametrize(
     ("text", "said"),
     [
@@ -68,6 +76,8 @@ def test_the_file_names_the_backend_its_server_and_model(tmp_path: Path) -> None
         ('[llm]\nurl = "  "\n', "url should be a non-empty string"),
         ("[llm]\nmodel = 4\n", "model should be a non-empty string, got 4"),
         ('llm = "claude"\n', "llm should be a table"),
+        ('[talk]\npersonality = "  "\n', "[talk] personality should be a non-empty string"),
+        ('[talk]\nmood = "dry"\n', "[talk] has no 'mood'; it takes personality"),
     ],
 )
 def test_a_file_that_does_not_parse_is_refused_saying_what_is_wrong(text: str, said: str) -> None:
@@ -337,7 +347,7 @@ def test_a_backend_printed_does_not_print_its_key() -> None:
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT)
+    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT, personality="Dry and wry.")
     return Home(tmp_path), sessions, heart, config
 
 
@@ -365,15 +375,16 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     answered.set()
     assert await starting == config
     # The start's event says which file the settings came from, the collector they name, which server and
-    # model the run reaches, and never with what key, and the voice it speaks in.
+    # model the run reaches, and never with what key, the voice it speaks in, and the personality it comes across in.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
         "backend": "AnthropicBackend", "base_url": ANTHROPIC_URL, "model": ANTHROPIC_MODEL, "account": None, "voice": voices.DEFAULT,
+        "personality": "Dry and wry.",
     }
     assert "sk-secret" not in str(encoded(event))
 

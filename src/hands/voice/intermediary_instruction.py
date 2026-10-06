@@ -157,7 +157,28 @@ Short, spoken, and true: one or two sentences a person could say over the phone,
 sessions actually did rather than what you remember. Nothing reaches a session unless the user said it \
 should, and what the user tells you to do yourself, you do."""
 
-INTERMEDIARY_INSTRUCTION = f"{_BODY}\n\n{_ABOVE_ALL}"
+def intermediary_instruction(personality: str | None) -> str:
+    """The intermediary's system prompt, coming across as `personality`, the user's words for it; None is hands' own."""
+    return "\n\n".join((_BODY, *_manner(personality), _ABOVE_ALL))
+
+
+def _manner(personality: str | None) -> tuple[str, ...]:
+    """The section a personality the user chose adds, last before the closing words, so those still hold over it."""
+    if personality is None:
+        return ()
+    return (f"""\
+# How you come across
+
+The user chose how you come across, and said it in their own words:
+
+{personality}
+
+Speak that way in every reply. It sets your tone and the words you choose, and where it and anything else you are told \
+about tone differ, it wins. It never changes what you do, how short a reply is, or whether what you say is true.""",)
+
+
+# What `evals/intermediary.py` judges: the prompt in hands' own personality.
+INTERMEDIARY_INSTRUCTION = intermediary_instruction(None)
 
 
 _KEYS = """\
@@ -204,11 +225,11 @@ WRONG: the user asks whether a repository's tests pass, and you start by searchi
 RIGHT: you load hands:chat, then search for the repository."""
 
 
-def brain_instruction(log: Path, setup: Path, recall: str) -> str:
+def brain_instruction(log: Path, setup: Path, recall: str, personality: str | None) -> str:
     """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it with the
     shell command `recall`, how to type into a session's terminal, how to work a backlog, where its own setup is, and the
-    skill it talks with, before its closing words."""
-    return f"{_BODY}\n\n{_reading(log)}\n\n{_recalling(recall)}\n\n{_KEYS}\n\n{_TRACKING}\n\n{_own(setup)}\n\n{_TALKING}\n\n{_ABOVE_ALL}"
+    skill it talks with, before the personality's section and its closing words."""
+    return "\n\n".join((_BODY, _reading(log), _recalling(recall), _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
 
 
 def _recalling(recall: str) -> str:

@@ -2204,6 +2204,7 @@ variant with a real alternative or it does not exist. The fields:
 | `[llm] model` | the model, for any backend |
 | `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
+| `[talk] personality` | how hands comes across, in the user's words: a section of the conversational model's instruction, last before its closing words, so it sets tone and never what hands does |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
 kept in the home's `voice` file. The model is a setting the user may also choose by

@@ -37,6 +37,7 @@ from hands.core.session import PromptText, SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Garbled, Heard, MainTurn, Message, MessageStarted, Reached, Send, Sent, Streamed
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
+from hands.daemon import run
 from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
@@ -1401,6 +1402,34 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
         assert reported["in_context_tokens"] == 8
     [_, again] = events(recorded, "brain.launch")
     assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
+
+
+async def test_each_variants_model_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[Entry] = []
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+
+    async def unread() -> InFront:
+        return FrontUnread("not read in this test")
+
+    def minding(llm: AnthropicBackend | ClaudeCodeBackend):
+        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, os.environ)
+
+    async with minding(AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m")) as minded:
+        assert isinstance(minded.llm, AnthropicLLMService)
+        assert "\n\nDry and wry.\n\n" in str(minded.llm._settings.system_instruction)  # pyright: ignore[reportPrivateUsage]
+    launched: list[Launch] = []
+
+    async def starting(launch: Launch, _record: object) -> Brain:
+        launched.append(launch)
+        raise Unstartable("seen")
+
+    monkeypatch.setattr(run, "start_brain", starting)
+    with pytest.raises(CannotStart, match="^seen$"):
+        async with minding(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account="brain@example.com")):
+            pass
+    [launch] = launched
+    assert "\n\nDry and wry.\n\n" in launch.instruction
 
 
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:

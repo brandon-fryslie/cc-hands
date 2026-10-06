@@ -26,7 +26,7 @@ from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import brief, briefing, tail
 from hands.voice.speech import Tailed
-from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction
+from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction, intermediary_instruction
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.narrator import Recounts
@@ -105,14 +105,14 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
     given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands recall")):
+    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands recall", None)):
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
         assert named, "the prompt names no tool at all"
         assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
 def test_only_the_brain_which_has_bash_is_told_of_the_log_and_of_lit_and_it_keeps_the_closing_words_last() -> None:
-    told = brain_instruction(Path("/my home/audit"), Path("/my home/brain"), "'/my python' -P -m hands.daemon recall")
+    told = brain_instruction(Path("/my home/audit"), Path("/my home/brain"), "'/my python' -P -m hands.daemon recall", None)
     assert ".jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
     # Working a tracker is done from a shell, so only the brain is told it works one with lit.
     assert "lit quickstart" in told and not re.search(r"\blit\b", INTERMEDIARY_INSTRUCTION)
@@ -124,6 +124,18 @@ def test_only_the_brain_which_has_bash_is_told_of_the_log_and_of_lit_and_it_keep
     assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
     # The brain recalls with the command line it is handed, as it is handed it, and only the brain has the shell to run it.
     assert "The recall command is: '/my python' -P -m hands.daemon recall\n" in told and "recall" not in INTERMEDIARY_INSTRUCTION
+
+
+def test_a_personality_the_user_chose_is_told_to_each_model_last_before_the_closing_words() -> None:
+    for own, chosen in (
+        (INTERMEDIARY_INSTRUCTION, intermediary_instruction("Dry and wry.")),
+        (brain_instruction(Path("/a"), Path("/b"), "hands recall", None), brain_instruction(Path("/a"), Path("/b"), "hands recall", "Dry and wry.")),
+    ):
+        # In hands' own personality there is no section for one; a chosen one is its own section, and the rest is as it was.
+        assert "# How you come across" not in own
+        before, _, after = own.rpartition("\n\n# Above all")
+        assert chosen.startswith(before + "\n\n# How you come across\n") and chosen.endswith("\n\n# Above all" + after)
+        assert "\n\nDry and wry.\n\n" in chosen
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="the brain's commands read the log with jq")
@@ -141,7 +153,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
         fail("lit exited 3")
     # A file that is no segment is no part of the log.
     (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
-    shown = [line[2:].partition(": ") for line in brain_instruction(path, tmp_path / "brain", "hands recall").splitlines() if line.startswith("- ")]
+    shown = [line[2:].partition(": ") for line in brain_instruction(path, tmp_path / "brain", "hands recall", None).splitlines() if line.startswith("- ")]
     commands = {label: command for label, _, command in shown if " | jq " in command}
     assert len(commands) == 4
 
