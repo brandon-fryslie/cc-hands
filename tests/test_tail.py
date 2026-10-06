@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Launched, Read, ReportedBack, Taken, Transcribed
+from hands.core.events import Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SENTENCE_BUDGET
@@ -17,7 +17,7 @@ from hands.core.effects import Summarise
 from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
 from hands.core.status import Report, Stamp
-from hands.core.session import Idle, Opened, Told, Untold
+from hands.core.session import Idle, Opened, Told, Untold, delegating
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.tail import KEPT, StoodIn, Tails, Telling, keep_tailing
@@ -73,6 +73,15 @@ async def following(transcript: Path) -> Tails:
     tails = Tails(Registry([member(transcript)]))
     await tails.catch_up()
     return tails
+
+
+async def followed_on(transcript: Path, *records: str) -> tuple[Tails, list[Transcribed]]:
+    """A transcript hands has followed since a turn before these records, so none of them is history, and what reading them heard."""
+    transcript.write_text(lines(PROMPT, DONE))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(*records))
+    return tails, heard(await tails.catch_up())
 
 
 async def turn_of(transcript: Path, closing: str | None = None) -> Turn | None:
@@ -538,9 +547,8 @@ CUT_OFF_MID_TOOL = '{"type":"user","promptId":"p1","uuid":"u9","message":{"role"
 
 async def test_a_turn_cut_off_while_claude_wrote_is_heard_as_interrupted_and_told_with_what_it_had_said(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, WRITING, CUT_OFF))
-    tails = Tails(Registry([member(transcript)]))
-    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
+    tails, read = await followed_on(transcript, ASKED, WRITING, CUT_OFF)
+    assert read == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
     telling = await tails.tell(SID, None, None)
     # The record of the interrupt is written as a user's message, and is not read as the next thing asked.
     assert telling is not None and telling.turn == Turn(Asked(None, "Write an essay about rivers."), (Said(None, "# Rivers"), Interruption(Ref("u9"))))
@@ -548,9 +556,8 @@ async def test_a_turn_cut_off_while_claude_wrote_is_heard_as_interrupted_and_tol
 
 async def test_a_turn_cut_off_while_a_tool_ran_is_heard_as_interrupted(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, LOOPING, REJECTED, CUT_OFF_MID_TOOL))
-    tails = Tails(Registry([member(transcript)]))
-    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
+    tails, read = await followed_on(transcript, ASKED, LOOPING, REJECTED, CUT_OFF_MID_TOOL)
+    assert [event for event in read if not isinstance(event, Progressed)] == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
     telling = await tails.tell(SID, None, None)
     assert telling is not None and telling.turn.steps[-1] == Interruption(Ref("u9"))
 
@@ -609,11 +616,10 @@ async def test_an_interrupt_the_stops_own_reading_found_is_still_handed_out_at_t
 
 async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, WRITING, CUT_OFF.replace('"promptId":"p1",', "")))
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands")
     try:
-        assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0)]
+        assert (await followed_on(transcript, ASKED, WRITING, CUT_OFF.replace('"promptId":"p1",', "")))[1] == [Taken(SID, PromptId("p1"), None, 7.0)]
     finally:
         logger.remove(sink)
     assert errors == [f"session {SID} was interrupted, but the record of it names no prompt, so its turn is told without it"]
@@ -621,8 +627,8 @@ async def test_an_interrupt_whose_record_names_no_turn_is_said_and_ends_nothing(
 
 async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one_too(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, WRITING, '{"type":"user","promptId":"p1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}'))
-    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
+    plain = '{"type":"user","promptId":"p1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}'
+    assert (await followed_on(transcript, ASKED, WRITING, plain))[1] == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
 
 
 # A message queued while the loop ran, flushed by Escape, as captured live on 2.1.281: the cancelled call's result and the
@@ -713,8 +719,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
 
 async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_before_it_is_heard_stopped(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(CUT_OFF))
-    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
+    assert (await followed_on(transcript, CUT_OFF))[1] == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
 
 
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tells_the_turn_claude_code_said_is_over(tmp_path: Path) -> None:
@@ -951,7 +956,7 @@ async def test_a_transcript_read_from_its_start_hands_on_only_the_turn_it_is_in(
         assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p4"), Stamp(2000), 7.0), Continued(SID, was=PromptId("p3"), now=PromptId("p4"))]
     finally:
         logger.remove(sink)
-    assert said == [f"read the transcript of session {SID} from its start: 8 of 10 events are of turns before the one it is in, which goes by ['p4']; calls that turn made before hands followed it, not heard as progress: 1"]
+    assert said == [f"read the transcript of session {SID} from its start: 8 of 10 events are of turns over before hands followed it; the last goes by ['p4'] and may be running; calls that turn made before hands followed it, not heard as progress: 1"]
     with transcript.open("a") as more:
         more.write(lines(CUT_OFF_MID_TOOL.replace('"p1"', '"p4"')))
     assert heard(await tails.catch_up()) == [Interrupted(SID, PromptId("p4"), at=7.0)]
@@ -1140,3 +1145,99 @@ async def test_a_background_tasks_notification_is_heard_as_its_report_back_at_th
     with transcript.open("a") as more:
         more.write(lines(reported))
     assert [event for event in heard(await tails.catch_up()) if not isinstance(event, Taken)] == [ReportedBack(SID, AGENT)]
+
+
+# What Claude Code writes as a turn ends, as 2.1.289 writes it: what its Stop hooks did, then how long the turn took.
+STOP_SUMMARY = '{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"preventedContinuation":false,"stopReason":"","hasOutput":false,"level":"suggestion","timestamp":"1970-01-01T00:00:01.300Z","uuid":"e1"}'
+TURN_DURATION = '{"type":"system","subtype":"turn_duration","durationMs":1300,"messageCount":4,"timestamp":"1970-01-01T00:00:01.301Z","uuid":"e2","isMeta":false}'
+
+
+@pytest.mark.parametrize("ending", [(STOP_SUMMARY, TURN_DURATION), (STOP_SUMMARY,), (TURN_DURATION,), (CUT_OFF,)])
+async def test_a_transcript_read_from_its_start_whose_last_turn_ended_opens_no_turn(tmp_path: Path, ending: tuple[str, ...]) -> None:
+    """hands-session-mgmt-a7t.byl: the turn that launched a subagent in the background is over though the session reads
+    busy, and only the launch is heard of it."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, *ending))
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="INFO", filter="hands.sessions.tail")
+    try:
+        assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Launched(SID, AGENT, Stamp(1200))]
+    finally:
+        logger.remove(sink)
+    held = 2 if ending == (CUT_OFF,) else 1
+    assert said == [f"read the transcript of session {SID} from its start: {held} of {held + 1} events are of turns over before hands followed it; the last goes by ['p1'] and ended, its {held} events held back until a record says it went on; calls that turn made before hands followed it, not heard as progress: 1"]
+
+
+async def test_a_turn_a_stop_hook_sent_on_after_its_end_record_may_still_be_running(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE, STOP_SUMMARY, DONE))
+    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0)]
+
+
+# What a Stop hook that sends Claude on writes before Claude answers, as 2.1.289 writes it.
+SENT_ON = '{"type":"user","isMeta":true,"promptId":"p1","message":{"role":"user","content":"Stop hook feedback: keep going"}}'
+
+
+@pytest.mark.parametrize("going_on", [SENT_ON, DONE])
+async def test_a_turn_read_from_its_start_to_its_end_record_is_heard_once_a_stop_hook_sends_it_on(tmp_path: Path, going_on: str) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE, STOP_SUMMARY))
+    tails = Tails(Registry([member(transcript)]))
+    assert heard(await tails.catch_up()) == []
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="INFO", filter="hands.sessions.tail")
+    try:
+        with transcript.open("a") as more:
+            more.write(lines(going_on))
+        assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0)]
+    finally:
+        logger.remove(sink)
+    assert said == [f"the transcript of session {SID} went on after the end record it was read from its start to: 1 of 1 events held back are heard"]
+
+
+async def test_a_turn_read_from_its_start_to_the_interrupt_that_flushed_a_queued_message_is_heard_as_it_goes_on(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, LOOPING, FLUSHED, FLUSHING))
+    tails = Tails(Registry([member(transcript)]))
+    assert heard(await tails.catch_up()) == []
+    with transcript.open("a") as more:
+        more.write(lines(QUEUED, BANANA))
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0), Taken(SID, PromptId("p2"), None, 7.0), Interrupted(SID, PromptId("p2"), at=7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+
+
+async def test_a_turn_read_from_its_start_to_its_end_stays_over_through_its_last_end_record_and_the_next_prompt(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE, STOP_SUMMARY))
+    tails = Tails(Registry([member(transcript)]))
+    assert heard(await tails.catch_up()) == []
+    with transcript.open("a") as more:
+        more.write(lines(TURN_DURATION))
+    assert heard(await tails.catch_up()) == []
+    with transcript.open("a") as more:
+        more.write(lines(ASKED.replace('"p1"', '"p2"')))
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+
+
+async def test_a_session_attached_while_its_background_subagent_works_is_delegating_and_its_report_is_a_turn_of_its_own(tmp_path: Path) -> None:
+    """hands-session-mgmt-a7t.byl: attached after the launching turn's Stop, as a restarted daemon is, the session is at its
+    prompt with a subagent out; the report opens its own turn, and its Stop tells that turn alone."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Attached(member(transcript)))
+    await sessions.apply(said_busy(3.0))
+    tails = Tails(sessions)
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Told() and live.background == frozenset({AGENT}) and delegating(live)
+    with transcript.open("a") as more:
+        more.write(lines(REPORTED_AT_PROMPT, DONE))
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Opened(PromptId("p3")) and not delegating(live)
+    await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p3"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p3"), "Done.")
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Told(PromptId("p3"))

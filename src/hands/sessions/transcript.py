@@ -45,8 +45,13 @@ def session_name(transcript: Path) -> str | None:
 
 # Only these record types carry a turn; the rest (modes, titles, snapshots, every other attachment) are skipped unparsed.
 # A command the user ran, and what it printed, are written as either a user record or a system local_command one; a
-# background task's notification that arrived while the session was working, as an attachment (`reported_of`).
-_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"', b'"commandMode":"task-notification"')
+# background task's notification that arrived while the session was working, as an attachment (`reported_of`); and the
+# records Claude Code writes as a turn ends (`Ended`).
+_TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"', b'"commandMode":"task-notification"', b'"subtype":"stop_hook_summary"', b'"subtype":"turn_duration"')
+# The records Claude Code writes when a turn ends, one after the other: what its Stop hooks did, and how long the turn
+# took. Written for the turn that launched a subagent in the background too, though the session stays busy until the
+# subagent's report is answered. Seen on 2.1.289; the second is missing from about one stop in five.
+_ENDED = ("stop_hook_summary", "turn_duration")
 
 
 def turn_record(line: bytes) -> Payload | None:
@@ -63,6 +68,8 @@ def turn_record(line: bytes) -> Payload | None:
             return record
         case "system", "local_command", other:
             raise Rejected(f"a local_command record's content should be a string, got {type(other).__name__}")
+        case "system", str() as subtype, _ if subtype in _ENDED:
+            return record
         case ("user" | "assistant"), _, _:
             pass
         case "attachment", _, _:
@@ -125,9 +132,16 @@ class Typed:
     command: Commanded
 
 
-def edge_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | Interruption | None:
-    """Where this record begins a turn, cuts the one under way off, or carries what a command printed; None for a
-    record in the middle of a turn."""
+@dataclass(frozen=True)
+class Ended:
+    """Claude Code's record that the turn under way ended: last of it, unless a Stop hook sent Claude on."""
+
+
+def edge_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | Interruption | Ended | None:
+    """Where this record begins a turn, cuts the one under way off, ends it, or carries what a command printed; None for
+    a record in the middle of a turn."""
+    if record.fields.get("type") == "system" and record.fields.get("subtype") in _ENDED:
+        return Ended()
     if record.fields.get("type") == "user" and result_text(message(record).get("content")) in _INTERRUPTED:
         # Written as a user's message with no tool result in it, so it would otherwise read as the next prompt.
         return Interruption(ref_of(record))
@@ -171,7 +185,7 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | 
         return None
     fields = record.fields
     ref = ref_of(record)
-    if fields.get("type") == "system":
+    if fields.get("type") == "system" and fields.get("subtype") == "local_command":
         # A local_command record holds nothing but what the user ran or what it printed (`turn_record`).
         return _ran(ref, cast(str, fields["content"]), ref_of(record, "parentUuid"))
     # Meta records (skill bodies, command caveats) and compaction's summary are Claude Code's own, not a new request.
