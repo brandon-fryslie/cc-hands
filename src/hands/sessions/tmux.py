@@ -5,7 +5,7 @@ import asyncio
 import os
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -14,9 +14,9 @@ from loguru import logger
 
 from hands.core.effects import Command, Input, Key, Text
 from hands.core.session import Keystroke
-from hands.core.tmux import InPane, Listed, Pane, PaneUnread, Server, Unanswered, pane_of
+from hands.core.tmux import InPane, Keyboard, Listed, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions.child import Ran, run
-from hands.sessions.terminals import ancestor_terminals, process_table
+from hands.sessions.terminals import Process, ancestor_terminals, front_terminal, process_table
 
 # What tmux says, on stderr, for a socket no server listens on any more: a server that exited leaves its socket behind.
 _NO_SERVER = (b"no server running on", b"error connecting to")
@@ -88,7 +88,8 @@ async def typed(environment: Mapping[str, str], pane: Pane, input: Input) -> Una
     """Type `input` into `pane` as someone at its keyboard would, or say why it was not; `environment` says where tmux is.
 
     [LAW:no-ambient-temporal-coupling] one tmux command list, so what is typed and the Return that sends it happen
-    together or not at all: no half-typed prompt is left in the input for a retry to double.
+    together or not at all: no half-typed prompt is left in the input for a retry to double. And an Escape is answered
+    only once it has been read alone, so whatever is typed next cannot be read with it as one chord.
     """
     tmux = shutil.which("tmux", path=environment.get("PATH"))
     if tmux is None:
@@ -101,6 +102,7 @@ async def typed(environment: Mapping[str, str], pane: Pane, input: Input) -> Una
         pasted.close()
         match await ran_at(tmux, pane.socket, _typing(pane.id, input, buffer, pasted.name)):
             case Ran(returncode=0):
+                await asyncio.sleep(_quiet(input))
                 return None
             case Ran(err=err):
                 return Unanswered(f"tmux at {pane.socket} did not type into pane {pane.id}: {err.decode(errors='replace').strip()}")
@@ -119,10 +121,21 @@ def _pasted(input: Input) -> str:
             return f" {args}"
 
 
+def _quiet(input: Input) -> float:
+    """How long the keys of `input` keep the session's input to themselves: an Escape until it is read alone."""
+    match input:
+        case Key(key="escape"):
+            return LONE_ESCAPE
+        case Text() | Command() | Key():
+            return 0.0
+
+
 def _typing(pane: str, input: Input, buffer: str, pasted: str) -> list[str]:
     """The tmux command list that types `input` into `pane`, the file `pasted` holding what of it is pasted.
 
-    A paste is bracketed (-p), so its newlines stay in the prompt rather than send it; pasted as they are rather than as
+    Something is typed into the pane before anything is loaded - a command's name, or nothing ahead of a prompt - so a
+    pane gone since it was read stops the list before the prompt sits in a buffer that only a paste would delete. A
+    paste is bracketed (-p), so its newlines stay in the prompt rather than send it; pasted as they are rather than as
     carriage returns (-r); and its buffer is deleted once pasted (-d). A command's name is pressed as keys and its
     arguments pasted behind it, so a long paste Claude Code folds into a placeholder cannot fold the command in with it.
     """
@@ -130,7 +143,7 @@ def _typing(pane: str, input: Input, buffer: str, pasted: str) -> list[str]:
     enter = ["send-keys", "-t", pane, "Enter"]
     match input:
         case Text():
-            return [*paste, *enter]
+            return ["send-keys", "-t", pane, "-l", "", ";", *paste, *enter]
         case Command(args=None) as command:
             return ["send-keys", "-t", pane, "-l", command.word, ";", *enter]
         case Command() as command:
@@ -138,6 +151,10 @@ def _typing(pane: str, input: Input, buffer: str, pasted: str) -> list[str]:
         case Key(key=key):
             return ["send-keys", "-t", pane, KEYS[key]]
 
+
+# How long an Escape keeps the session's input to itself: fritter's loneEscape, measured on Claude Code 2.1.285
+# (fritter/control.go).
+LONE_ESCAPE = 0.1
 
 # [LAW:types-are-the-program] each chord hands speaks, as tmux names its key: every Keystroke has one.
 KEYS: Mapping[Keystroke, str] = {
@@ -164,6 +181,15 @@ async def ran_at(tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Una
 
 async def panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
     """The tmux pane each of `pids` runs in, from one read of the processes and of every tmux server."""
+    return await _read(pids, environment, lambda pid, processes, read: pane_of(ancestor_terminals(pid, processes), read))
+
+
+async def keyboards(pids: Sequence[int], environment: Mapping[str, str]) -> list[Keyboard]:
+    """The tmux pane whose keys reach each of `pids`, from one read of the processes and of every tmux server."""
+    return await _read(pids, environment, lambda pid, processes, read: keyboard_of(front_terminal(pid, processes), ancestor_terminals(pid, processes), read))
+
+
+async def _read[P](pids: Sequence[int], environment: Mapping[str, str], of: Callable[[int, Mapping[int, Process], list[Server]], P]) -> list[P | PaneUnread]:
     try:
         read, processes = await asyncio.gather(servers(environment), asyncio.to_thread(process_table))
     except Exception as error:
@@ -171,7 +197,7 @@ async def panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InP
         # where, and each process says why its pane is missing.
         logger.opt(exception=error).error("reading which tmux pane each session runs in broke")
         return [PaneUnread(f"{type(error).__name__}: {error}")] * len(pids)
-    return [pane_of(ancestor_terminals(pid, processes), read) for pid in pids]
+    return [of(pid, processes, read) for pid in pids]
 
 
 async def servers(environment: Mapping[str, str]) -> list[Server]:

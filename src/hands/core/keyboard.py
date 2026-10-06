@@ -6,7 +6,7 @@ from hands.core.effects import Command, Fritter, Key, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
 from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId
 from hands.core.status import Waiting
-from hands.core.tmux import InPane, Pane
+from hands.core.tmux import Keyboard, Pane
 
 
 @dataclass(frozen=True)
@@ -35,8 +35,8 @@ class NothingRunning:
 KeyboardOutcome = Unreached | NothingRunning | Typed[Command | Key] | NotTyped[Command | Key]
 
 
-def decide(registry: Registry, request: KeyboardRequest, pane: InPane) -> KeyboardOutcome | Type[Command | Key]:
-    """One request in, with the tmux pane its session runs in; what came of it, or what to type. The registry is
+def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> KeyboardOutcome | Type[Command | Key]:
+    """One request in, with where keys typed for its session go in tmux; what came of it, or what to type. The registry is
     unchanged either way. No I/O."""
     id = request.session
     match registry.sessions.get(id):

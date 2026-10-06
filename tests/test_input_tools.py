@@ -21,7 +21,7 @@ from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import CommandName, Membership, PromptText, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
-from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread
+from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.wide import unit
@@ -59,17 +59,17 @@ def typing_into(typed: Callable[[Type[Input]], None]) -> Callable[[Type[Input]],
     return typist
 
 
-def in_pane(pane: InPane) -> Callable[[Sequence[int]], Awaitable[list[InPane]]]:
-    """A reader that finds every process in `pane`."""
+def in_pane(pane: Keyboard) -> Callable[[Sequence[int]], Awaitable[list[Keyboard]]]:
+    """A reader that finds every process's keys go to `pane`."""
 
-    async def panes(pids: Sequence[int]) -> list[InPane]:
+    async def keyboards(pids: Sequence[int]) -> list[Keyboard]:
         return [pane] * len(pids)
 
-    return panes
+    return keyboards
 
 
-async def joined(tmp: Path, record: Record = unrecorded, typed: Callable[[Type[Input]], None] = lambda _: None, pane: InPane = NotInTmux()) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typing_into(typed), panes=in_pane(pane))
+async def joined(tmp: Path, record: Record = unrecorded, typed: Callable[[Type[Input]], None] = lambda _: None, pane: Keyboard = NotInTmux()) -> tuple[Sessions, SessionId]:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typing_into(typed), keyboards=in_pane(pane))
     membership = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
     await sessions.apply(Joined(membership, "startup"))
     return sessions, membership.id
@@ -263,7 +263,7 @@ async def test_a_control_in_what_was_heard_reaches_the_terminal_as_its_escape_an
 
 
 async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typing_into(typist), panes=in_pane(NotInTmux()))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typing_into(typist), keyboards=in_pane(NotInTmux()))
     await sessions.apply(Joined(Membership(SessionId("s1"), 4242, Path("/code/cc-hands"), tmp / "none.jsonl", tmp / "f.sock"), "startup"))
     return sessions, SessionId("s1")
 
@@ -327,6 +327,15 @@ async def test_a_session_nobody_wrapped_whose_pane_could_not_be_read_is_refused_
     assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
         "readback": "cc-hands was not started under fritter, and which tmux pane it runs in could not be read, so hands cannot type into it: tmux at /tmp/tmux-501/default did not answer list-panes in 2 seconds."
     }
+
+
+async def test_a_session_nobody_wrapped_behind_another_program_in_its_pane_is_refused_and_nothing_is_typed(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await joined(tmp_path, typed=typed.append, pane=Behind(Pane(tmp_path / "default", "%3", "work", 1)))
+    assert await call(keyboard_tools(sessions), "interrupt_session", session=id) == {
+        "readback": "cc-hands was not started under fritter, and another program has the keyboard of its tmux pane %3, so hands cannot type into it: it is stopped, runs inside another program such as an editor or ssh, or was started from inside another session."
+    }
+    assert typed == []
 
 
 async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path: Path) -> None:

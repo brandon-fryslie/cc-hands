@@ -19,7 +19,7 @@ from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
-from hands.core.tmux import InPane, NotInTmux
+from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.audit import Record, Typing, TypingFailed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
@@ -29,7 +29,6 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
-from hands.sessions import tmux
 from hands.sessions.typing import Untyped, type_into
 
 
@@ -52,6 +51,11 @@ class Performed:
     error: str | None
 
 
+async def unread(pids: Sequence[int]) -> list[Keyboard]:
+    """No pane read for any of `pids`: what a Sessions told of no tmux answers."""
+    return [PaneUnread("this daemon reads no tmux panes")] * len(pids)
+
+
 @dataclass(frozen=True)
 class Listing[S: Known]:
     session: S
@@ -68,7 +72,7 @@ class Sessions:
         record: Record,
         changes: Changes | None = None,
         typist: Callable[[Type[Input]], Awaitable[None]] = partial(type_into, {}),
-        panes: Callable[[Sequence[int]], Awaitable[list[InPane]]] = partial(tmux.panes, environment={}),
+        keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]] = unread,
         stamp: Callable[[], Stamp] = stamp_now,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
@@ -87,8 +91,9 @@ class Sessions:
         self._changes = changes or NoChanges()
         # What types a Type into its session, or raises Untyped.
         self._typist = typist
-        # The tmux pane each of a list of processes runs in, which a session's writer is chosen by.
-        self._panes = panes
+        # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
+        # given none reads none, so nothing it is not told to type into is typed into.
+        self._keyboards = keyboards
         # The names hands decided and has not yet given, which every listing names its session by. A daemon given none
         # has decided none.
         self._names = names or Names()
@@ -281,14 +286,14 @@ class Sessions:
             case outcome:
                 return outcome
 
-    async def _pane(self, session: SessionId) -> InPane:
-        """The tmux pane the session runs in now, read before a request to type into it is decided."""
+    async def _pane(self, session: SessionId) -> Keyboard:
+        """The tmux pane whose keys reach the session now, read before a request to type into it is decided."""
         match self._registry.sessions.get(session):
             case None:
                 # A session the registry does not know is answered as unknown before its pane is looked at.
                 return NotInTmux()
             case known:
-                [pane] = await self._panes([known.membership.pid])
+                [pane] = await self._keyboards([known.membership.pid])
                 return pane
 
     async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I]:

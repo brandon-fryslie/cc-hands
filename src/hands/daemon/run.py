@@ -255,7 +255,7 @@ async def run(
         names = Names()
         sessions = Sessions(
             permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas, names=names,
-            typist=partial(type_into, environment), panes=partial(tmux.panes, environment=environment),
+            typist=partial(type_into, environment), keyboards=partial(tmux.keyboards, environment=environment),
         )
         hooks = await serve_hooks(home, sessions, names, record)
         held.push_async_callback(hooks.cleanup)

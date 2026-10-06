@@ -6,7 +6,7 @@ from hands.core.effects import Fritter, NotTyped, Text, Type, Typed, Writer
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
 from hands.core.session import Gone, Known, Registry, Running, Session, SessionId, Staged
 from hands.core.status import Waiting
-from hands.core.tmux import InPane, Pane
+from hands.core.tmux import Keyboard, Pane
 
 
 @dataclass(frozen=True)
@@ -62,8 +62,8 @@ class NothingStaged:
 DraftOutcome =DraftStaged | DraftAmended | DraftDiscarded | NothingStaged | Unreached | Typed[Text] | NotTyped[Text]
 
 
-def decide(registry: Registry, request: DraftRequest, pane: InPane) -> tuple[Registry, DraftOutcome | Type[Text]]:
-    """One draft request in, with the tmux pane its session runs in; the next registry and what came of it out, or what
+def decide(registry: Registry, request: DraftRequest, pane: Keyboard) -> tuple[Registry, DraftOutcome | Type[Text]]:
+    """One draft request in, with where keys typed for its session go in tmux; the next registry and what came of it out, or what
     to type. No I/O."""
     match registry.sessions.get(request.session):
         case None:

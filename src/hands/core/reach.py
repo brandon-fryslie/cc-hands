@@ -5,7 +5,7 @@ from pathlib import Path
 
 from hands.core.effects import Fritter, Writer
 from hands.core.session import Membership, SessionId
-from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread
+from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 
 
 @dataclass(frozen=True)
@@ -20,11 +20,11 @@ class SessionEnded:
 
 @dataclass(frozen=True)
 class Unwrapped:
-    """The session was not started under fritter, and runs in no tmux pane hands could find, so there is nothing to type
-    into: `pane` says whether it is in none, or why which one could not be read."""
+    """The session was not started under fritter, and has no tmux pane in front of it, so there is nothing to type into:
+    `pane` says whether it runs behind another program in one, is in none, or why which one could not be read."""
 
     session: SessionId
-    pane: NotInTmux | PaneUnread
+    pane: Behind | NotInTmux | PaneUnread
 
 
 @dataclass(frozen=True)
@@ -37,8 +37,8 @@ class AtItsDialog:
 Unreached = UnknownSession | SessionEnded | Unwrapped | AtItsDialog
 
 
-def writer(membership: Membership, pane: InPane) -> Writer | Unwrapped:
-    """What types into the session: the fritter that wrapped it whenever one did, else tmux into the pane it runs in.
+def writer(membership: Membership, pane: Keyboard) -> Writer | Unwrapped:
+    """What types into the session: the fritter that wrapped it whenever one did, else tmux into the pane in front of it.
 
     [LAW:single-enforcer] the one place a session's writer is chosen, for a draft, a command, and a key alike.
     """
@@ -47,5 +47,5 @@ def writer(membership: Membership, pane: InPane) -> Writer | Unwrapped:
             return Fritter(socket, membership.pid)
         case (None, Pane()):
             return pane
-        case (None, NotInTmux() | PaneUnread()):
+        case (None, Behind() | NotInTmux() | PaneUnread()):
             return Unwrapped(membership.id, pane)

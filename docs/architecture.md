@@ -326,12 +326,13 @@ session driven with the display asleep: no window, no grant, no focus.
 fritter publishes its socket's address to the process it wrapped in `FRITTER_SOCKET`.
 The hook runs as a child of that process and inherits it, so the address reaches
 `Membership.fritter` without either side deriving a path from a pid. A session started
-outside fritter has no address. If it runs in a tmux pane, tmux types into that pane
+outside fritter has no address. If it is in front of a tmux pane, tmux types into that pane
 instead (`hands.sessions.tmux.typed`): what is pasted, bracketed, and the Return, in one tmux
-command list, so they land together or not at all. A session in no pane is refused by name
-rather than written into nothing. Which writer a session gets is `core.reach.writer`, from its
-membership and the pane it runs in, which `Sessions` reads just before deciding; fritter wins
-whenever there is one. Nobody has to remember to wrap one: `hands install-fritter` puts a `claude`
+command list, so they land together or not at all. A session in no pane, or behind another
+program in one (stopped, inside an editor or ssh, or started from inside another session), is
+refused by name rather than typed into whatever has the pane's keys. Which writer a session gets
+is `core.reach.writer`, from its membership and the pane in front of it (`core.tmux.keyboard_of`),
+which `Sessions` reads just before deciding; fritter wins whenever there is one. Nobody has to remember to wrap one: `hands install-fritter` puts a `claude`
 in `<hands home>/bin` that runs every interactive claude under fritter, and runs a pipe, a
 script, a subcommand, or `claude -p` as the real claude with no address (`hands.sessions.wrapper`). Inheritance also hands the address to a session started from inside a
 wrapped one, so an address alone does not say which session it reaches: every request

@@ -271,7 +271,7 @@ def test_two_sessions_started_in_one_folder_at_once_are_each_named_by_its_own_st
 
 
 def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling() -> None:
-    table = {pid: Process(pid, parent, 501, None) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}.items()}
+    table = {pid: Process(pid, parent, 501, None, None) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}.items()}
     assert [descends(pid, 10, table) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
 
 

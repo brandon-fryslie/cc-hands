@@ -16,7 +16,7 @@ from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrappe
 from hands.core import session
 from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.core.spoken import spelled
-from hands.core.tmux import NotInTmux, PaneUnread
+from hands.core.tmux import Behind, NotInTmux, PaneUnread
 from hands.sessions.registry import Listing, Sessions
 
 _WORDS = re.compile(r"[^\s]+|\n")
@@ -72,6 +72,8 @@ def keyboard_readback(outcome: KeyboardOutcome, name: str) -> str:
 
 def _unreachable(unwrapped: Unwrapped, name: str) -> str:
     match unwrapped.pane:
+        case Behind(pane=pane):
+            return f"{name} was not started under fritter, and another program has the keyboard of its tmux pane {pane.id}, so hands cannot type into it: it is stopped, runs inside another program such as an editor or ssh, or was started from inside another session."
         case NotInTmux():
             return f"{name} was not started under fritter and runs in no tmux pane, so hands cannot type into it."
         case PaneUnread(reason=reason):
