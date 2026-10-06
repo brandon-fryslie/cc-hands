@@ -1036,8 +1036,8 @@ def usage_tool(usage: Usage) -> Tool:
     """[LAW:nothing-unseen] the result is the reading, so the call's event holds it."""
 
     async def context_usage() -> Result:
-        """How many tokens your main conversation holds now, and how many you have spent, as the API counted them on your
-        replies.
+        """How many tokens your main conversation holds now, and how many you have spent since hands started, as the API
+        counted them on your replies.
 
         Call this when the user asks how much context or how many tokens you have used, or when you need to know how full
         your context is. These are the real figures; a token total in your system reminders is not your usage. A subagent

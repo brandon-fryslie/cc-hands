@@ -31,7 +31,8 @@ class Spent:
 
 @dataclass(frozen=True)
 class Tally:
-    """The brain's main conversation as its latest main-turn reply left it, and what the whole session has spent."""
+    """The brain's main conversation as its latest main-turn reply left it, and what it has spent since hands started: a
+    resumed conversation's earlier runs were not heard."""
 
     model: str
     # What the conversation holds now: the latest main turn's request, and what the model wrote back to it, which the
