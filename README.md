@@ -16,6 +16,9 @@ is not, what does it; it exits 0 only when every step is done.
    curl -fsSL https://claude.ai/install.sh | bash
    ```
 
+   Then run `claude` once to answer what it asks only the first time, a theme and a
+   login, and exit it.
+
 2. Homebrew's PortAudio, which the microphone is opened through, and uv. A Mac without
    [Homebrew](https://brew.sh) gets it first, with `brew` on `PATH`:
 
@@ -93,9 +96,11 @@ is not, what does it; it exits 0 only when every step is done.
    hands smoke
    ```
 
-   The first time, Claude Code may ask whether to trust `~/.hands/smoke`; the run then
-   stops at `joined` and shows that question. Run `claude` there once, accept, and run
-   the smoke test again.
+   The first time, Claude Code asks there whether to trust the folder and, with
+   `ANTHROPIC_API_KEY` set, whether to use that key (no keeps the turn on your login).
+   The session cannot join hands until they are answered, so after a minute the run stops
+   at `joined` with the end of what Claude Code showed. Run `claude` once in the folder
+   that line names, answer, exit it, and run the smoke test again.
 
 ## The intermediary
 
