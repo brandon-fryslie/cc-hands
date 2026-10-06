@@ -64,6 +64,7 @@ from hands.voice.engaged import drive, drive_engaged, loaded, untapped
 from hands.voice.wake import WAKE
 from hands.voice.keys import drive_quit, drive_talk_key, tapped
 from hands.voice.phonepage import serve_phone
+from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
@@ -455,7 +456,7 @@ async def converse(
         try:
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(voice.phone, home, record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(voice.phone, lambda text: voice.worker.queue_frame(Typed(text=text)), home, record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

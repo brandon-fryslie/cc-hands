@@ -61,7 +61,7 @@ from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Pushed, Unprompted
-from hands.voice.turnstop import Hold, TurnOpened, TurnResolved
+from hands.voice.turnstop import Hold, TurnOpened, TurnResolved, Typed
 from hands.voice import whisper
 from hands.voice.whisper import Whisper
 from test_llm import Shape, anthropic_stream, openai_stream
@@ -521,6 +521,33 @@ async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_
         await rig.texts.put("")
         assert await rig.everything_sent(holds=1) == []
         assert user_turns(rig)[0] == ("on the hold", True)
+
+
+async def test_words_typed_are_sent_as_a_turn_of_their_own(rig: Rig) -> None:
+    await rig.worker.queue_frame(Typed(text="what time is it"))
+    assert await rig.everything_sent(holds=1) == ["what time is it"]
+    assert rig.received == [None, None]
+
+
+async def test_words_typed_cut_hands_off_at_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.worker.queue_frame(Typed(text="stop there"))
+        assert await line is False
+        assert cut == [CutOff("The parser is fixed.", 1)]
+        assert await rig.everything_sent(holds=1) == ["stop there"]
+        assert user_turns(rig)[0] == ("on the hold", True)
+
+
+async def test_words_typed_while_a_hold_is_open_join_its_turn_and_leave_its_audio_to_it(rig: Rig) -> None:
+    await rig.hold(["down", "down"], sound=b"\x01\x00" * 320)
+    await rig.until(lambda: rig.out.holds == [1])
+    await rig.worker.queue_frame(Typed(text="and the tests"))
+    await rig.until(lambda: rig.out.resolved == [2])
+    await rig.hold(["up"], sound=b"\x01\x00" * 320)
+    await rig.texts.put("run the parser")
+    assert await rig.everything_sent(holds=2) == ["and the tests run the parser"]
+    # The key's hold is heard from its own audio: both frames captured while it was down.
+    assert rig.heard[0].startswith(b"\x01\x00" * 320 * 2)
 
 
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:

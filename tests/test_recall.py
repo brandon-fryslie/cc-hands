@@ -13,13 +13,15 @@ from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, HookRep
 from hands.core.events import Attached, Event, PermissionRequested, Tick
 from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
 from hands.daemon import cli
-from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, segment
+from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, forwards, segment
 from hands.sessions.home import Home
 from hands.sessions.names import Finished, NameGiven, Names, NameWithheld
-from hands.sessions.recall import Moment, recall
+from hands.sessions.recall import Moment, Moments, recall
 from hands.sessions.registry import Performed
 from hands.sessions.wide import WideEvent
 from hands.voice.naming import judge
+from hands.voice.tool import tool
+from hands.voice.tools import audited
 
 MORNING = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 BILLING = SessionId("6f1c2d3e-0000-4000-8000-000000000001")
@@ -75,9 +77,9 @@ def test_a_sent_draft_is_recalled_by_a_word_in_it_under_the_session_it_went_to(t
     )
     found = recall(home.audit, ["TOKEN", "helper"], 20)
     assert found.moments == (
-        Moment(times[0], "user", "tell billing to drop the token helper and read the keychain"),
-        Moment(times[2], "you", "Draft for billing: drop the token helper."),
-        Moment(times[3], "sent to billing", "Drop the token-helper; read the token from the keychain."),
+        Moment(times[0], "heard", "user", "tell billing to drop the token helper and read the keychain"),
+        Moment(times[2], "said", "you", "Draft for billing: drop the token helper."),
+        Moment(times[3], "sent", "sent to billing", "Drop the token-helper; read the token from the keychain."),
     )
     assert (found.lines, found.unreadable, found.since, found.found, found.matched) == (5, 0, times[0], 4, 3)
 
@@ -87,7 +89,7 @@ def test_the_heading_is_searched_too_and_only_the_newest_are_kept(tmp_path: Path
     times = written(home, [typed("first"), typed("second"), typed("third"), Transcribed("not sent")])
     # No name given yet: the session goes by its id.
     assert [moment.text for moment in recall(home.audit, ["sent", "6f1c2d3e"], 2).moments] == ["second", "third"]
-    assert recall(home.audit, [], 1).moments == (Moment(times[3], "user", "not sent"),)
+    assert recall(home.audit, [], 1).moments == (Moment(times[3], "heard", "user", "not sent"),)
     assert recall(home.audit, ["nowhere"], 20).moments == ()
 
 
@@ -115,8 +117,8 @@ def test_a_permission_answered_is_recalled_with_what_it_asked_and_a_withdrawn_on
         ],
     )
     assert recall(home.audit, [], 20).moments == (
-        Moment(times[2], "allowed in billing", 'Bash {"command": "rm src/token_helper.py"}'),
-        Moment(times[4], "denied in billing", 'Write {"file_path": "/x"}, told: Nobody answered in time.'),
+        Moment(times[2], "answered", "allowed in billing", 'Bash {"command": "rm src/token_helper.py"}'),
+        Moment(times[4], "answered", "denied in billing", 'Write {"file_path": "/x"}, told: Nobody answered in time.'),
     )
 
 
@@ -179,8 +181,8 @@ def test_a_send_goes_by_the_name_its_session_was_given_after_it_and_one_that_fai
         ],
     )
     assert recall(home.audit, [], 20).moments == (
-        Moment(times[0], "sent to payments", "first"),
-        Moment(times[1], "not sent to payments", "second, because: cannot talk to the fritter"),
+        Moment(times[0], "sent", "sent to payments", "first"),
+        Moment(times[1], "sent", "not sent to payments", "second, because: cannot talk to the fritter"),
     )
 
 
@@ -196,7 +198,7 @@ def test_an_answered_question_is_recalled_with_what_the_user_chose(tmp_path: Pat
             answered("q", AllowWith({**question.input, "answers": {"Which database?": "Postgres", "Which ORM?": "SQLAlchemy"}})),
         ],
     )
-    assert recall(home.audit, [], 20).moments == (Moment(times[2], "answered in billing", "Which database? Which ORM?, chose: Postgres; SQLAlchemy"),)
+    assert recall(home.audit, [], 20).moments == (Moment(times[2], "answered", "answered in billing", "Which database? Which ORM?, chose: Postgres; SQLAlchemy"),)
 
 
 # Every variant of what a Typing, PermissionRequested, or Reply line can hold, so a variant added to a union fails here
@@ -231,5 +233,34 @@ def test_a_session_hands_saw_join_goes_by_its_project_as_hands_speaks_it_and_a_s
             prompted(NameGiven("atlantis plan wait")),
         ],
     )
-    assert recall(home.audit, ["home-infra"], 20).moments == (Moment(times[1], "sent to home-infra, atlantis plan wait", "plan the atlantis wait"),)
+    assert recall(home.audit, ["home-infra"], 20).moments == (Moment(times[1], "sent", "sent to home-infra, atlantis plan wait", "plan the atlantis wait"),)
     assert recall(home.audit, [], 20).found == 1
+
+
+async def test_a_tool_hands_called_is_a_moment_of_the_conversation_and_no_part_of_what_is_recalled(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+
+    async def set_trigger(trigger: str) -> dict[str, object]:
+        return {"trigger": trigger}
+
+    clock = iter(MORNING + timedelta(minutes=minute) for minute in range(3))
+    log = AuditLog(home.audit, clock=lambda: next(clock))
+    log.record(Transcribed("switch to the wake word"))
+    await audited(tool(set_trigger), log.record).body(trigger="wake word")
+    log.record(Replied("Okay.", False))
+    folded = Moments()
+    for line in forwards(home.audit):
+        folded.take(json.loads(line))
+    assert [moment.kind for moment in folded.moments()] == ["heard", "called", "said"]
+    assert [moment.kind for moment in folded.moments(2)] == ["called", "said"]
+    assert [moment.text for moment in recall(home.audit, [], 20).moments] == ["switch to the wake word", "Okay."]
+
+
+def test_a_send_seen_to_fail_is_a_change_to_the_moment_it_was(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    written(home, [typed("first"), TypingFailed(typed("first").effect, "cannot talk to the fritter")])
+    folded = Moments()
+    for line in forwards(home.audit):
+        folded.take(json.loads(line))
+    assert folded.changes == 2
+    assert [moment.heading for moment in folded.moments()] == [f"not sent to {BILLING}"]

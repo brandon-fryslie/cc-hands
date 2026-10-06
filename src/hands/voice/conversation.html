@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>hands conversation</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --fg: #1d1c1a; --muted: #6b6862; --ring: #d9d5cd; --user: #2f2d2a; --on-user: #f4f2ee; --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141312; --fg: #eeebe6; --muted: #9a958d; --ring: #2c2a27; --user: #e9e5de; --on-user: #141312; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--ring); }
+  header h1 { font-size: 17px; margin: 0; }
+  header a { color: var(--muted); }
+  #moments { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+  #moments:empty::before { content: "Nothing said yet."; color: var(--muted); }
+  .moment { max-width: min(42rem, 88%); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .moment time { display: block; font-size: 12px; color: var(--muted); }
+  .heard { align-self: flex-end; background: var(--user); color: var(--on-user); border-radius: 14px 14px 4px 14px; padding: 8px 12px; }
+  .heard time { color: inherit; opacity: .7; }
+  .said { align-self: flex-start; border: 1px solid var(--ring); border-radius: 14px 14px 14px 4px; padding: 8px 12px; }
+  .sent, .answered, .called { align-self: flex-start; color: var(--muted); font-size: 14px; }
+  .called summary { cursor: pointer; }
+  .called summary time { display: inline; margin-right: 6px; }
+  .called pre { margin: 6px 0 0; padding: 8px; border: 1px solid var(--ring); border-radius: 6px; max-height: 40vh; overflow: auto;
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  form { display: flex; gap: 8px; padding: 10px 16px 12px; border-top: 1px solid var(--ring); }
+  textarea { flex: 1; resize: none; font: inherit; color: inherit; background: none; border: 1px solid var(--ring); border-radius: 10px; padding: 8px 10px; min-height: 2.6em; max-height: 30vh; }
+  button { font: 600 15px/1 inherit; color: var(--on-user); background: var(--user); border: 0; border-radius: 10px; padding: 0 16px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  #state { min-height: 1.2em; margin: 0; padding: 0 16px; font-size: 13px; color: var(--muted); }
+  #state.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>hands</h1>
+  <a id="phone" href="/">Phone</a>
+</header>
+<main id="moments" aria-live="polite" aria-label="Conversation"></main>
+<p id="state" role="status"></p>
+<form id="typing">
+  <textarea id="text" rows="1" placeholder="Type to hands" aria-label="Type to hands" enterkeyhint="send"></textarea>
+  <button id="send" type="submit">Send</button>
+</form>
+<script>
+"use strict";
+// The phone's key travels in the fragment, which the browser never sends with the page's own request.
+const key = decodeURIComponent(location.hash.slice(1));
+const moments = document.getElementById("moments");
+const state = document.getElementById("state");
+const form = document.getElementById("typing");
+const text = document.getElementById("text");
+const send = document.getElementById("send");
+document.getElementById("phone").href = `/${location.hash}`;
+// How long the page waits to read again after a read that failed, as hands is restarted or the network drops.
+const AGAIN_MS = 2000;
+
+function say(line, bad = false) { state.textContent = line; state.classList.toggle("bad", bad); }
+
+function asked(path, init = {}) {
+  return fetch(path, {...init, headers: {...init.headers, "Authorization": `Bearer ${key}`}});
+}
+
+function stamped(at) {
+  const time = document.createElement("time");
+  time.dateTime = at;
+  time.textContent = new Date(at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return time;
+}
+
+// Each moment as the log holds it (hands.sessions.recall): what the user said, what hands said, words sent to a session,
+// a session's request answered, and a tool hands called, whose arguments and result open on request.
+function shown(moment) {
+  const row = document.createElement("div");
+  row.className = `moment ${moment.kind}`;
+  switch (moment.kind) {
+    case "heard":
+    case "said":
+      row.append(stamped(moment.at), moment.text);
+      break;
+    case "called": {
+      const details = document.createElement("details");
+      details.dataset.at = moment.at;
+      const summary = document.createElement("summary");
+      const body = document.createElement("pre");
+      summary.append(stamped(moment.at), moment.heading);
+      body.textContent = moment.text;
+      details.append(summary, body);
+      row.append(details);
+      break;
+    }
+    default:
+      row.append(stamped(moment.at), `${moment.heading}: ${moment.text}`);
+  }
+  return row;
+}
+
+// Whether the newest moment is in view, so new ones are followed only by a reader who has not scrolled back.
+function following() { return moments.scrollHeight - moments.scrollTop - moments.clientHeight < 40; }
+
+// Read the conversation for as long as the page is open: each read waits at hands until it changes from what was seen.
+async function reading() {
+  let seen = null;
+  for (;;) {
+    let response;
+    try {
+      response = await asked(seen === null ? "/conversation/moments" : `/conversation/moments?seen=${seen}`);
+    } catch {
+      say("hands is out of reach; trying again…", true);
+      await new Promise(done => setTimeout(done, AGAIN_MS));
+      continue;
+    }
+    if (response.status === 401) { say("Open this page from the address `hands phone` prints.", true); return; }
+    if (!response.ok) {
+      say(`hands could not read the conversation: ${await response.text()}`, true);
+      await new Promise(done => setTimeout(done, AGAIN_MS));
+      continue;
+    }
+    const read = await response.json();
+    const followed = seen === null || following();
+    // Every read redraws the conversation whole; a tool call the reader opened stays open across it.
+    const opened = new Set([...moments.querySelectorAll("details[open]")].map(details => details.dataset.at));
+    moments.replaceChildren(...read.moments.map(shown));
+    for (const details of moments.querySelectorAll("details")) details.open = opened.has(details.dataset.at);
+    if (followed) moments.scrollTop = moments.scrollHeight;
+    if (state.classList.contains("bad")) say("");
+    seen = read.changes;
+  }
+}
+
+async function sending(event) {
+  event.preventDefault();
+  const words = text.value.trim();
+  if (!words) return;
+  send.disabled = true;
+  try {
+    const response = await asked("/conversation/typed", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({text: words})});
+    if (response.ok) { text.value = ""; say(""); }
+    else say(`Not sent: ${await response.text()}`, true);
+  } catch {
+    say("Not sent: hands is out of reach.", true);
+  } finally {
+    send.disabled = false;
+    text.focus();
+  }
+}
+
+form.addEventListener("submit", sending);
+// Return sends, as in a chat; Shift-Return is a new line.
+text.addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
+});
+
+if (key) reading(); else { say("Open this page from the address `hands phone` prints.", true); send.disabled = true; }
+</script>
+</body>
+</html>

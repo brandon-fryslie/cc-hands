@@ -537,6 +537,10 @@ async def test_a_page_that_goes_quiet_is_hung_up_and_hands_is_at_the_desk_again(
     assert left(event).reason == "went quiet"
 
 
+async def nobody_types(text: str) -> None:
+    raise AssertionError(f"nothing is typed into a page nobody opens, but {text!r} was")
+
+
 async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.MonkeyPatch) -> list[Entry]:
     """What serving the page records, on a loopback port the system picks, with Tailscale answering `net`."""
 
@@ -548,7 +552,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(phone, home, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(phone, nobody_types, home, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -576,7 +580,7 @@ async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path
     assert dict(event.facts) == {"port": port, "untailed": "the tailscale command is not on the PATH"} and isinstance(port, int) and port > 0
 
 
-async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_the_conversation_page_is_served_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The page's requests run in a context copied inside `phone.served`, which ended as the page came up.
     async def asked(_home: Home) -> Untailed:
         return Untailed("the tailscale command is not on the PATH")
@@ -586,7 +590,12 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own(tmp_p
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(phone, Home(tmp_path), recorded.append))
+    typed: list[str] = []
+
+    async def typing(text: str) -> None:
+        typed.append(text)
+
+    serving = asyncio.create_task(phonepage.serve_phone(phone, typing, Home(tmp_path), recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -598,6 +607,10 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own(tmp_p
         assert refused.status == 401
     [event] = calls(recorded)
     assert event.parent_id is None and event.trace_id != served.trace_id
+    keyed = {"Authorization": f"Bearer {phone_key(Home(tmp_path))}"}
+    async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers=keyed, ssl=unverified) as sent:
+        assert sent.status == 202
+    assert typed == ["hello"]
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving

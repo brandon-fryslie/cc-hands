@@ -1917,6 +1917,26 @@ holds on the last word until hands says the sentence is done, and strikes throug
 the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
 lines told beside the marks.
 
+**The conversation page is the log's conversation, with a box to type in**
+(`hands.voice.conversationpage`). It is served beside the phone's page, on its port and
+addresses, at `/conversation`, and asks for the phone's key the same way (`carries_key`
+in `hands.voice.phoneaddress`, the one check of it). It shows the newest 200 moments of
+the audit log as `hands recall` folds them (`hands.sessions.recall.Moments`): what the
+user said, what hands said, what was sent to a session and answered there, and each
+tool hands called (its `tool.run` event), whose arguments and result open on request.
+`hands recall` leaves the tool calls out. The daemon keeps one fold, read on from the
+log offset it last reached. A page's read says how many changes it has seen and waits
+up to 25 s for another, so it is answered once something is said, and a send seen to
+fail later is redrawn where it was. Words typed are queued into the voice's pipeline as
+`Typed`, and Whisper takes them as a hold of their own, opened, ended, heard and
+resolved at once, with the `typed` opener. That is not an edge: it moves no gate and
+leaves hands where it is. A typed hold cuts hands off as it opens, as a press does,
+and joins a turn a hold of the key's has open. From there the words reach the model,
+and come back to the page through the log, as words said do. Each read is one
+`conversation.read` event, with what it had seen, how long it waited, and how many
+moments it gave. Each send is one `conversation.typed` event, with how many characters
+were typed. A request without the key or with no words is refused, and its event says why.
+
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked

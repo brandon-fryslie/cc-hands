@@ -1,4 +1,5 @@
-"""The phone's page: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands.
+"""The phone's page: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands; and
+the conversation page beside it (`hands.voice.conversationpage`).
 
 Where it is reached, and the certificate and key it is reached with, are `hands.voice.phoneaddress`'s.
 
@@ -8,10 +9,9 @@ an offer without it is refused.
 
 import asyncio
 import datetime
-import hmac
 import json
 import ssl
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from importlib import resources
 from pathlib import Path
@@ -24,8 +24,9 @@ from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, begun, continuing, unit
+from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
-from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, phone_key, tailnet
+from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet
 
 # How often a page served under the tailnet's name asks Tailscale for its certificate again: Tailscale renews one a
 # month before its 90 days are out, so a day is far inside the time a renewed one has before the old one ends.
@@ -51,9 +52,7 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
         began = begun()
-        given = request.headers.get("Authorization", "").removeprefix("Bearer ")
-        # [LAW:single-enforcer] the one check of the key, compared in constant time.
-        if not hmac.compare_digest(given.encode(), key.encode()):
+        if not carries_key(request.headers.get("Authorization", ""), key):
             call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
         try:
@@ -77,14 +76,18 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
     return app
 
 
-async def serve_phone(phone: Phone, home: Home, record: Record) -> Never:
+async def serve_phone(phone: Phone, typed: Callable[[str], Awaitable[None]], home: Home, record: Record) -> Never:
     """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
-    with the certificate Tailscale renews, asked for again every RENEW_SECONDS.
+    with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The conversation page is served beside
+    it, under the same key, handing `typed` what is typed into it.
 
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
     under, or, served on the LAN alone, why Tailscale gave it none.
     """
-    runner = web.AppRunner(phone_app(phone, phone_key(home), record), access_log=None)
+    key = phone_key(home)
+    app = phone_app(phone, key, record)
+    app.add_routes(conversation_routes(Conversation(home.audit), typed, key, record))
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     try:
         with unit("phone.served", record):
