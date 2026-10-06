@@ -83,6 +83,9 @@ class Process:
     parent: int
     uid: int
     tty: int | None
+    # Its controlling terminal again when its process group is the one in front of that terminal, the group a key typed
+    # there goes to; None for a process with no terminal, or one behind another group at it, as a stopped job is.
+    front: int | None
 
 
 def process_table() -> dict[int, Process]:
@@ -100,7 +103,7 @@ def process_table() -> dict[int, Process]:
     if size.value % _KINFO_PROC_SIZE:
         # A record of another size is a kernel whose struct is not the one laid out above; no errno says so.
         raise OSError(f"kern.proc.all gave {size.value} bytes, not a whole number of this kernel's {_KINFO_PROC_SIZE}-byte kinfo_proc")
-    processes = (_process(flag, pid, uid, parent, tty) for flag, pid, uid, parent, tty in _KINFO_PROC.iter_unpack(table.raw[: size.value]))
+    processes = (_process(*fields) for fields in _KINFO_PROC.iter_unpack(table.raw[: size.value]))
     # Not kernel_task, pid 0, which is its own parent: without it every line of parents ends, at launchd.
     return {process.pid: process for process in processes if process.pid != 0}
 
@@ -114,14 +117,23 @@ def ancestor_terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[i
         process = processes.get(process.parent)
 
 
-def _process(flag: int, pid: int, uid: int, parent: int, tty: int) -> Process:
-    return Process(pid, parent, uid, tty if flag & _P_CONTROLT else None)
+def front_terminal(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
+    """pid's controlling terminal while pid is in front of it, so a key typed there reaches it; nothing otherwise."""
+    process = processes.get(pid)
+    if process is not None and process.front is not None:
+        yield process.front
+
+
+def _process(flag: int, pid: int, uid: int, parent: int, group: int, tty: int, foreground: int) -> Process:
+    controlling = tty if flag & _P_CONTROLT else None
+    return Process(pid, parent, uid, controlling, controlling if group == foreground else None)
 
 
 # sysctl kern.proc.all: one struct kinfo_proc of 648 bytes per process; its extern_proc's p_flag and p_pid, then its
-# eproc's effective uid (e_ucred.cr_uid), parent's pid, and controlling terminal's device, at these offsets.
+# eproc's effective uid (e_ucred.cr_uid), parent's pid, process group, controlling terminal's device, and the process
+# group in front of that terminal (e_tpgid), at these offsets.
 _KERN_PROC_ALL = (1, 14, 0)  # CTL_KERN, KERN_PROC, KERN_PROC_ALL
-_KINFO_PROC = struct.Struct("=32xi4xi376xI136xi8xi72x")
+_KINFO_PROC = struct.Struct("=32xi4xi376xI136xii4xii68x")
 _KINFO_PROC_SIZE = _KINFO_PROC.size
 _P_CONTROLT = 0x2
 # libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, struct proc_vnodepathinfo

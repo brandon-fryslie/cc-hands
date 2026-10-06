@@ -35,7 +35,10 @@ LAWS = SessionId("s-laws")
 
 
 async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=typed.append)
+    async def typist(effect: Type[Input]) -> None:
+        typed.append(effect)
+
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=typist)
     for id, project in ((HANDS, "cc-hands"), (LAWS, "laws")):
         await sessions.apply(Joined(Membership(id, 4242, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
     return sessions
@@ -64,7 +67,7 @@ async def say(given: dict[str, Tool], text: str, **session: str) -> dict[str, ob
 
 
 def typed_to(typed: list[Type[Input]]) -> list[tuple[str, Input]]:
-    return [(effect.socket.stem, effect.input) for effect in typed]
+    return [(effect.session, effect.input) for effect in typed]
 
 
 async def test_unnamed_turns_reach_the_focus_and_one_call_moves_it_while_a_named_turn_reaches_the_one_named(tmp_path: Path) -> None:

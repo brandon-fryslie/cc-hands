@@ -1,12 +1,12 @@
 """What the user asks of a draft, what came of it, and the one function that decides."""
 
 from dataclasses import dataclass
-from pathlib import Path
 
-from hands.core.effects import NotTyped, Text, Type, Typed
-from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped
+from hands.core.effects import Fritter, NotTyped, Text, Type, Typed
+from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
 from hands.core.session import Gone, Known, Registry, Running, Session, SessionId, Staged
 from hands.core.status import Waiting
+from hands.core.tmux import Keyboard, Pane
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,21 @@ class SendDraft:
 
 
 DraftRequest = StageDraft | AmendDraft | DiscardDraft | SendDraft
+
+
+@dataclass(frozen=True)
+class Sending:
+    """A send, with where keys typed for its session go in tmux, read just before it is decided.
+
+    [LAW:types-are-the-program] only a send types, so only a send carries a pane: staging, amending, and discarding are
+    decided the moment they are asked, in the order they were asked, with nothing read first.
+    """
+
+    session: SessionId
+    pane: Keyboard
+
+
+Decidable = StageDraft | AmendDraft | DiscardDraft | Sending
 
 
 @dataclass(frozen=True)
@@ -62,7 +77,7 @@ class NothingStaged:
 DraftOutcome =DraftStaged | DraftAmended | DraftDiscarded | NothingStaged | Unreached | Typed[Text] | NotTyped[Text]
 
 
-def decide(registry: Registry, request: DraftRequest) -> tuple[Registry, DraftOutcome | Type[Text]]:
+def decide(registry: Registry, request: Decidable) -> tuple[Registry, DraftOutcome | Type[Text]]:
     """One draft request in; the next registry and what came of it out, or what to type. No I/O."""
     match registry.sessions.get(request.session):
         case None:
@@ -73,25 +88,27 @@ def decide(registry: Registry, request: DraftRequest) -> tuple[Registry, DraftOu
             return _decide(registry, request, known, registry.drafts.get(request.session))
 
 
-def _decide(registry: Registry, request: DraftRequest, session: Known, staged: Staged | None) -> tuple[Registry, DraftOutcome | Type[Text]]:
+def _decide(registry: Registry, request: Decidable, session: Known, staged: Staged | None) -> tuple[Registry, DraftOutcome | Type[Text]]:
     id = request.session
-    match (request, staged, session, session.membership.fritter):
-        case (AmendDraft() | DiscardDraft() | SendDraft(), None, _, _):
+    match (request, staged, session):
+        case (AmendDraft() | DiscardDraft() | Sending(), None, _):
             return registry, NothingStaged(id)
-        case (DiscardDraft(), Staged() as draft, _, _):
+        case (DiscardDraft(), Staged() as draft, _):
             # A draft outlives its session's end so that it can still be thrown away.
             return registry.unstage(id), DraftDiscarded(id, draft)
-        case (_, _, Gone(), _):
+        case (_, _, Gone()):
             return registry, SessionEnded(id)
-        case (StageDraft(draft=draft), _, _, _):
+        case (StageDraft(draft=draft), _, _):
             return registry.stage(id, draft), DraftStaged(id, draft, replaced=staged)
-        case (AmendDraft(draft=after), Staged() as before, _, _):
+        case (AmendDraft(draft=after), Staged() as before, _):
             return registry.stage(id, after), DraftAmended(id, before, after)
-        case (SendDraft(), Staged(), _, None):
-            return registry, Unwrapped(id)
-        case (SendDraft(), Staged(), Session(state=Running(status=Waiting())), Path()):
-            return registry, AtItsDialog(id)
-        case (SendDraft(), Staged() as draft, Session(), Path() as socket):
-            # Sent the moment it is decided: the draft leaves the registry here, so there is never a second send of it.
-            # A working session queues what is typed into it until its turn ends (measured on 2.1.270).
-            return registry.unstage(id), Type(id, socket, session.membership.pid, Text(draft.text))
+        case (Sending(pane=pane), Staged() as draft, Session(state=state, membership=member)):
+            match (state, writer(member, pane)):
+                case (_, Unwrapped() as unwrapped):
+                    return registry, unwrapped
+                case (Running(status=Waiting()), _):
+                    return registry, AtItsDialog(id)
+                case (_, Fritter() | Pane() as by):
+                    # Sent the moment it is decided: the draft leaves the registry here, so there is never a second send
+                    # of it. A working session queues what is typed into it until its turn ends (measured on 2.1.270).
+                    return registry.unstage(id), Type(id, by, Text(draft.text))

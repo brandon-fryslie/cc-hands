@@ -3,7 +3,7 @@
 import asyncio
 import io
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,10 +17,11 @@ from pipecat.processors.aggregators.llm_response_universal import AssistantTurnS
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
 
-from hands.core.effects import Command, Input, Key, Text, Type
+from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, StatusReported
 from hands.core.session import CommandName, Membership, PromptText, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
+from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.wide import unit
@@ -49,8 +50,26 @@ class Lines(FrameProcessor):
         return [(frame.text, frame.append_to_context) for frame in self.frames if isinstance(frame, TTSSpeakFrame)]
 
 
-async def joined(tmp: Path, record: Record = unrecorded) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record)
+def typing_into(typed: Callable[[Type[Input]], None]) -> Callable[[Type[Input]], Awaitable[None]]:
+    """A typist that hands each effect to `typed`, which raises Untyped to refuse it."""
+
+    async def typist(effect: Type[Input]) -> None:
+        typed(effect)
+
+    return typist
+
+
+def in_pane(pane: Keyboard) -> Callable[[Sequence[int]], Awaitable[list[Keyboard]]]:
+    """A reader that finds every process's keys go to `pane`."""
+
+    async def keyboards(pids: Sequence[int]) -> list[Keyboard]:
+        return [pane] * len(pids)
+
+    return keyboards
+
+
+async def joined(tmp: Path, record: Record = unrecorded, typed: Callable[[Type[Input]], None] = lambda _: None, pane: Keyboard = NotInTmux()) -> tuple[Sessions, SessionId]:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typing_into(typed), keyboards=in_pane(pane))
     membership = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
     await sessions.apply(Joined(membership, "startup"))
     return sessions, membership.id
@@ -244,7 +263,7 @@ async def test_a_control_in_what_was_heard_reaches_the_terminal_as_its_escape_an
 
 
 async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typist)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=record, typist=typing_into(typist), keyboards=in_pane(NotInTmux()))
     await sessions.apply(Joined(Membership(SessionId("s1"), 4242, Path("/code/cc-hands"), tmp / "none.jsonl", tmp / "f.sock"), "startup"))
     return sessions, SessionId("s1")
 
@@ -257,7 +276,7 @@ async def test_a_sent_draft_is_typed_into_its_session_once_and_is_gone(tmp_path:
     assert await call(tools, "send_draft", session=id) == {"readback": "Sent the draft to cc-hands."}
     assert await call(tools, "send_draft", session=id) == {"readback": "There is no draft for cc-hands."}
     [effect] = typed
-    assert (effect.socket, effect.pid, effect.input) == (tmp_path / "f.sock", 4242, Text(PromptText("/compact the tests")))
+    assert (effect.writer, effect.input) == (Fritter(tmp_path / "f.sock", 4242), Text(PromptText("/compact the tests")))
 
 
 async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_path: Path) -> None:
@@ -282,9 +301,58 @@ async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survive
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     assert await call(tools, "send_draft", session=id) == {
-        "readback": "cc-hands was not started under fritter, so hands cannot type into it. The draft is still staged."
+        "readback": "cc-hands was not started under fritter and runs in no tmux pane, so hands cannot type into it. The draft is still staged."
     }
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
+
+
+async def test_a_session_nobody_wrapped_in_a_tmux_pane_is_sent_a_draft_a_command_and_an_interrupt_through_it(tmp_path: Path) -> None:
+    pane = Pane(tmp_path / "default", "%3", "work", 1)
+    typed: list[Type[Input]] = []
+    sessions, id = await joined(tmp_path, typed=typed.append, pane=pane)
+    await sessions.apply(StatusReported(id, Report(Busy(), Stamp(1)), 0.0))
+    await call(draft_tools(sessions), "stage_draft", session=id, text="run the tests", resolutions=[])
+    assert await call(draft_tools(sessions), "send_draft", session=id) == {"readback": "Sent the draft to cc-hands."}
+    assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {"readback": "Typed /compact into cc-hands."}
+    assert await call(keyboard_tools(sessions), "interrupt_session", session=id) == {"readback": "Typed Escape into cc-hands."}
+    assert typed == [
+        Type(id, pane, Text(PromptText("run the tests"))),
+        Type(id, pane, Command(CommandName("compact"), None)),
+        Type(id, pane, Key("escape")),
+    ]
+
+
+async def test_a_session_nobody_wrapped_whose_pane_could_not_be_read_is_refused_saying_why(tmp_path: Path) -> None:
+    sessions, id = await joined(tmp_path, pane=PaneUnread("tmux at /tmp/tmux-501/default did not answer list-panes in 2 seconds"))
+    assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
+        "readback": "cc-hands was not started under fritter, and which tmux pane it runs in could not be read, so hands cannot type into it: tmux at /tmp/tmux-501/default did not answer list-panes in 2 seconds."
+    }
+
+
+async def test_only_a_send_waits_on_its_pane_so_staging_and_amending_are_decided_as_they_are_asked(tmp_path: Path) -> None:
+    read: list[Sequence[int]] = []
+
+    async def keyboards(pids: Sequence[int]) -> list[Keyboard]:
+        read.append(pids)
+        return [NotInTmux()] * len(pids)
+
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=unrecorded, keyboards=keyboards)
+    await sessions.apply(Joined(Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp_path / "none.jsonl"), "startup"))
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session="s1", text="run the tests", resolutions=[])
+    await call(tools, "amend_draft", session="s1", text="run the tests again", resolutions=[])
+    assert read == []
+    await call(tools, "send_draft", session="s1")
+    assert read == [[4242]]
+
+
+async def test_a_session_nobody_wrapped_behind_another_program_in_its_pane_is_refused_and_nothing_is_typed(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await joined(tmp_path, typed=typed.append, pane=Behind(Pane(tmp_path / "default", "%3", "work", 1)))
+    assert await call(keyboard_tools(sessions), "interrupt_session", session=id) == {
+        "readback": "cc-hands was not started under fritter, and another program has the keyboard of its tmux pane %3, so hands cannot type into it: it is stopped, runs inside another program such as an editor or ssh, or was started from inside another session."
+    }
+    assert typed == []
 
 
 async def test_a_session_waiting_at_a_permission_dialog_is_sent_nothing(tmp_path: Path) -> None:
@@ -310,6 +378,8 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     written = [json.loads(line) for line in tail(path, 1000)[0]]
     assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
     assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
+    # Which writer typed it: the fritter that wrapped the session, or tmux in its pane.
+    assert written[-2]["effect"]["writer"] == {"type": "Fritter", "socket": str(tmp_path / "f.sock"), "pid": 4242}
     # What was typed is joined to the call that typed it by the call's span.
     assert written[-2]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "send_draft"
 
@@ -326,7 +396,7 @@ async def test_a_command_is_typed_with_its_slash_and_read_back(tmp_path: Path) -
     sessions, id = await wrapped(tmp_path, typed.append)
     result = await call(keyboard_tools(sessions), "send_command", session=id, command="/model", args="opus")
     assert result == {"readback": "Typed /model opus into cc-hands."}
-    assert typed == [Type(id, tmp_path / "f.sock", 4242, Command(CommandName("model"), PromptText("opus")))]
+    assert typed == [Type(id, Fritter(tmp_path / "f.sock", 4242), Command(CommandName("model"), PromptText("opus")))]
 
 
 async def test_stop_presses_escape_in_a_working_session_and_nothing_in_one_at_its_prompt(tmp_path: Path) -> None:
@@ -337,7 +407,7 @@ async def test_stop_presses_escape_in_a_working_session_and_nothing_in_one_at_it
     assert await call(tools, "interrupt_session", session=id) == {"readback": "cc-hands is at its prompt, so there is nothing to interrupt."}
     await sessions.apply(StatusReported(id, Report(Busy(), Stamp(2)), 1.0))
     assert await call(tools, "interrupt_session", session=id) == {"readback": "Typed Escape into cc-hands."}
-    assert typed == [Type(id, tmp_path / "f.sock", 4242, Key("escape"))]
+    assert typed == [Type(id, Fritter(tmp_path / "f.sock", 4242), Key("escape"))]
 
 
 async def test_a_command_fritter_could_not_type_is_said_with_why(tmp_path: Path) -> None:

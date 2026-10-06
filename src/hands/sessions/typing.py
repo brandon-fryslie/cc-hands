@@ -1,4 +1,5 @@
-"""Typing into a session, through the fritter that wrapped it.
+"""Typing into a session, through the fritter that wrapped it or, for a session no fritter wrapped, through tmux into the
+pane it runs in (`hands.sessions.tmux`).
 
 fritter runs a session's `claude` on a pseudo-terminal and listens on a unix socket
 beside it; text asked for there is typed into that session's input and sent with Return,
@@ -11,20 +12,24 @@ be sent to, and whether a leading slash is escaped are all settled in the core b
 reaches here `[LAW:single-enforcer]`.
 """
 
+import asyncio
 import json
 import socket
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.core.effects import Command, Input, Key, Text, Type
+from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.session import Keystroke, PromptText, SessionId
+from hands.core.tmux import Pane, Unanswered
+from hands.sessions import tmux
 
 # How long the exchange may take. fritter answers as soon as its one write is done.
 ANSWER_TIMEOUT = 5.0
 
 
 class Untyped(Exception):
-    """fritter could not be reached, or refused, or could not write. The message says which."""
+    """fritter or tmux could not be reached, or refused, or could not write. The message says which."""
 
 
 @dataclass(frozen=True)
@@ -73,10 +78,22 @@ class Typist:
                 raise Untyped(f"the fritter for session {self.session} answered {other!r}")
 
 
-def type_into(effect: Type[Input]) -> None:
-    """Perform a Type: text or a command typed into the session and sent with Return, or a key pressed."""
-    typist = Typist(effect.session, effect.socket, effect.pid)
-    match effect.input:
+async def type_into(environment: Mapping[str, str], effect: Type[Input]) -> None:
+    """Perform a Type by its writer: text or a command typed into the session and sent with Return, or a key pressed.
+    `environment` says where tmux is."""
+    match effect.writer:
+        case Fritter(socket=path, pid=pid):
+            await asyncio.to_thread(_by_fritter, Typist(effect.session, path, pid), effect.input)
+        case Pane() as pane:
+            match await tmux.typed(environment, pane, effect.input):
+                case Unanswered(reason=reason):
+                    raise Untyped(f"tmux did not type into session {effect.session}: {reason}")
+                case None:
+                    return
+
+
+def _by_fritter(typist: Typist, input: Input) -> None:
+    match input:
         case Text() as typed:
             typist.type(typed.typed)
         case Command() as command:

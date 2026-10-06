@@ -16,6 +16,7 @@ from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrappe
 from hands.core import session
 from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
 from hands.core.spoken import spelled
+from hands.core.tmux import Behind, NotInTmux, PaneUnread
 from hands.sessions.registry import Listing, Sessions
 
 _WORDS = re.compile(r"[^\s]+|\n")
@@ -44,8 +45,8 @@ def readback(outcome: DraftOutcome, name: str) -> str:
             return f"Sent the draft to {name}."
         case NotTyped(input=Text(prompt=text), reason=reason):
             return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {_said(text)}"
-        case Unwrapped():
-            return f"{name} was not started under fritter, so hands cannot type into it. The draft is still staged."
+        case Unwrapped() as unwrapped:
+            return f"{_unreachable(unwrapped, name)} The draft is still staged."
         case AtItsDialog():
             return f"{name} is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
 
@@ -63,10 +64,20 @@ def keyboard_readback(outcome: KeyboardOutcome, name: str) -> str:
             return f"There is no session {session}."
         case SessionEnded():
             return f"{name} has ended."
-        case Unwrapped():
-            return f"{name} was not started under fritter, so hands cannot type into it."
+        case Unwrapped() as unwrapped:
+            return _unreachable(unwrapped, name)
         case AtItsDialog():
             return f"{name} is waiting at a dialog, which would take the command as its answer. Nothing was sent."
+
+
+def _unreachable(unwrapped: Unwrapped, name: str) -> str:
+    match unwrapped.pane:
+        case Behind(pane=pane):
+            return f"{name} was not started under fritter, and another program has the keyboard of its tmux pane {pane.id}, so hands cannot type into it: it is stopped, runs inside another program such as an editor or ssh, or was started from inside another session."
+        case NotInTmux():
+            return f"{name} was not started under fritter and runs in no tmux pane, so hands cannot type into it."
+        case PaneUnread(reason=reason):
+            return f"{name} was not started under fritter, and which tmux pane it runs in could not be read, so hands cannot type into it: {reason}."
 
 
 def _spoken_input(input: Command | Key) -> str:

@@ -1,5 +1,6 @@
 """Typing into a session through fritter's socket: what is sent, and how refusals arrive."""
 
+import asyncio
 import json
 import re
 import shutil
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.effects import Command, Input, Key, Text, Type
+from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.session import CommandName, PromptText, SessionId
 from hands.sessions import typing
 from hands.sessions.typing import Typist, Untyped, type_into
@@ -79,7 +80,7 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
     try:
-        type_into(Type(SID, path, pid=4242, input=Text(PromptText("/compact now"))))
+        asyncio.run(type_into({}, Type(SID, Fritter(path, pid=4242), input=Text(PromptText("/compact now")))))
     finally:
         fritter.close()
     assert fritter.asked is not None
@@ -96,7 +97,7 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
 )
 def test_a_command_is_typed_as_itself_and_a_key_is_pressed(input: Input, sent: dict[str, object], short_dir: Path) -> None:
     path = short_dir / "f.sock"
-    assert asked(path, b'{"ok":true}\n', lambda _: type_into(Type(SID, path, pid=4242, input=input))) == sent
+    assert asked(path, b'{"ok":true}\n', lambda _: asyncio.run(type_into({}, Type(SID, Fritter(path, pid=4242), input=input)))) == sent
 
 
 def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None:

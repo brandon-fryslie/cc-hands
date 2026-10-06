@@ -36,6 +36,19 @@ InPane = Pane | NotInTmux | PaneUnread
 
 
 @dataclass(frozen=True)
+class Behind:
+    """The pane a session runs in, where some other program has the keyboard: the session is stopped, or runs inside a
+    program with a terminal of its own (an editor's, screen's, ssh's), or was started from inside another session. Keys
+    typed there reach that program, not the session."""
+
+    pane: Pane
+
+
+# Where keys typed for a session go: the pane in front of it, or why there is none.
+Keyboard = Pane | Behind | NotInTmux | PaneUnread
+
+
+@dataclass(frozen=True)
 class Listed:
     """A tmux server's panes, by the device number of each one's terminal."""
 
@@ -64,3 +77,20 @@ def pane_of(terminals: Iterable[int], servers: Iterable[Server]) -> InPane:
         case (None, unanswered):
             # The pane may be one a server that did not answer holds.
             return PaneUnread("; ".join(unanswered))
+
+
+def keyboard_of(front: Iterable[int], terminals: Iterable[int], servers: Iterable[Server]) -> Keyboard:
+    """The pane whose keys reach the session: the pane that is `front`, the session's own terminal while the session is
+    in front of it, if any is; else the pane on its line of ancestor `terminals`, its own first, that it runs behind.
+
+    [LAW:single-enforcer] fritter types only into the process it wrapped; this is the same rule for a pane, which
+    otherwise types into whatever program has its keyboard at the time.
+    """
+    servers = list(servers)
+    match (pane_of(front, servers), pane_of(terminals, servers)):
+        case (Pane() as pane, _):
+            return pane
+        case (_, Pane() as pane):
+            return Behind(pane)
+        case (_, NotInTmux() | PaneUnread() as missing):
+            return missing

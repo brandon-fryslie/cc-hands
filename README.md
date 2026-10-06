@@ -334,8 +334,9 @@ interpreter and each change to the plugin's files.
 
 ## Wrapping every session
 
-hands types into a session through fritter, so it reaches only the sessions started
-under it. Install a `claude` that starts every one that way, and put it first on `PATH`:
+hands types into a session through fritter, or, for a session started outside it, through
+tmux into the pane the session runs in; a session outside fritter and outside tmux cannot be
+typed into. Install a `claude` that starts every one under fritter, and put it first on `PATH`:
 
 ```
 uv run hands install-fritter                    # copies fritter, writes ~/.hands/bin/claude beside it

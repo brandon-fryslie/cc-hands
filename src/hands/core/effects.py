@@ -9,6 +9,7 @@ from hands.core.events import SessionEvent
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
+from hands.core.tmux import Pane
 from hands.core.turn import AgentTask
 
 
@@ -330,21 +331,32 @@ Input = Text | Command | Key
 
 
 @dataclass(frozen=True)
+class Fritter:
+    """The fritter that wrapped a session: it listens at `socket`, and types only into process `pid`, the one it wrapped."""
+
+    socket: Path
+    pid: int
+
+
+# What types into a session: the fritter that wrapped it, or tmux, into the pane it runs in.
+Writer = Fritter | Pane
+
+
+@dataclass(frozen=True)
 class Type[I: Input]:
-    """Typed into a session through the fritter that wrapped it, which listens at `socket` and wrapped process `pid`.
+    """Typed into a session by its writer.
 
     Not in Effect: a draft, command, or interrupt request emits it, and what came of it is the request's answer.
     """
 
     session: SessionId
-    socket: Path
-    pid: int
+    writer: Writer
     input: I
 
 
 @dataclass(frozen=True)
 class Typed[I: Input]:
-    """fritter typed the input into its session."""
+    """The session's writer typed the input into it."""
 
     session: SessionId
     input: I
@@ -352,7 +364,7 @@ class Typed[I: Input]:
 
 @dataclass(frozen=True)
 class NotTyped[I: Input]:
-    """fritter could not be reached, or refused, or could not write: `reason` says which."""
+    """The session's writer could not be reached, or refused, or could not write: `reason` says which."""
 
     session: SessionId
     input: I

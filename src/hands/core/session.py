@@ -74,8 +74,9 @@ class Membership:
     #
     # [LAW:types-are-the-program] Absent, and absent in the type, for a session started
     # outside fritter. Such a session can be listed, read and spoken about like any
-    # other; it simply cannot be typed into, and the type says so rather than leaving a
-    # caller to find out by writing to a path that is not there.
+    # other; it is typed into only through the tmux pane it runs in (`core.reach.writer`),
+    # and the type says so rather than leaving a caller to find out by writing to a path
+    # that is not there.
     fritter: Path | None = None
 
 

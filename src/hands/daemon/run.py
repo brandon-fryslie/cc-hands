@@ -35,7 +35,8 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.daemon.config import OwnModel, Settings
-from hands.sessions import heartbeat
+from hands.sessions import heartbeat, tmux
+from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.front import InFront
@@ -252,7 +253,10 @@ async def run(
         deltas = Deltas(record, environment)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
-        sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas, names=names)
+        sessions = Sessions(
+            permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas, names=names,
+            typist=partial(type_into, environment), keyboards=partial(tmux.keyboards, environment=environment),
+        )
         hooks = await serve_hooks(home, sessions, names, record)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)

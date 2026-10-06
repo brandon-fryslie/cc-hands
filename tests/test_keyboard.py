@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.effects import Command, Key, Type
+from hands.core.effects import Command, Fritter, Key, Type
 from hands.core.keyboard import Interrupt, KeyboardRequest, NothingRunning, SendCommand, decide
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import (
@@ -27,9 +27,12 @@ from hands.core.session import (
 )
 from hands.core import status
 from hands.core.status import Busy, Going, Shell, Stamp, UnknownReason, Waiting
+from hands.core.tmux import NotInTmux, Pane
 
 SOCKET = Path("/tmp/fritter-1/session.sock")
 ONE = Membership(SessionId("s1"), pid=1, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"), fritter=SOCKET)
+FRITTER = Fritter(SOCKET, 1)
+PANE = Pane(Path("/tmp/tmux-501/default"), "%3", "work", 1)
 COMPACT = Command(CommandName("compact"), None)
 
 
@@ -55,17 +58,17 @@ def gone(member: Membership = ONE) -> Registry:
 
 @pytest.mark.parametrize("state", [IDLE, running(), SHELLING, Unreported()])
 def test_a_command_is_typed_as_itself_whatever_the_session_is_doing(state: SessionState) -> None:
-    assert decide(registry(state), SendCommand(ONE.id, COMPACT)) == Type(ONE.id, SOCKET, 1, COMPACT)
+    assert decide(registry(state), SendCommand(ONE.id, COMPACT), NotInTmux()) == Type(ONE.id, FRITTER, COMPACT)
 
 
 @pytest.mark.parametrize("state", [AT_DIALOG, running(Waiting(UnknownReason("a dialog this version does not know")))])
 def test_a_session_at_a_dialog_is_sent_no_command(state: SessionState) -> None:
-    assert decide(registry(state), SendCommand(ONE.id, COMPACT)) == AtItsDialog(ONE.id)
+    assert decide(registry(state), SendCommand(ONE.id, COMPACT), NotInTmux()) == AtItsDialog(ONE.id)
 
 
 @pytest.mark.parametrize("state", [running(), AT_DIALOG, Unreported()])
 def test_an_interrupt_presses_escape_even_at_a_dialog(state: SessionState) -> None:
-    assert decide(registry(state), Interrupt(ONE.id)) == Type(ONE.id, SOCKET, 1, Key("escape"))
+    assert decide(registry(state), Interrupt(ONE.id), NotInTmux()) == Type(ONE.id, FRITTER, Key("escape"))
 
 
 @pytest.mark.parametrize("state", [IDLE, SHELLING])
@@ -73,23 +76,34 @@ def test_an_interrupt_presses_escape_even_at_a_dialog(state: SessionState) -> No
 def test_a_session_at_its_prompt_has_nothing_to_interrupt_whatever_turn_was_heard(state: SessionState, turn: Turn) -> None:
     """Claude Code's status alone says whether anything runs: it is set busy before a prompt's hooks run. A shell
     command running in the background is no turn, and Escape at the prompt does not stop it."""
-    assert decide(registry(state, turn=turn), Interrupt(ONE.id)) == NothingRunning(ONE.id)
+    assert decide(registry(state, turn=turn), Interrupt(ONE.id), NotInTmux()) == NothingRunning(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])
 def test_an_ended_session_is_typed_nothing_wrapped_or_not(request_: KeyboardRequest) -> None:
-    assert decide(gone(), request_) == SessionEnded(ONE.id)
-    assert decide(gone(replace(ONE, fritter=None)), request_) == SessionEnded(ONE.id)
+    assert decide(gone(), request_, NotInTmux()) == SessionEnded(ONE.id)
+    assert decide(gone(replace(ONE, fritter=None)), request_, NotInTmux()) == SessionEnded(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])
 def test_a_session_nobody_wrapped_is_refused_by_name(request_: KeyboardRequest) -> None:
-    assert decide(registry(running(), replace(ONE, fritter=None)), request_) == Unwrapped(ONE.id)
+    assert decide(registry(running(), replace(ONE, fritter=None)), request_, NotInTmux()) == Unwrapped(ONE.id, NotInTmux())
+
+
+def test_a_session_nobody_wrapped_is_typed_into_through_its_tmux_pane() -> None:
+    unwrapped = registry(running(), replace(ONE, fritter=None))
+    assert decide(unwrapped, SendCommand(ONE.id, COMPACT), PANE) == Type(ONE.id, PANE, COMPACT)
+    assert decide(unwrapped, Interrupt(ONE.id), PANE) == Type(ONE.id, PANE, Key("escape"))
+
+
+def test_a_session_in_a_pane_at_a_dialog_is_sent_no_command_and_one_at_its_prompt_no_interrupt() -> None:
+    assert decide(registry(AT_DIALOG, replace(ONE, fritter=None)), SendCommand(ONE.id, COMPACT), PANE) == AtItsDialog(ONE.id)
+    assert decide(registry(IDLE, replace(ONE, fritter=None)), Interrupt(ONE.id), PANE) == NothingRunning(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(SessionId("s2"), COMPACT), Interrupt(SessionId("s2"))])
 def test_a_session_that_never_joined_is_named_unknown(request_: KeyboardRequest) -> None:
-    assert decide(registry(IDLE), request_) == UnknownSession(SessionId("s2"))
+    assert decide(registry(IDLE), request_, NotInTmux()) == UnknownSession(SessionId("s2"))
 
 
 def test_a_command_is_typed_with_its_slash_and_its_arguments_behind_a_space() -> None:
