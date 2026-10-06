@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from hands.core.effects import Command, Fritter, Key, Type
-from hands.core.keyboard import Interrupt, KeyboardRequest, NothingRunning, SendCommand, decide
+from hands.core.events import Launched, Prompted, StatusReported, Stopped
+from hands.core.keyboard import InBackground, Interrupt, KeyboardRequest, NothingRunning, SendCommand, decide
+from hands.core.reducer import reduce
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import (
     CommandName,
@@ -17,6 +19,7 @@ from hands.core.session import (
     PromptId,
     PromptText,
     Registry,
+    RequestId,
     Session,
     SessionId,
     SessionState,
@@ -26,7 +29,8 @@ from hands.core.session import (
     Running,
 )
 from hands.core import status
-from hands.core.status import Busy, Going, Shell, Stamp, UnknownReason, Waiting
+from hands.core.status import Busy, Going, Report, Shell, Stamp, UnknownReason, Waiting
+from hands.core.turn import AgentId
 from hands.core.tmux import NotInTmux, Pane
 
 SOCKET = Path("/tmp/fritter-1/session.sock")
@@ -109,3 +113,28 @@ def test_a_session_that_never_joined_is_named_unknown(request_: KeyboardRequest)
 def test_a_command_is_typed_with_its_slash_and_its_arguments_behind_a_space() -> None:
     assert COMPACT.typed == "/compact"
     assert Command(CommandName("model"), PromptText("opus")).typed == "/model opus"
+
+
+def delegating() -> Registry:
+    """At its prompt after a turn that started a subagent in the background, as the reducer holds it: Claude Code busy
+    from that turn on (2.1.289)."""
+    turn = PromptId("p1")
+    held = registry(Unreported())
+    for event in (
+        StatusReported(ONE.id, Report(status.Idle(), Stamp(900)), at=1.0),
+        Prompted(ONE.id, at=2.0, mode=None, prompt=turn),
+        StatusReported(ONE.id, Report(Busy(), Stamp(1000)), at=2.1),
+        Launched(ONE.id, AgentId("a1"), Stamp(1200)),
+        Stopped(ONE.id, "Started it.", mode=None, prompt=turn, again=False, heard=Stamp(1500), request=RequestId("stop")),
+    ):
+        held, _ = reduce(held, event)
+    return held
+
+
+def test_a_session_at_its_prompt_while_a_subagent_works_in_the_background_has_nothing_to_interrupt() -> None:
+    """Escape at the prompt stops no subagent, so nothing is typed, and the readback says what works on."""
+    assert decide(delegating(), Interrupt(ONE.id), NotInTmux()) == InBackground(ONE.id, 1)
+
+
+def test_a_command_sent_at_the_prompt_while_a_subagent_works_in_the_background_is_typed_to_run_at_once() -> None:
+    assert decide(delegating(), SendCommand(ONE.id, COMPACT), NotInTmux()) == Type(ONE.id, FRITTER, COMPACT)

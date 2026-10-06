@@ -42,7 +42,8 @@ class Closed:
 
 @dataclass(frozen=True)
 class LeftRunning:
-    """A session asked about as done that is not: it is working, at a dialog, or running a shell in the background."""
+    """A session asked about as done that is not: it is working, at a dialog, or running a shell or a subagent in the
+    background."""
 
     # The session as it was found not done.
     session: Session
@@ -52,10 +53,10 @@ Outcome = Closed | LeftRunning
 
 
 def done(session: Session) -> bool:
-    """Whether a session is done: at its prompt, with no dialog up, no turn opened, and no shell running in the background."""
-    # [LAW:one-source-of-truth] at its prompt is Claude Code's status, busy while a background subagent works (see
-    # status.Busy); a background shell still running is work it was set to and has not finished, which ending the
-    # session would kill. A turn opens on its prompt's hook, before the
+    """Whether a session is done: at its prompt, with no dialog up, no turn opened, and no shell or subagent running in
+    the background."""
+    # [LAW:one-source-of-truth] at its prompt is Claude Code's status; a background shell or subagent still running is
+    # work it was set to and has not finished, which ending the session would kill. A turn opens on its prompt's hook, before the
     # status that says it is busy is read, so an opened turn runs whatever the status still says.
     match session:
         case Session(state=Idle(status=status.Idle()), dialog=None, turn=Untold() | Told()):

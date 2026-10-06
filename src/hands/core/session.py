@@ -8,7 +8,7 @@ from typing import Literal, NewType, Self
 
 from hands.core.progress import Doing, Gathering
 from hands.core.status import AtPrompt, Going, Stamp
-from hands.core.turn import AgentTask
+from hands.core.turn import AgentId, AgentTask
 
 SessionId = NewType("SessionId", str)
 RequestId = NewType("RequestId", str)
@@ -170,7 +170,8 @@ Dialog = Held | LetGo
 
 # [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and
 # only a status read moves a session between these. Hooks and records say which turn it is and what it did (see Turn),
-# never whether it runs. [LAW:types-are-the-program] each variant carries only what is true under it.
+# never whether it runs; only where Claude Code's busy covers a subagent in the background too do they say which of the
+# two it is (Delegating). [LAW:types-are-the-program] each variant carries only what is true under it.
 @dataclass(frozen=True)
 class Unreported:
     """Heard of, with no status read for it yet."""
@@ -200,13 +201,25 @@ class Running:
     idled: Stamp | None
 
 
-SessionState = Unreported | Idle | Running
+@dataclass(frozen=True)
+class Delegating:
+    """At its prompt, where a typed prompt runs at once, with subagents it started in the background still working
+    (Session.background). Claude Code says busy from a background subagent's launch until the turn reporting it back
+    ends (status.Busy), so it is hands that says no turn runs: none is open. Busy with no turn open and no subagent out
+    is a turn whose Stop has fired before its idle was written, and stays Running."""
+
+    # Of the busy Claude Code set, and of the idle before it, as for Running.
+    stamp: Stamp
+    idled: Stamp | None
+
+
+SessionState = Unreported | Idle | Running | Delegating
 
 
 def status_stamp(state: SessionState) -> Stamp | None:
     """When Claude Code set the status the session is held in; None when no status has been read for it."""
     match state:
-        case Idle(stamp=stamp) | Running(stamp=stamp):
+        case Idle(stamp=stamp) | Running(stamp=stamp) | Delegating(stamp=stamp):
             return stamp
         case Unreported():
             return None
@@ -295,6 +308,9 @@ class Session:
     # What each subagent did that nobody has been told of yet. Kept here, and not on the turn: a subagent run in the
     # background works on after the turn that started it ends, and its progress is news whatever phase its parent is in.
     subagents: Mapping[AgentTask, Gathering] = field(default_factory=dict[AgentTask, Gathering])
+    # Every subagent it started in the background that has not reported back: from the result of the call that launched
+    # it until the notification of its end, completed or stopped.
+    background: frozenset[AgentId] = frozenset()
 
 
 @dataclass(frozen=True)

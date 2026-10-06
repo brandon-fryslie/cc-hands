@@ -11,11 +11,11 @@ from collections.abc import Iterable, Mapping
 
 from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftStaged, NothingStaged
 from hands.core.effects import Command, Key, NotTyped, Text, Typed
-from hands.core.keyboard import KeyboardOutcome, NothingRunning
+from hands.core.keyboard import InBackground, KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core import session
 from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
-from hands.core.spoken import spelled
+from hands.core.spoken import counted, spelled
 from hands.core.tmux import Behind, NotInTmux, PaneUnread
 from hands.sessions.registry import Listing, Sessions
 
@@ -60,6 +60,8 @@ def keyboard_readback(outcome: KeyboardOutcome, name: str) -> str:
             return f"{_spoken_input(input)} was not typed into {name}: {reason}."
         case NothingRunning():
             return f"{name} is at its prompt, so there is nothing to interrupt."
+        case InBackground(subagents=subagents):
+            return f"{name} is at its prompt, so there is nothing to interrupt. It has {counted(subagents, 'subagent')} working in the background, which Escape does not stop, so nothing was typed."
         case UnknownSession(session=session):
             return f"There is no session {session}."
         case SessionEnded():

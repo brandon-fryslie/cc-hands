@@ -14,7 +14,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Progressed, Read, Taken, Transcribed
+from hands.core.events import Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
 from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
@@ -22,7 +22,7 @@ from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Continuing
 from hands.core.steps import Call
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.subagents import started_from, subagents_of, transcript_of
-from hands.sessions.transcript import prompt_of, turn_record, written_of
+from hands.sessions.transcript import launched_of, notified_of, prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
 
 
@@ -375,7 +375,7 @@ class Tails:
             # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
             prompted = following.prompted(session, record, self._known.now())
             interrupted = None if following.consume(record) is None else self._interrupted(session, record)
-            heard += [(following.reading.number, event) for event in (prompted, interrupted) if event is not None]
+            heard += [(following.reading.number, event) for event in (prompted, interrupted, *_backgrounded(session, record)) if event is not None]
         # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
         # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
         # hands followed the session, and says nothing to anyone.
@@ -386,7 +386,10 @@ class Tails:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
         current = following.current()
-        live = [event for number, event in heard if not history or number >= current]
+        # A subagent started in the background in a turn before the one the file ends in may still be working, and only
+        # its report says it is not: those are heard whatever turn they were read into, and the reducer drops a launch
+        # from before Claude Code's last idle.
+        live = [event for number, event in heard if not history or number >= current or isinstance(event, Launched | ReportedBack)]
         if history and (heard or made):
             # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
             logger.info(
@@ -591,6 +594,12 @@ def _started(session: SessionId, delegate: Delegate, following: Following) -> Ag
                     return AgentTask(delegate.id, invoked)
                 case _:
                     raise Unstarted(f"{delegate.meta} names no job, and its parent is running {len(running)} skills")
+
+
+def _backgrounded(session: SessionId, record: Payload) -> tuple[Launched | None, ReportedBack | None]:
+    """The subagent the record says Claude started in the background, and the background task whose report it carries."""
+    launched, notified = launched_of(record), notified_of(record)
+    return (None if launched is None else Launched(session, launched, _written(session, record)), None if notified is None else ReportedBack(session, notified))
 
 
 def _written(session: SessionId, record: Payload) -> Stamp | None:

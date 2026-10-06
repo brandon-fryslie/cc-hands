@@ -8,9 +8,10 @@ from typing import NoReturn
 import pytest
 
 
-from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
+from hands.core.events import Ended, Joined, Launched, PermissionRequested, Prompted, StatusReported, Stopped, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
+from hands.core.turn import AgentId
 from hands.sessions.focus import set_focus
 from hands.sessions import tmux
 from hands.sessions.home import Home
@@ -97,6 +98,26 @@ async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed
     for event in (Joined(cleared, "clear"), StatusReported(cleared.id, Report(Shell(), Stamp(1)), at=1.0)):
         await sessions.apply(event)
     listed = {"id": "cleared", "name": "cleared", "state": "idle, with a shell command it started in the background still running", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}
+    assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
+
+
+async def test_a_session_at_its_prompt_with_a_subagent_working_in_the_background_is_listed_idle(tmp_path: Path) -> None:
+    """2.1.289 keeps busy from a background subagent's launch until the turn reporting it back ends; the turn that
+    launched it has stopped, so the session sits at its prompt, and is said to."""
+    waiting = membership(tmp_path, "waiting")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    turn = PromptId("p1")
+    for event in (
+        Joined(waiting, "startup"),
+        StatusReported(waiting.id, Report(Idle(), Stamp(900)), at=1.0),
+        Prompted(waiting.id, at=2.0, mode=None, prompt=turn),
+        StatusReported(waiting.id, Report(Busy(), Stamp(1000)), at=2.1),
+        Launched(waiting.id, AgentId("a1"), Stamp(1200)),
+        Launched(waiting.id, AgentId("a2"), Stamp(1300)),
+        Stopped(waiting.id, "Started them.", mode=None, prompt=turn, again=False, heard=Stamp(1500), request=RequestId("stop")),
+    ):
+        await sessions.apply(event)
+    listed = {"id": "waiting", "name": "waiting", "state": "idle, with two subagents it started in the background still working", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}
     assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
 
 

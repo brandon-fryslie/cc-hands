@@ -10,6 +10,7 @@ from typing import cast
 
 from hands.core.session import ESCAPES, PromptId
 from hands.core.status import Stamp
+from hands.core.steps import launched
 from hands.core.turn import AgentId, AgentTask, Asked, Commanded, Interruption, Notified, Opening, Ref, Reported, Shelled
 from hands.sessions.payload import Payload, Rejected
 
@@ -195,6 +196,25 @@ def _opening_of(record: Payload, mid_tool: bool) -> Opening | Printed | Typed | 
             return Notified(ref, text, _reporter(text))
         case _:
             return Asked(ref, text)
+
+
+def launched_of(record: Payload) -> AgentId | None:
+    """The subagent this record's result says Claude started in the background; None for every other record."""
+    structured = structured_result(record)
+    return None if structured is None else launched(structured)
+
+
+def notified_of(record: Payload) -> AgentId | None:
+    """The task whose notification this record carries, at the prompt or mid-turn; None for every other record."""
+    match record.fields.get("type"), record.fields.get("attachment"), record.fields.get("origin"):
+        case "attachment", {"type": "queued_command", "commandMode": "task-notification", "prompt": str() as text}, _:
+            notification = text
+        case "user", _, {"kind": "task-notification"}:
+            notification = result_text(message(record).get("content"))
+        case _:
+            return None
+    task = _TASK.search(notification)
+    return None if task is None else AgentId(task.group(1))
 
 
 def _reporter(notification: str) -> AgentTask | None:

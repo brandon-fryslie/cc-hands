@@ -10,7 +10,7 @@ from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
 from hands.core.tmux import Pane
-from hands.core.turn import AgentTask
+from hands.core.turn import AgentId, AgentTask
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,16 @@ class Unsettled:
     prompt: PromptId
 
 
-AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | Unsettled
+@dataclass(frozen=True)
+class Overtaken:
+    """A subagent's launch in the background read after an idle Claude Code set later, which it sets none of while one
+    works: that subagent was over by then, so it is not out. The launch itself is the line of the event it came in."""
+
+    session: SessionId
+    agent: AgentId
+
+
+AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | Unsettled | Overtaken
 
 
 @dataclass(frozen=True)

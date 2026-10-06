@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 
 from hands.core.delta import Branched, Committed, Delta, GitChange, PullRequested, Pushed
-from hands.core.spoken import spoken, spoken_count, spoken_ref
+from hands.core.spoken import counted, spoken, spoken_ref
 from hands.core.subagents import Subagent
 from hands.core.turn import (
     Budget,
@@ -204,7 +204,7 @@ def _own_work(subagent: Subagent) -> Segment:
     """One subagent's work, a part of its own named by the job it was given: two subagents in one turn are opened one at
     a time, each as deep as it was asked for. Named in lower case, as a part is asked for."""
     topic = Topic(f"the subagent's work on {subagent.description.lower()}", "step")
-    return Segment(topic, f"A subagent's own work on {subagent.description}: {_counted(len(subagent.steps), 'step')}.", subagent.steps)
+    return Segment(topic, f"A subagent's own work on {subagent.description}: {counted(len(subagent.steps), 'step')}.", subagent.steps)
 
 
 @dataclass(frozen=True)
@@ -406,7 +406,7 @@ def _sections(steps: list[Sectioned]) -> tuple[Segment, ...]:
     for step in steps:
         grouped.setdefault(topic_of(step), []).append(step)
     return tuple(
-        Segment(topic, f"{_capitalised(topic.name)}: {_counted(len(held), topic.thing)}.", tuple(held))
+        Segment(topic, f"{_capitalised(topic.name)}: {counted(len(held), topic.thing)}.", tuple(held))
         for topic, held in grouped.items()
     )
 
@@ -422,7 +422,7 @@ def _repository(delta: Delta, changes: tuple[GitChange, ...]) -> tuple[Segment, 
         *(_action(change) for change in changes),
         *(["committed"] if delta.commits else []),
         *(_action(change) for change in delta.changes),
-        *([f"left {_counted(len(delta.files), 'file')} different"] if delta.files else []),
+        *([f"left {counted(len(delta.files), 'file')} different"] if delta.files else []),
     ]
     # Ordered and deduplicated in one step: the steps and the delta both see a commit, a push, or a pull request,
     # and each is said once.
@@ -459,15 +459,6 @@ def _settled(question: Question, step: Questioned) -> Segment:
             return Segment(WHAT_IT_ASKED, f"It asked: {question.question} You chose {chosen}.", (step,))
         case None:
             return Segment(WHAT_IT_ASKED, f"It asked: {question.question} It went on without an answer.", (step,))
-
-
-def _counted(many: int, thing: str) -> str:
-    """A count and the thing counted, with the number as the word the instruction asks the model for.
-
-    No filter downstream turns a digit back into a word, and these clauses are the ones no model wrote, so a
-    digit written here is a digit the listener gets in the middle of a sentence of words.
-    """
-    return f"{spoken_count(many)} {thing}{'' if many == 1 else 's'}"
 
 
 def _listed(parts: list[str], last: str = "and") -> str:

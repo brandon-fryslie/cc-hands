@@ -7,7 +7,7 @@ from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 from hands.core.status import Report, Stamp
-from hands.core.turn import AgentTask
+from hands.core.turn import AgentId, AgentTask
 
 
 # `fork` starts a new session forked from another, under its own id.
@@ -128,6 +128,27 @@ class Continued:
 
 
 @dataclass(frozen=True)
+class Launched:
+    """Claude started a subagent in the background, as the result of the call that started it says: an async agent, or
+    a skill forked to run in the background. Claude Code says busy from here until the turn that reports it back ends."""
+
+    session: SessionId
+    agent: AgentId
+    # When Claude Code wrote the result, on its status clock: a launch written before the idle it set since was over by
+    # then, since it sets no idle while one works. None, as for Taken, when there was no time to read.
+    written: Stamp | None
+
+
+@dataclass(frozen=True)
+class ReportedBack:
+    """A background task's notification was read, at the prompt or mid-turn: the task it names, completed, failed, or
+    stopped, works no more. A background command's or a monitor's names a task that is no subagent."""
+
+    session: SessionId
+    task: AgentId
+
+
+@dataclass(frozen=True)
 class Read:
     """The session's transcript has given everything it will of what Claude Code had written by `through`, on the clock
     it stamps a status with: read through it, or found missing or unreadable. A record of how a turn ended that was not
@@ -225,10 +246,11 @@ class Tick:
 
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
-Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Read | StatusReported | PermissionRequested | ToolFinished
+Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Launched | ReportedBack | Read | StatusReported | PermissionRequested | ToolFinished
 SessionEvent = Moving | Progressed | Displayed | Occurred | Ended
-# What a session's transcript says that none of its hooks do: of its turn, and how far it has been read.
-Transcribed = Taken | Interrupted | Continued | Progressed | Read
+# What a session's transcript says that none of its hooks do: of its turn, of its subagents in the background, and how
+# far it has been read.
+Transcribed = Taken | Interrupted | Continued | Launched | ReportedBack | Progressed | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick

@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Read, Taken, Transcribed
+from hands.core.events import Continued, Interrupted, Launched, Read, ReportedBack, Taken, Transcribed
 from hands.core.session import Membership, PromptId, RequestId, SessionId
-from hands.core.turn import Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
+from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SENTENCE_BUDGET
 from hands.core.effects import Summarise
 from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
@@ -1109,3 +1109,34 @@ async def test_what_a_command_printed_that_joins_no_turn_is_said(tmp_path: Path)
     finally:
         logger.remove(sink)
     assert any("names record c1, which opened no turn" in line for line in said)
+
+
+# A subagent started in the background and its report, as 2.1.289 writes them: the launch is the call's result, the
+# report a notification, at the prompt as a user record and mid-turn as an attachment.
+DELEGATE = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t7","name":"Agent","input":{"description":"Draft tickets","prompt":"Draft them.","run_in_background":true}}]}}'
+LAUNCHED = (
+    '{"type":"user","promptId":"p1","timestamp":"1970-01-01T00:00:01.200Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t7","content":"Async agent launched successfully."}]},'
+    '"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a587b79fd8308e5bc","description":"Draft tickets"}}'
+)
+REPORT = '<task-notification>\\n<task-id>a587b79fd8308e5bc</task-id>\\n<status>killed</status>\\n<summary>Agent \\"Draft tickets\\" was stopped</summary>\\n</task-notification>'
+REPORTED_AT_PROMPT = f'{{"type":"user","promptId":"p3","origin":{{"kind":"task-notification"}},"message":{{"role":"user","content":"{REPORT}"}}}}'
+REPORTED_MID_TURN = f'{{"type":"attachment","attachment":{{"type":"queued_command","commandMode":"task-notification","prompt":"{REPORT}"}}}}'
+AGENT = AgentId("a587b79fd8308e5bc")
+
+
+async def test_a_subagent_started_in_the_background_in_a_turn_before_the_one_the_file_ends_in_is_heard_as_out(tmp_path: Path) -> None:
+    """Read from its start, the turns before the one it ends in are history, but a subagent one of them started may still
+    work, and only its report says it does not: its launch is heard whatever turn it was read into."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, NEXT_ASKED, DONE))
+    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Launched(SID, AGENT, Stamp(1200)), Taken(SID, PromptId("p2"), None, 7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
+
+
+@pytest.mark.parametrize("reported", [REPORTED_AT_PROMPT, REPORTED_MID_TURN])
+async def test_a_background_tasks_notification_is_heard_as_its_report_back_at_the_prompt_or_mid_turn(tmp_path: Path, reported: str) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(reported))
+    assert [event for event in heard(await tails.catch_up()) if not isinstance(event, Taken)] == [ReportedBack(SID, AGENT)]
