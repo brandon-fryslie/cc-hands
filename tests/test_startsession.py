@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
@@ -27,14 +28,15 @@ from hands.sessions.wide import WideEvent
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends, tmux_name
 from hands.sessions.terminals import Process
 from hands.voice.tool import Result
-from hands.voice.tools import Called, audited, list_sessions_tool, start_session_tool
+from hands.voice.tools import Called, audited, list_sessions_tool, read_screen_tool, start_session_tool
 
 TMUX = shutil.which("tmux")
 needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to start sessions in")
 
 # A `claude` that joins hands as the plugin's first hook does, writing its membership where HANDS_HOME's are kept, under
 # fritter but in a folder holding `unwrapped`; it notes its arguments and environment beside it, and stays running. In a
-# folder holding `never-joins`, it ends before it joins; in one holding `silent`, it asks a question and never joins. A
+# folder holding `never-joins`, it ends before it joins; in one holding `silent`, it asks a question and never joins; in
+# one holding `dialog`, it shows that file's text once it has joined, as a dialog on its screen would be shown. A
 # window takes the environment of the tmux server it opens in, so what varies a start is its folder, never a variable.
 CLAUDE = """#!/bin/sh
 for argument; do echo "$argument"; done > "$PWD/claude-args"
@@ -45,6 +47,7 @@ socket=/tmp/fritter.sock
 [ -e "$PWD/unwrapped" ] && socket=
 printf '{"pid": %d, "cwd": "%s", "transcript_path": "%s/t.jsonl", "fritter_socket": "%s"}' $$ "$PWD" "$PWD" "$socket" > "$HANDS_HOME/sessions/s$$.writing"
 mv "$HANDS_HOME/sessions/s$$.writing" "$HANDS_HOME/sessions/s$$.json"
+[ -e "$PWD/dialog" ] && cat "$PWD/dialog"
 exec sleep 120
 """
 
@@ -165,6 +168,35 @@ def test_a_started_session_lists_with_the_pane_it_was_started_in_and_follows_it_
     tmux("split-window", "-d", "-t", result["pane"], "sleep", "120")
     tmux("break-pane", "-d", "-s", result["pane"])
     assert listed() == {"socket": socket, "pane": result["pane"], "session": "work", "window": 1}
+
+
+@needs_tmux
+def test_a_started_session_at_a_dialog_has_the_dialog_read_off_its_pane(tmp_path: Path, terminal: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "work"
+    folder.mkdir()
+    (folder / "dialog").write_text("Do you want to make this edit to tools.py?\n❯ 1. Yes\n  2. No, and tell Claude what to do differently\n")
+    result = start(home, folder)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    for member in members(home):
+        asyncio.run(sessions.apply(Joined(member, "startup")))
+    recorded: list[Entry] = []
+    read_screen = audited(read_screen_tool(sessions, os.environ), recorded.append)
+
+    async def called() -> Result:
+        return await read_screen.body(session=result["session"])
+
+    socket = str(Path(os.environ["TMUX_TMPDIR"]) / f"tmux-{os.getuid()}" / "default")
+    deadline = time.monotonic() + 5
+    while "2. No" not in str((read := dict(asyncio.run(called()))).get("screen")):
+        assert time.monotonic() < deadline, f"the dialog never showed: {read}"
+        time.sleep(0.05)
+    # The dialog as the pane shows it, its last line the bottom of what was drawn, and the pane it was read from.
+    assert str(read["screen"]).endswith("Do you want to make this edit to tools.py?\n❯ 1. Yes\n  2. No, and tell Claude what to do differently")
+    assert read["tmux"] == {"socket": socket, "pane": result["pane"], "session": "work", "window": 0}
+    # [LAW:nothing-unseen] the screen read and the pane it came from, on the call's event.
+    (event,) = [entry for entry in recorded[-1:] if isinstance(entry, WideEvent)]
+    assert cast(Called, event.facts["called"]).result == read
 
 
 @needs_tmux

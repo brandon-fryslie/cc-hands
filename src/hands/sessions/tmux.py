@@ -1,4 +1,4 @@
-"""The user's tmux servers: where their sockets are, what each says when asked, and the panes each holds."""
+"""The user's tmux servers: where their sockets are, what each says when asked, the panes each holds, and what a pane shows."""
 
 import asyncio
 import os
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hands.core.tmux import Listed, Pane, Server, Unanswered
-from hands.sessions.child import run
+from hands.sessions.child import Ran, run
 
 # What tmux says, on stderr, for a socket no server listens on any more: a server that exited leaves its socket behind.
 _NO_SERVER = (b"no server running on", b"error connecting to")
@@ -49,17 +49,40 @@ def socket_directory(environment: Mapping[str, str]) -> Path:
 
 
 async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
+    match await _ran(tmux, socket, arguments):
+        case Ran(returncode=0, out=out):
+            return Answered(socket, out.decode().splitlines())
+        case Ran(err=err) if err.startswith(_NO_SERVER):
+            return Answered(socket, ())
+        case Ran(err=err):
+            return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: {err.decode(errors='replace').strip()}")
+        case Unanswered() as unanswered:
+            return unanswered
+
+
+async def shown(environment: Mapping[str, str], socket: Path, pane: str) -> str | Unanswered:
+    """The text tmux pane `pane` of the server at `socket` shows now, its last line the bottom of the screen, or why it
+    could not be read; `environment` says where tmux is."""
+    tmux = shutil.which("tmux", path=environment.get("PATH"))
+    if tmux is None:
+        return Unanswered(f"no tmux is on the PATH to read pane {pane} of tmux at {socket}")
+    # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
+    match await _ran(tmux, socket, ("capture-pane", "-p", "-t", pane)):
+        case Ran(returncode=0, out=out):
+            return out.decode(errors="replace").rstrip()
+        case Ran(err=err):
+            return Unanswered(f"tmux at {socket} did not show pane {pane}: {err.decode(errors='replace').strip()}")
+        case Unanswered() as unanswered:
+            return unanswered
+
+
+async def _ran(tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
     try:
-        ran = await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS)
+        return await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS)
     except TimeoutError:
         return Unanswered(f"tmux at {socket} did not answer {arguments[0]} in {ANSWER_SECONDS:.0f} seconds")
     except OSError as error:
         return Unanswered(f"{tmux} could not be run to ask tmux at {socket}: {error}")
-    if ran.returncode != 0:
-        if ran.err.startswith(_NO_SERVER):
-            return Answered(socket, ())
-        return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: {ran.err.decode(errors='replace').strip()}")
-    return Answered(socket, ran.out.decode().splitlines())
 
 
 async def servers(environment: Mapping[str, str]) -> list[Server]:

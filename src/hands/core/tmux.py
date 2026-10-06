@@ -44,7 +44,7 @@ class Listed:
 
 @dataclass(frozen=True)
 class Unanswered:
-    """A tmux server that did not say which panes it holds, and why."""
+    """A tmux server that did not answer what it was asked, and why."""
 
     reason: str
 

@@ -11,10 +11,15 @@ from pathlib import Path
 
 import pytest
 
+from hands.core.events import Joined
+from hands.core.session import Membership, SessionId
 from hands.core.tmux import Listed, NotInTmux, Pane, PaneUnread, Unanswered, pane_of
 from hands.sessions import tmux
+from hands.sessions.registry import Sessions
 from hands.sessions.tmux import Answered
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
+from hands.voice.tool import Result
+from hands.voice.tools import read_screen_tool
 
 TMUX = shutil.which("tmux")
 needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to run panes in")
@@ -139,6 +144,26 @@ def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_t
 
 
 @needs_tmux
+def test_a_pane_is_shown_as_it_reads_now_and_one_that_cannot_be_read_says_why_never_as_a_blank_screen(sockets: Path) -> None:
+    pane, _ = run_in("default", "work")
+    socket = sockets / "default"
+    subprocess.run([str(TMUX), "-L", "default", "send-keys", "-t", pane, "-l", "Allow this edit?"], check=True)
+    deadline = time.monotonic() + 5
+    while asyncio.run(tmux.shown(os.environ, socket, pane)) != "Allow this edit?":
+        assert time.monotonic() < deadline, "what was typed never showed"
+        time.sleep(0.05)
+
+    assert asyncio.run(tmux.shown(os.environ, socket, "%999")) == Unanswered(f"tmux at {socket} did not show pane %999: can't find pane: %999")
+    subprocess.run([str(TMUX), "-L", "default", "kill-server"], check=True)
+    match asyncio.run(tmux.shown(os.environ, socket, pane)):
+        case Unanswered(reason=reason):
+            assert reason.startswith(f"tmux at {socket} did not show pane {pane}: ")
+        case other:
+            pytest.fail(f"read as {other!r}")
+    assert asyncio.run(tmux.shown({"PATH": "/nonexistent"}, socket, pane)) == Unanswered(f"no tmux is on the PATH to read pane {pane} of tmux at {socket}")
+
+
+@needs_tmux
 def test_a_tmux_that_cannot_be_run_leaves_its_servers_unread_and_says_why(sockets: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, worker = run_in("default", "work")
     # An executable with no interpreter line and no machine code: exec refuses it.
@@ -150,3 +175,37 @@ def test_a_tmux_that_cannot_be_run_leaves_its_servers_unread_and_says_why(socket
             assert reason.startswith(f"{tmp_path / 'tmux'} could not be run to ask tmux at {sockets / 'default'}: ")
         case other:
             pytest.fail(f"read as {other}")
+
+
+def screen_of(sessions: Sessions, session: str) -> object:
+    async def called() -> Result:
+        return await read_screen_tool(sessions, os.environ).body(session=session)
+
+    return asyncio.run(called())
+
+
+def joined(*members: Membership) -> Sessions:
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    for member in members:
+        asyncio.run(sessions.apply(Joined(member, "startup")))
+    return sessions
+
+
+@needs_tmux
+def test_read_screen_says_why_for_a_session_in_no_pane_one_not_running_and_a_pane_tmux_did_not_show(sockets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pane, worker = run_in("default", "work")
+    # A session whose process is in no pane of the test's servers: this test's own.
+    plain = Membership(SessionId("plain"), os.getpid(), Path("/code/plain"), Path("/nonexistent"))
+    framed = Membership(SessionId("framed"), worker, Path("/code/framed"), Path("/nonexistent"))
+    sessions = joined(plain, framed)
+    assert screen_of(sessions, "plain") == {"error": "plain runs in no tmux pane, and hands reads a screen only off one"}
+    assert screen_of(sessions, "gone") == {"error": "no session gone is running: list_sessions names the ones that are"}
+
+    async def unshown(_environment: object, socket: Path, _pane: str) -> Unanswered:
+        return Unanswered(f"tmux at {socket} did not answer capture-pane in 2 seconds")
+
+    monkeypatch.setattr(tmux, "shown", unshown)
+    assert screen_of(sessions, "framed") == {
+        "error": f"the screen of framed could not be read: tmux at {sockets / 'default'} did not answer capture-pane in 2 seconds",
+        "tmux": {"socket": str(sockets / "default"), "pane": pane, "session": "work", "window": 0},
+    }
