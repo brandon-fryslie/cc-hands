@@ -203,27 +203,24 @@ def _prompt(payload: Payload) -> PromptId:
     return PromptId(payload.text("prompt_id"))
 
 
-# [LAW:one-source-of-truth] the modes hands knows are the type's, read off it rather than listed again.
+# [LAW:one-source-of-truth] the modes, start sources and end reasons hands knows are their types', read off them
+# rather than listed again.
 _KNOWN_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in get_args(PermissionMode)}
+_KNOWN_SOURCES: Mapping[str, StartSource] = {source: source for source in get_args(StartSource)}
+_KNOWN_REASONS: Mapping[str, EndReason] = {reason: reason for reason in get_args(EndReason)}
 
 
 def _start_source(source: str) -> StartSource:
-    match source:
-        case "startup" | "resume" | "clear" | "compact" | "fork":
-            return source
-        case other:
-            raise Rejected(f"SessionStart source {other!r} is not one hands knows")
+    if source not in _KNOWN_SOURCES:
+        raise Rejected(f"SessionStart source {source!r} is not one hands knows")
+    return _KNOWN_SOURCES[source]
 
 
 def _end_reason(reason: str) -> EndReason:
-    match reason:
-        case "clear" | "resume" | "logout" | "prompt_input_exit" | "bypass_permissions_disabled" | "other":
-            return reason
-        case _:
-            # Not refused, as an unknown start is: the shim has already removed the file, so a refused end would
-            # leave the session listed with nothing left to end it. A reason this version does not know is spoken
-            # as an end nobody chose, which is the loud way to be wrong.
-            return "other"
+    # Not refused, as an unknown start is: the shim has already removed the file, so a refused end would leave the
+    # session listed with nothing left to end it. A reason this version does not know is spoken as an end nobody
+    # chose, which is the loud way to be wrong.
+    return _KNOWN_REASONS.get(reason, "other")
 
 
 # With no mode set, ExitPlanMode goes back to the mode the session had before it planned.

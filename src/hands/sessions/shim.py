@@ -78,7 +78,7 @@ def record(home: Home, payload: Payload) -> None:
             # hook, so its first hook of any kind is where it joins. The daemon reads this file for every hook but a
             # start or an end [LAW:one-source-of-truth], so it is written before the post.
             # Keyed on the process, not the session: a late hook of a session this process has since moved on from
-            # (a /clear, a resume) finds the start's file naming the process and writes nothing, since the newest
+            # (a /clear, a resume, a /branch) finds the start's file naming the process and writes nothing, since the newest
             # file naming a process is the session it holds. A file left by a dead process under this session's id
             # names another pid, so it is replaced.
             write_membership(home, _membership(payload))

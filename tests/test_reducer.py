@@ -381,7 +381,7 @@ def test_a_compacted_session_is_kept_whole_under_its_new_membership(before: Sess
 
 
 @pytest.mark.parametrize("before", [*[holding(state, Opened(TURN)) for state in LIVE], GONE])
-@pytest.mark.parametrize("source", ["startup", "resume", "clear", "fork"])
+@pytest.mark.parametrize("source", ["startup", "resume", "clear"])
 def test_any_start_but_compaction_waits_for_its_status_to_be_read(before: Registry, source: StartSource) -> None:
     # a session resumed after a crash never sent the Stop or SessionEnd the registry is still waiting for
     assert reduce(before, Joined(ONE, source))[0] == holding(Unreported())
@@ -389,7 +389,15 @@ def test_any_start_but_compaction_waits_for_its_status_to_be_read(before: Regist
 
 def test_a_fork_joins_as_a_new_session_beside_the_one_it_was_forked_from() -> None:
     parent = Session(ONE, IDLE, mode=None)
-    assert reduce(registry(parent), Joined(TWO, "fork"))[0] == registry(parent, Session(TWO, Unreported(), mode=None))
+    assert reduce(registry(parent), Joined(TWO, "fork")) == (registry(parent, Session(TWO, Unreported(), mode=None)), [])
+
+
+def test_a_branch_ends_its_parent_quietly_and_joins_the_fork_in_the_same_process() -> None:
+    # /branch inside a running session: its end hook says `resume`, then the fork starts under a new id, same pid
+    fork = Membership(SessionId("s1-fork"), pid=ONE.pid, cwd=ONE.cwd, transcript=Path("/t/s1-fork.jsonl"))
+    ended, quiet = reduce(holding(IDLE), Ended(ONE.id, "resume"))
+    assert quiet == []
+    assert reduce(ended, Joined(fork, "fork")) == (registry(Gone(ONE), Session(fork, Unreported(), mode=None)), [])
 
 
 def test_an_ended_session_compacting_waits_for_its_status_to_be_read() -> None:

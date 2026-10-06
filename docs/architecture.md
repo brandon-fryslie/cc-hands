@@ -660,7 +660,7 @@ never fires `SessionStart`. So every other hook writes the file when no membersh
 names the shim's parent process, and the daemon attaches the session its file names
 before it applies the hook: such a session joins on whatever it fires first. Keying on
 the process keeps a late hook from a session the process has moved on from (a `/clear`,
-a resume) from writing a file that would outrank the new session's.
+a resume, a `/branch`) from writing a file that would outrank the new session's.
 
 **The constraint that will bite.** Hooks run in the agent's critical path with a
 timeout, and `MessageDisplay` and `SessionStart` dispatch synchronously. A shim that
@@ -1493,7 +1493,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
 - **Ends nobody heard.** One process holds one session, so a running process's
   *holder* is the newest file that names it and passes the start-time check. A file
   whose process is not running is `Died`; the holder is `Attached`; any other file on
-  a running process is `MovedOn`: a `/clear` or a resume inside the process whose end
+  a running process is `MovedOn`: a `/clear`, a resume, or a `/branch` inside the process whose end
   hook never arrived, which ends without a word and has its file removed. The shim
   removes a session's file before it posts `SessionEnd`, so a listed session with no
   file ended even if that post was lost. It is judged only when its file was also gone
