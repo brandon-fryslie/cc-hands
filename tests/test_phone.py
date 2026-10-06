@@ -487,6 +487,9 @@ class Desk:
     def get_output_latency(self) -> float:
         return 0.0
 
+    def counts(self) -> dict[str, int]:
+        return {"pulled": 0, "unwritten": 0}
+
     def start_stream(self) -> None: ...
     def stop_stream(self) -> None: ...
     def close(self) -> None: ...

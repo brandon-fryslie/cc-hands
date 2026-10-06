@@ -79,4 +79,18 @@ def test_the_canceller_counts_frames_heard_with_nothing_playing_and_sound_it_had
     canceller.heard(bytes(640), HEARD_RATE, 1)  # two frames, nothing played
     canceller.played(bytes(320 * 102), HEARD_RATE, 1)  # 102 frames played to a microphone that takes none
     canceller.heard(bytes(320), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2}
+    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0}
+
+
+def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_but_for_one_buffer() -> None:
+    """As a speaker started before the microphone leaves it: 30 frames ahead, then one played for every one heard."""
+    canceller = EchoCanceller()
+    canceller.played(bytes(320 * 30), HEARD_RATE, 1)
+    for _ in range(50):  # one second of 20 ms buffers
+        canceller.played(bytes(640), HEARD_RATE, 1)
+        canceller.heard(bytes(640), HEARD_RATE, 1)
+    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28}
+    for _ in range(50):  # the next second holds only the spare buffer, and slips nothing more
+        canceller.played(bytes(640), HEARD_RATE, 1)
+        canceller.heard(bytes(640), HEARD_RATE, 1)
+    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28}

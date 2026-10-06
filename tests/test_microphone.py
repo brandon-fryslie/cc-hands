@@ -21,7 +21,7 @@ from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.coreaudio import DefaultDevices
-from hands.voice.microphone import Devices, Input, KeyedAudioTransport, NoInput, Output, PortAudio, default_input
+from hands.voice.microphone import WRITE_AHEAD_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.turnstop import Hold, TurnOpened
@@ -110,6 +110,9 @@ class SimpleStream:
     def get_output_latency(self) -> float:
         return 0.0
 
+    def counts(self) -> dict[str, int]:
+        return {"pulled": len(self.written), "unwritten": 0}
+
     def start_stream(self) -> None: ...
     def stop_stream(self) -> None: ...
     def close(self) -> None: ...
@@ -176,17 +179,16 @@ async def test_a_press_while_the_reply_plays_is_heard_at_once() -> None:
     devices.key.move("start", "held key")
     await devices.capture(at=1.0)  # the reply still in the room, and a word over it
     assert devices.pushed == [CLEANED]
-    assert devices.room.plays == [(LOUD, 16000, 1)]
 
 
-async def test_silence_given_to_the_speaker_is_the_cancellers_reference_too() -> None:
+async def test_silence_given_to_the_speaker_is_no_sound_for_the_heartbeat() -> None:
     devices = Rig()
     await devices.play(QUIET, at=1.0)
-    assert devices.room.plays == [(QUIET, 16000, 1)]
+    assert devices.stream.written == [QUIET]
     assert devices.speaker.sounded_at is None  # silence padding is no sound for the heartbeat
 
 
-async def test_a_chunk_whose_write_an_interruption_cancels_is_still_given_to_the_canceller() -> None:
+async def test_a_chunk_whose_write_an_interruption_cancels_is_still_played() -> None:
     devices = Rig()
     devices.stream.blocking = True
     devices.now = 1.0
@@ -195,7 +197,6 @@ async def test_a_chunk_whose_write_an_interruption_cancels_is_still_given_to_the
     writing.cancel()  # the barge-in; PortAudio's thread plays the chunk out regardless
     devices.stream.blocking = False
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
-    assert devices.room.plays == [(LOUD, 16000, 1)]
     assert devices.stream.written == [LOUD]
 
 
@@ -217,6 +218,9 @@ class LostStream:
 
     def get_output_latency(self) -> float:
         return 0.2  # the new speaker's buffer, longer than the one it replaced
+
+    def counts(self) -> dict[str, int]:
+        return {"pulled": 0, "unwritten": 0}
 
     def stop_stream(self) -> None:
         self.log.append(f"stop {self.name}")
@@ -296,7 +300,7 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
     assert speaker.is_usable
 
 
-async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_old_ones_life() -> None:
+async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_old_streams_lives() -> None:
     log: list[str] = []
     events: list[Entry] = []
     transport = lost_transport(log, events)
@@ -310,9 +314,11 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     assert speaker is not None and microphone is not None
     assert speaker.echo is microphone.echo is not old.echo
     assert "close canceller 2" not in log
-    [event] = events
-    assert isinstance(event, WideEvent)
-    assert (event.event, event.outcome, event.facts, dict(event.counts)) == ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0})
+    assert all(isinstance(event, WideEvent) for event in events)
+    assert [(event.event, event.outcome, event.facts, dict(event.counts)) for event in cast(list[WideEvent], events)] == [
+        ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0, "underflowed": 0}),
+        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0}),
+    ]
 
 
 class RefusingPortAudio(FreshPortAudio):
@@ -329,6 +335,24 @@ async def test_a_reopen_whose_streams_fail_to_open_lets_go_of_the_canceller_it_m
     with pytest.raises(OSError, match="Invalid input device"):
         await transport.reopen()
     assert "close canceller 2" in log  # the run fails, and exits without LiveKit's assertion over a canceller left open
+
+
+class MicrophoneRefusingPortAudio(FreshPortAudio):
+    """PortAudio started again with a speaker that opens, and so starts, and a microphone that refuses to open."""
+
+    def open(self, **settings: object) -> LostStream:
+        if settings.get("input"):
+            raise OSError(-9996, "Invalid input device")
+        return super().open(**settings)
+
+
+async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_started_before_letting_go_of_the_canceller() -> None:
+    log: list[str] = []
+    transport = lost_transport(log)
+    setattr(transport, "_portaudio", lambda: MicrophoneRefusingPortAudio(log))
+    with pytest.raises(OSError, match="Invalid input device"):
+        await transport.reopen()
+    assert log[log.index("open speaker") :] == ["open speaker", "stop new speaker", "close new speaker", "close canceller 2"]
 
 
 async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream() -> None:
@@ -419,7 +443,7 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
         default_input(cast(PortAudio, refusing))
 
 
-async def test_a_turns_cue_is_played_at_once_and_the_canceller_hears_it() -> None:
+async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard() -> None:
     devices = Rig()
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
     devices.key.move("start", "held key")
@@ -428,8 +452,7 @@ async def test_a_turns_cue_is_played_at_once_and_the_canceller_hears_it() -> Non
     await devices.capture(at=1.0)  # a word said over the cue
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
-    assert devices.room.plays == [(sound(OPENED, 16000, 1), 16000, 1)]
-    assert devices.pushed == [CLEANED]  # the word said over it, with the tone taken out
+    assert devices.pushed == [CLEANED]  # the word said over it, through the canceller
     assert devices.speaker.sounded_at == 1.0
 
 
@@ -461,7 +484,7 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
     assert devices.stream.written == [LOUD]
 
 
-async def test_the_canceller_hears_a_chunk_queued_behind_a_cue_after_the_cue() -> None:
+async def test_a_chunk_queued_behind_a_cue_is_played_after_the_cue() -> None:
     devices = Rig()
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     devices.stream.blocking = True
@@ -470,7 +493,7 @@ async def test_the_canceller_hears_a_chunk_queued_behind_a_cue_after_the_cue() -
     await asyncio.sleep(0.01)
     devices.stream.blocking = False
     await writing
-    assert [audio for audio, _, _ in devices.room.plays] == [sound(OPENED, 16000, 1), LOUD]  # in the order the room hears them
+    assert devices.stream.written == [sound(OPENED, 16000, 1), LOUD]  # the order the room hears them, and the canceller with it
 
 
 async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -497,3 +520,116 @@ async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking
     await devices.speaker.push_frame(UserStoppedSpeakingFrame())
     assert devices.speaker.quiet.is_set()
     assert len(pushed) == 7  # each passed on
+
+
+class Device:
+    """A speaker device as PortAudio drives a callback stream: it takes a buffer whenever the test says it does."""
+
+    def __init__(self) -> None:
+        self.pull: Pull | None = None
+        self.log: list[str] = []
+
+    def open(self, pull: Pull) -> "Device":
+        self.pull = pull
+        return self
+
+    def take(self, frames: int = 320) -> tuple[bytes, int]:
+        assert self.pull is not None, "the playout opens its stream as it is made"
+        return self.pull(None, frames, {}, 0)
+
+    def start_stream(self) -> None: ...
+
+    def stop_stream(self) -> None:
+        self.log.append("stop")
+
+    def close(self) -> None: ...
+
+
+def _unfailing(error: Exception) -> None:
+    raise AssertionError(f"the playout failed: {error}")
+
+
+def test_the_canceller_is_given_what_the_device_takes_as_it_takes_it_silence_included() -> None:
+    """The reference keeps the device's time through a silence, so a reading's opening meets its echo where the last
+    reading's did: written ahead instead, it moved against its echo by where the first write fell."""
+    room, device = Room(), Device()
+    playout = Playout(device.open, room, 16000, 1, _unfailing)
+    taken = [device.take()]  # nothing written yet: the device plays silence, and the canceller is given it
+    playout.write(LOUD[:400])  # a reading's first chunk, ending partway through the device's next buffer
+    taken += [device.take(), device.take()]
+    assert [audio for audio, _ in taken] == [QUIET, LOUD[:400] + bytes(240), QUIET]
+    assert room.plays == [(audio, 16000, 1) for audio, _ in taken]
+    # Three 20 ms buffers, two 10 ms frames each; the frames wholly of silence are the ones nothing was written for.
+    assert playout.counts() == {"pulled": 6, "unwritten": 4, "underflowed": 0}
+
+
+def test_a_callback_portaudio_says_came_too_late_is_counted() -> None:
+    device = Device()
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
+    assert device.pull is not None
+    device.pull(None, 320, {}, pyaudio.paOutputUnderflow)
+    device.pull(None, 320, {}, 0)
+    assert playout.counts() == {"pulled": 4, "unwritten": 4, "underflowed": 1}
+
+
+def test_a_write_waits_until_the_write_ahead_has_room_for_all_of_it_and_goes_on_as_the_device_takes_sound() -> None:
+    device = Device()
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
+    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2 - 2))  # a write-ahead full but for one sample
+    writing = threading.Thread(target=playout.write, args=(LOUD,))
+    writing.start()
+    writing.join(0.05)
+    assert writing.is_alive()  # waits, as a blocking stream's write does on a buffer without room for it
+    device.take()
+    writing.join(1)
+    assert not writing.is_alive()
+
+
+def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
+    """What lets a reopen go on when the device is gone and takes nothing more."""
+    device = Device()
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
+    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2))
+    refused: list[OSError] = []
+
+    def write() -> None:
+        try:
+            playout.write(LOUD)
+        except OSError as error:
+            refused.append(error)
+
+    writing = threading.Thread(target=write)
+    writing.start()
+    writing.join(0.05)
+    playout.stop_stream()
+    writing.join(1)
+    assert [str(error) for error in refused] == ["the speaker stream is stopped"]
+    assert device.log == ["stop"]
+
+
+class Deafened(Room):
+    def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
+        raise RuntimeError("the audio processing module refused the frame")
+
+
+async def test_a_playout_the_canceller_fails_ends_the_pipeline_rather_than_leaving_hands_mute() -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    errors: list[str] = []
+    pushed: list[tuple[Frame, FrameDirection]] = []
+
+    async def push_error(error_msg: str, exception: Exception | None = None, fatal: bool = False, category: object = None, force_treat_as_permanent: bool = False) -> None:
+        errors.append(f"{error_msg}: {exception}")
+
+    async def push_frame(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        pushed.append((frame, direction))
+
+    setattr(devices.speaker, "push_error", push_error)
+    setattr(devices.speaker, "push_frame", push_frame)
+    portaudio = FreshPortAudio([])
+    devices.speaker.open_stream(cast(PortAudio, portaudio), Deafened())
+    pull = cast(Pull, portaudio.opened[-1]["stream_callback"])
+    assert pull(None, 320, {}, 0)[1] == pyaudio.paAbort
+    await asyncio.sleep(0.01)
+    assert errors == ["the speaker stopped: its playout failed: the audio processing module refused the frame"]
+    assert [(type(frame), direction) for frame, direction in pushed] == [(EndWorkerFrame, FrameDirection.UPSTREAM)]
