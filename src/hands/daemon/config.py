@@ -11,7 +11,8 @@ run runs starts the run again, on the file as edited.
 
 A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
 keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
-and it changes while the daemon runs (hands.voice.voices).
+and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
+that choice is an edit to this file (OwnModel), taken as any edit is.
 
 [LAW:no-mode-explosion] the settings cap: every key names a variant or a value, and there are no flags. A key that
 would be a flag is a variant with a real alternative, or it does not exist.
@@ -26,7 +27,10 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+import tomlkit
+
 from hands.sessions.audit import Record, SettingsEdited
+from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -129,6 +133,55 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
         weighed = now
 
 
+class OwnModel:
+    """hands' own model: the one the run is on, and the one the user chooses for hands by voice.
+
+    [LAW:one-source-of-truth] config.toml is the one place the model is chosen, by hand or by voice. A choice by voice
+    is an edit to the file, its every other line kept as written, and the run takes it as it takes any edit: by
+    starting again on it once `edited` has weighed it.
+    """
+
+    def __init__(self, home: Home, running: Settings, reachable: Callable[[Config], object]) -> None:
+        self._home = home
+        self._running = running
+        self._reachable = reachable
+
+    def running(self) -> str:
+        """The model the run is on, which the file named as it started."""
+        return self._running.config.llm.model
+
+    def weigh(self, model: str) -> Callable[[], None]:
+        """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
+        a start on it could not reach its model: weighed here as `edited` weighs an edit by hand, so a choice by voice is
+        refused while the user is there to hear why, never written to be refused after."""
+        held = _readable(self._home, _held(self._home))
+        now = _settings(self._home, held)
+        edited = _with_model(held, model.strip())
+        chosen = _settings(self._home, edited)
+        if chosen == now:
+            raise Rejected(f"{self._home.config} names {model} already")
+        self._reachable(chosen)
+        return partial(_keep, self._home, held, edited)
+
+
+def _with_model(held: bytes | None, model: str) -> bytes:
+    # Only read once `_settings` has taken the file, so it is TOML and [llm], where there is one, is a table.
+    document = tomlkit.parse(b"" if held is None else held)
+    llm = cast(dict[str, object], document.setdefault("llm", tomlkit.table()))
+    llm["model"] = model
+    return tomlkit.dumps(document).encode()
+
+
+def _keep(home: Home, held: bytes | None, edited: bytes) -> None:
+    # [LAW:one-source-of-truth] one writer at a time: a save by hand since the choice was weighed is the user's, and is
+    # never written over.
+    if _held(home) != held:
+        raise Rejected(f"{home.config} was saved after the model was chosen, so the choice was not written over it")
+    # Through a link to the file, as dotfiles keep one, so the link stays and the file it names takes the edit.
+    target = home.config.resolve()
+    replace_whole(target, edited.decode(), 0o644 if held is None else target.stat().st_mode & 0o777)
+
+
 @dataclass(frozen=True)
 class _Unreadable:
     reason: str
@@ -207,16 +260,24 @@ def _llm(table: Mapping[str, object]) -> LLM:
             url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
             if url.endswith("/v1"):
                 raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
-            return Anthropic(url=url, model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
+            return Anthropic(url=url, model=_model(table, ANTHROPIC_MODEL))
         case "openai":
             _known(table, "[llm] for openai", ("backend", "model", "url"))
-            return OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL), model=_text(table, "[llm]", "model", OPENAI_MODEL))
+            return OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL), model=_model(table, OPENAI_MODEL))
         case "claude":
             # A url would be ignored, its requests going through hands' proxy to Anthropic's API, so it is refused.
             _known(table, "[llm] for claude", ("backend", "model"))
-            return Claude(model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
+            return Claude(model=_model(table, ANTHROPIC_MODEL))
         case _:
             raise Rejected(f"[llm] backend {backend!r} is not one of: anthropic, openai, claude")
+
+
+def _model(table: Mapping[str, object], default: str) -> str:
+    model = _text(table, "[llm]", "model", default)
+    # A model is named by its id; one with a space is a name said aloud, such as a choice by voice taken as heard.
+    if any(character.isspace() for character in model):
+        raise Rejected(f"[llm] model {model!r} has a space in it; a model is named by its id, such as {ANTHROPIC_MODEL}")
+    return model
 
 
 def _table(top: Mapping[str, object], name: str) -> Mapping[str, object]:

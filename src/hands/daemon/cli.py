@@ -20,7 +20,7 @@ from loguru import logger
 
 from hands.daemon import readiness
 from hands.daemon.backend import backend
-from hands.daemon.config import Config, Settings, edited, load
+from hands.daemon.config import Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
@@ -491,7 +491,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
                 reached = readiness.Missing(f"hands cannot start on its settings: {error}")
         survey(readiness.check(home, path, True, reached, running))
 
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start)
+    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
 
 
 def start_indicator(home: Home) -> int:

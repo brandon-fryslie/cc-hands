@@ -13,6 +13,7 @@ still waiting in its queue.
 [LAW:single-enforcer] the one holder of `Playback`: its observer reports to it, and the playback tools act on it.
 """
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -41,6 +42,8 @@ class Player:
         self._playback = Playback()
         # Stood ahead of the TTS service, the one place the lines enter the pipeline; it passes everything else on.
         self.lines = IdentityFilter()
+        # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, settled by the line's mark or the next barge-in.
+        self._hearing: set[asyncio.Future[bool]] = set()
 
     @property
     def waiting(self) -> int:
@@ -67,6 +70,8 @@ class Player:
             case TTSTextFrame() if frame.will_be_spoken:
                 self._playback = playback.finished(self._playback)
             case InterruptionFrame():
+                for hearing in self._hearing:
+                    _settle(hearing, False)
                 was = self._playback
                 self._playback = playback.cut(was)
                 # [LAW:nothing-unseen] every barge-in is a line, one that cut nothing off included.
@@ -84,6 +89,27 @@ class Player:
             # One sentence a frame, so each is a position.
             await self.lines.push_frame(TTSSpeakFrame(sentence))
         return lines
+
+    async def heard(self, sentence: str) -> bool:
+        """Says `sentence`, and returns once the speaker has played it to its end, True, or a barge-in has cut it off, False.
+
+        [LAW:no-ambient-temporal-coupling] what follows a line only once the user has heard it waits on this, never on how
+        long the line takes to say.
+        """
+        hearing = asyncio.get_running_loop().create_future()
+        self._hearing.add(hearing)
+        try:
+            await self.lines.push_frame(TTSSpeakFrame(sentence, append_to_context=False))
+            await self.lines.push_frame(Mark(lambda: _settle(hearing, True)))
+            return await hearing
+        finally:
+            self._hearing.discard(hearing)
+
+
+def _settle(hearing: "asyncio.Future[bool]", played: bool) -> None:
+    # The first of a line's mark and a barge-in says how it went; a mark reaches the end only if no barge-in cut it off.
+    if not hearing.done():
+        hearing.set_result(played)
 
 
 def said(played: Played) -> tuple[str, ...]:
