@@ -95,4 +95,4 @@ def heard(words: str) -> Allow | Deny:
     said = re.findall(r"[\w']+", words.lower().replace("’", "'"))
     if said and set(said) <= _ASSENTING and _ASSENT & set(said):
         return Allow()
-    return Deny(f'The user was asked whether to allow this, and answered by voice, so it did not run. Do what they said, which was: "{words}"')
+    return Deny(f'The user was asked whether to allow this, and answered by voice, so it did not run. Do what they said, and tell them aloud that it did not run and what that leaves undone. They said: "{words}"')
