@@ -10,7 +10,7 @@ import subprocess
 from collections.abc import Mapping
 
 from hands.core.wire import UPSTREAM
-from hands.daemon.config import ANTHROPIC_URL, CLAUDE_MODELS, LLM, Anthropic, Claude, OpenAI
+from hands.daemon.config import ANTHROPIC_URL, LLM, Anthropic, Claude, OpenAI
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wrapper import Unpackaged, packaged
@@ -34,14 +34,12 @@ def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
         case OpenAI(url=url, model=model):
             return OpenAICompatibleBackend(base_url=url, api_key=_key(environment, "OPENAI_API_KEY"), model=model)
         case Anthropic(url=url, model=model) if url == ANTHROPIC_URL:
-            _offered(model)
             key = _environment_key(environment, "ANTHROPIC_API_KEY") or _keychain_key(ANTHROPIC_KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY")
             return AnthropicBackend(base_url=url, api_key=key, model=model)
         case Anthropic(url=url, model=model):
             # The keychain's key is Anthropic's own, so it is never sent to another server: that server's key is named in the environment.
             return AnthropicBackend(base_url=url, api_key=_key(environment, "ANTHROPIC_API_KEY"), model=model)
         case Claude(model=model):
-            _offered(model)
             # Imported here, so that only a brain's check loads the brain's process, its MCP server, and Pipecat's tools.
             from hands.brain.process import NotLoggedIn, Unstartable, account_kept_out, answered, logged_in
 
@@ -54,12 +52,6 @@ def backend(llm: LLM, home: Home, environment: Mapping[str, str]) -> LLMBackend:
             except (NotLoggedIn, Unstartable, Unpackaged) as error:
                 raise Rejected(str(error)) from error
             return ClaudeCodeBackend(model=model, config_dir=home.brain, account=account)
-
-
-def _offered(model: str) -> None:
-    """Raises Rejected, naming the models hands runs Claude on, unless `model` is one of them."""
-    if model not in CLAUDE_MODELS:
-        raise Rejected(f"hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}")
 
 
 def _key(environment: Mapping[str, str], var: str) -> str:

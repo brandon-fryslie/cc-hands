@@ -42,8 +42,7 @@ EDIT_SECONDS = 1.0
 ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
 # The models hands runs on through Anthropic's API or the brain: one Haiku, Sonnet, Opus, and Fable each. A model
-# outside them is refused before hands starts on it (hands.daemon.backend), since by voice a turn that fails on it
-# could never choose another.
+# outside them is refused where the file is parsed, since by voice a turn that fails on it could never choose another.
 CLAUDE_MODELS = ("claude-haiku-4-5-20251001", ANTHROPIC_MODEL, "claude-opus-5-5", "claude-fable-5-1")
 OPENAI_URL = "https://api.openai.com/v1"
 # Not a reasoning model, so no thinking precedes the first spoken word; it calls tools and takes max_tokens.
@@ -272,16 +271,24 @@ def _llm(table: Mapping[str, object]) -> LLM:
             url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
             if url.endswith("/v1"):
                 raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
-            return Anthropic(url=url, model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
+            model = _text(table, "[llm]", "model", ANTHROPIC_MODEL)
+            # Another server serves models of its own, which hands has no list of.
+            return Anthropic(url=url, model=_offered(model) if url == ANTHROPIC_URL else model)
         case "openai":
             _known(table, "[llm] for openai", ("backend", "model", "url"))
             return OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL), model=_text(table, "[llm]", "model", OPENAI_MODEL))
         case "claude":
             # A url would be ignored, its requests going through hands' proxy to Anthropic's API, so it is refused.
             _known(table, "[llm] for claude", ("backend", "model"))
-            return Claude(model=_text(table, "[llm]", "model", ANTHROPIC_MODEL))
+            return Claude(model=_offered(_text(table, "[llm]", "model", ANTHROPIC_MODEL)))
         case _:
             raise Rejected(f"[llm] backend {backend!r} is not one of: anthropic, openai, claude")
+
+
+def _offered(model: str) -> str:
+    if model not in CLAUDE_MODELS:
+        raise Rejected(f"hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}")
+    return model
 
 
 def _table(top: Mapping[str, object], name: str) -> Mapping[str, object]:

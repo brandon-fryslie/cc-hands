@@ -49,7 +49,7 @@ def test_the_file_names_the_backend_its_server_and_model(tmp_path: Path) -> None
     assert settings.path(home) == home.config
     assert config.parse('[llm]\nbackend = "openai"\n').llm == OpenAI(url=OPENAI_URL, model=OPENAI_MODEL)
     assert config.parse('[llm]\nurl = "https://api-chicago.codexapi.pro"\nmodel = "claude-other"\n').llm == Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
-    assert config.parse('[llm]\nbackend = "claude"\nmodel = "claude-other"\n').llm == Claude(model="claude-other")
+    assert config.parse('[llm]\nbackend = "claude"\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
 
 
 @pytest.mark.parametrize(
@@ -170,17 +170,13 @@ def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, m
     assert backend(Anthropic(model=model), HOME, {"ANTHROPIC_API_KEY": "k"}).model == model
 
 
-def test_a_claude_model_not_on_offer_is_refused_before_its_key_or_login_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming
-    # the four, before the keychain or the brain's login is asked, neither of which a model off the list could use.
-    def unread(service: str) -> str:
-        pytest.fail(f"the keychain was read for {service}")
-
-    monkeypatch.setattr("hands.daemon.backend.keychain_password", unread)
+def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
+    # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming the
+    # four, on Anthropic's own API and on the brain.
     for model in ("opus", "claude-opus-9", "claude-sonnet-5"):
-        for llm in (Anthropic(model=model), Claude(model=model)):
+        for backend_ in ("anthropic", "claude"):
             with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
-                backend(llm, HOME, {})
+                config.parse(f'[llm]\nbackend = "{backend_}"\nmodel = "{model}"\n')
 
 
 def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
