@@ -32,7 +32,7 @@ from hands.core.wire import UPSTREAM
 from hands.voice import voices
 from hands.voice.wakeword import Pretrained, Trained
 from hands.voice import backends
-from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
+from hands.voice.backends import Account, AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
 
@@ -186,7 +186,7 @@ def test_openai_needs_its_key() -> None:
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account="brain@example.com")
+    assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
     assert backend(Claude(model="claude-opus-5-5"), home, os.environ).model == "claude-opus-5-5"
 
 
@@ -342,9 +342,9 @@ def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_na
 
 
 def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its_account() -> None:
-    brain = ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain, account="brain@example.com")
+    brain = ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain, account=Account("claude.ai", "brain@example.com"))
     assert backends.server(brain) == UPSTREAM
-    assert backends.account(brain) == "brain@example.com"
+    assert backends.account(brain) == Account("claude.ai", "brain@example.com")
 
 
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:

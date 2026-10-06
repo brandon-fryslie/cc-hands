@@ -32,7 +32,7 @@ from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
 from hands.sessions.wrapper import shim_script
-from hands.voice.backends import ClaudeCodeBackend
+from hands.voice.backends import Account, ClaudeCodeBackend
 
 
 @pytest.fixture
@@ -733,8 +733,8 @@ def test_a_backend_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pyte
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
-    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account="brain@example.com"))
-    assert found == Ready("the brain is logged in as brain@example.com, and reaches claude-sonnet-5")
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com")))
+    assert found == Ready("the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
 
 
 # hands running

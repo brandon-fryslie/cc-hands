@@ -69,8 +69,8 @@ is not, what does it; it exits 0 only when every step is done.
    security add-generic-password -s HANDS_LLM_ANT_KEY -a "$USER" -w     # asks for the key
    ```
 
-   Or the brain, on a Claude subscription: `backend = "claude"` under `[llm]` in
-   `~/.hands/config.toml`, then `hands login`. The other backends are under
+   Or the brain, on a Claude plan or an Anthropic Console key: `backend = "claude"` under
+   `[llm]` in `~/.hands/config.toml`, then `hands login`. The other backends are under
    [Shape](#shape).
 
 7. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
@@ -220,7 +220,7 @@ it differently: the Anthropic client appends `/v1/messages`, so its URL has no `
 usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers 404). The server
 must stream tool calls, because the pipeline's service always streams: api-chicago.codexapi.pro streams
 Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is reached as `anthropic`.
-`claude` is the brain: one long-lived Claude Code of hands' own, on the Claude subscription,
+`claude` is the brain: one long-lived Claude Code of hands' own, on any login Claude Code takes from Anthropic,
 whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, and it does not start without one.
 A restart resumes the brain's conversation rather than starting it over; to start it over, remove `~/.hands/brain/conversation`
@@ -228,7 +228,8 @@ before starting hands.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
 there; then, on a brain Claude Code has not finished its first run on, it runs that first run in the directory the brain
 runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,
-it logs the brain in again, or onto another account. Either way it says which account the brain holds after.
+it logs the brain in again, or onto another account: a Claude plan, or with `hands login --console` an Anthropic Console
+key. Either way it says which account the brain holds after, and how it is logged in.
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.

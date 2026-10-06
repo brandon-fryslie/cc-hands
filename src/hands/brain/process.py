@@ -1,4 +1,4 @@
-"""The brain's process: one long-lived, slim Claude Code on the subscription, behind hands' proxy, reaching hands over MCP.
+"""The brain's process: one long-lived, slim Claude Code on its own login, behind hands' proxy, reaching hands over MCP.
 
 It is Claude Code as anyone runs it: interactive, on a terminal hands holds, under fritter, and asked nothing a person
 at its keyboard could not ask. A turn is typed into its input and sent with Return, and an interrupt is Escape. Nothing
@@ -8,7 +8,7 @@ from the wire, derivative ones from the harness], and the harness is heard only 
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
 Its login, settings, and skills live in a directory hands owns, set up once by `hands login`, which runs Claude Code's
-own first run there, as any Claude Code is set up, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
+own first run there, as any Claude Code is set up, on any login Claude Code takes, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
 and which MCP servers it has are that directory's to say, as they are for any Claude Code: its settings.json and its
 .claude.json. hands adds only its own server, its hooks, and the skills it ships for the brain's own jobs, and keeps out
 what the login brings from the account.
@@ -25,6 +25,7 @@ import tempfile
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from aiohttp import web
 from loguru import logger
@@ -43,6 +44,7 @@ from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
 from hands.sessions.wrapper import Unpackaged, packaged, real_claude
+from hands.voice.backends import Account
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
 # LSP needs no switch: it comes only from plugins, the brain's own setup installs none, and hands' own declares none.
@@ -73,9 +75,14 @@ PLUGIN_SKILLS = tuple(
     f"Skill({json.loads((PLUGIN / '.claude-plugin' / 'plugin.json').read_text())['name']}:{skill.parent.name})" for skill in sorted((PLUGIN / "skills").glob("*/SKILL.md"))
 )
 
-# Credentials Claude Code prefers to its own login. Inherited from hands' environment, any of them would put the brain
-# on another account or off the subscription without a word, so none is passed on.
-FOREIGN_CREDENTIALS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+# What Claude Code prefers to its own login: credentials, and the switches that send it to a provider other than
+# Anthropic's API (2.1.289). The brain's login is its config directory's, whichever Claude Code takes, a key in its
+# settings.json among them; inherited from hands' environment, any of these would put the brain on another account or
+# provider without a word, so none is passed on.
+FOREIGN_LOGINS = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    *(f"CLAUDE_CODE_USE_{provider}" for provider in ("BEDROCK", "VERTEX", "FOUNDRY", "ANTHROPIC_AWS", "ANTHROPIC_GOOGLE_CLOUD", "MANTLE", "GATEWAY")),
+)
 
 # A dialog nobody can see would hold its turn open forever with no hook to say so (2.1.288). A permission its setup asks
 # about is held at its hook while the user is asked by voice, in a turn of theirs; anything else is answered no there,
@@ -136,8 +143,8 @@ class Launch:
     """Everything the brain is started with."""
 
     station: Station
-    # The subscription account its config directory is logged in as, read as the run started.
-    account: str
+    # The account its config directory is logged in as, read as the run started.
+    account: Account
     instruction: str
     mcp_config: str
     conversation: "Conversation"
@@ -260,10 +267,10 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
-    """A slim Claude Code's environment: hands' own, less any credential that is not the login in `config_dir`, reaching the API at `base_url`."""
+    """A slim Claude Code's environment: hands' own, less anything that would stand in for the login in `config_dir`, reaching the API at `base_url`."""
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
     # session does not hand the brain that session's tap.
-    kept = {name: value for name, value in untapped(inherited).items() if name not in FOREIGN_CREDENTIALS}
+    kept = {name: value for name, value in untapped(inherited).items() if name not in FOREIGN_LOGINS}
     return {**kept, **SLIM, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url}
 
 
@@ -292,7 +299,7 @@ class Untaken(Exception):
 
 
 class NotLoggedIn(Exception):
-    """The brain's config directory holds no login on the Claude subscription, so every turn would fail or be billed to a key."""
+    """The brain's config directory holds no login whose requests reach hands' proxy, so every turn would fail or go unheard."""
 
 
 class LoginFailed(Exception):
@@ -313,24 +320,31 @@ def brain_claude(inherited: Mapping[str, str]) -> Path:
 
 @dataclass(frozen=True)
 class Login:
-    """What `hands login` left the brain holding: the subscription account, and why it took Claude Code's first run, if
-    it did."""
+    """What `hands login` left the brain holding: its account, and why it took Claude Code's first run, if it did."""
 
-    account: str
+    account: Account
     first_run: str | None
 
 
 def unanswered(config_dir: Path) -> str | None:
     """Why the brain would start on one of Claude Code's first screens, or None when it would not: Claude Code records
-    in its own .claude.json that its onboarding finished and that the directory the brain runs in, or one above it, is
-    trusted (2.1.288). A config directory made by anything else, `claude auth status` among them, has neither."""
+    in its own .claude.json that its onboarding finished, that the directory the brain runs in, or one above it, is
+    trusted, and its answer on an API key its settings.json sets, by the key's last 20 characters (2.1.289). A config
+    directory made by anything else, `claude auth status` among them, has none of them."""
     state = config_dir / ".claude.json"
+    settings = config_dir / "settings.json"
     cwd = _cwd(config_dir).resolve()
+    try:
+        key = _settings_key(settings)
+    except Rejected as error:
+        return f"{settings} unreadable: {error}"
     try:
         said = Payload.parse(state.read_bytes())
         projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
         trusted = any(Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted") for place in map(str, (cwd, *cwd.parents)) if place in projects)
         onboarding = said.optional_flag("hasCompletedOnboarding")
+        responses = Payload.of(said.fields.get("customApiKeyResponses", {}), "its API key answers")
+        keys_answered = {*responses.optional_items("approved"), *responses.optional_items("rejected")}
     except FileNotFoundError:
         return f"no {state}"
     except Rejected as error:
@@ -340,7 +354,18 @@ def unanswered(config_dir: Path) -> str | None:
         return "its onboarding unfinished"
     if not trusted:
         return f"{cwd} untrusted"
+    if key is not None and key[-20:] not in keys_answered:
+        return f"the API key {settings} sets unanswered"
     return None
+
+
+def _settings_key(settings: Path) -> str | None:
+    """The API key `settings` puts in the brain's environment, where the brain's own is set: hands' never reaches it (FOREIGN_LOGINS)."""
+    try:
+        raw = settings.read_bytes()
+    except FileNotFoundError:
+        return None
+    return Payload.of(Payload.parse(raw).fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
 
 
 def answered(config_dir: Path) -> None:
@@ -349,26 +374,39 @@ def answered(config_dir: Path) -> None:
         raise Unstartable(f"the brain has not been through Claude Code's first screens ({why}): `hands login` answers them")
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Login:
-    """Log `config_dir` in to the Claude subscription with Claude Code's own login, at this terminal, in the directory the
-    brain runs in; the account it holds after.
+# The logins `claude auth login` makes, each named by its own flag: a Claude plan, or an Anthropic Console key.
+type Method = Literal["claudeai", "console"]
+
+# [LAW:one-source-of-truth] the authMethod `claude auth status` says of each login once it is made (2.1.289).
+AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
+
+
+def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
+    """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
+    account it holds after.
 
     A config directory whose first screens are unanswered gets Claude Code's first run, its screens, its login among
     them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
-    keyboard."""
+    keyboard. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
+    offers every login, it is the one to pick. Raises LoginFailed when the brain holds another after."""
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
     account_kept_out(config_dir)
     first_run = unanswered(config_dir)
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
-    argv, ran = (["auth", "login", "--claudeai"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
+    argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
     signed = subprocess.run([brain_claude(inherited), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
     answered(config_dir)
-    return Login(logged_in(config_dir, base_url, inherited), first_run)
+    held = logged_in(config_dir, base_url, inherited)
+    # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
+    # brain on another login than the one asked for.
+    if held.method != AUTH_METHODS[method]:
+        raise LoginFailed(f"the brain holds {held}, not the {AUTH_METHODS[method]} login asked for")
+    return Login(held, first_run)
 
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.
@@ -405,8 +443,9 @@ def account_kept_out(config_dir: Path) -> None:
         raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
 
 
-def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> str:
-    """The subscription account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has none."""
+def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
+    """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
+    none, or one whose requests do not reach hands' proxy."""
     try:
         # A timed-out child is killed and reaped by run itself.
         asked = subprocess.run(
@@ -422,13 +461,11 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
         status = Payload.parse(asked.stdout)
         if not status.flag("loggedIn"):
             raise NotLoggedIn("the brain has no login: `hands login` gives it one")
-        # [LAW:no-silent-failure] a key the config directory resolves would answer every turn, billed to the API.
-        if (method := status.text("authMethod")) != "claude.ai":
-            raise NotLoggedIn(
-                f"the brain is logged in by {method}, not on the Claude subscription: `hands login` puts it there,"
-                f" unless {config_dir / 'settings.json'} or hands' environment sets {method} ahead of its login"
-            )
-        return status.text("email")
+        # [LAW:no-silent-failure] hands' proxy, which hears what the brain says, forwards to Anthropic's API alone, so a
+        # brain on another provider would answer nothing. hands' environment never chooses one (FOREIGN_LOGINS).
+        if (provider := status.text("apiProvider")) != "firstParty":
+            raise NotLoggedIn(f"the brain reaches Claude through {provider}, not the Anthropic API hands' proxy forwards to: {config_dir / 'settings.json'} or the machine's managed settings choose {provider}")
+        return Account(status.text("authMethod"), status.optional_text("email") or status.optional_text("apiKeySource"))
     except Rejected as error:
         raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
 

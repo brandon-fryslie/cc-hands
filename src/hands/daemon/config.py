@@ -74,7 +74,7 @@ class OpenAI:
 
 @dataclass(frozen=True)
 class Claude:
-    """Claude through a slim Claude Code of hands' own, on the subscription; its requests go through hands' proxy, so it has no URL."""
+    """Claude through a slim Claude Code of hands' own, on its own login; its requests go through hands' proxy, so it has no URL."""
 
     model: str = ANTHROPIC_MODEL
 

@@ -45,19 +45,17 @@ The same page sets the conditions a paid hands has to meet:
 
 hands meets the first two conditions only in part. fritter wraps Claude Code in a
 pseudo-terminal and leaves the binary unchanged, and the brain signs in through Claude
-Code's own flow (`hands login`). Three things do not fit as built:
+Code's own flow (`hands login`), on any login Claude Code takes from Anthropic: a Claude
+plan, an Anthropic Console key (`hands login --console`), or a token. Only a provider
+other than Anthropic's API is refused, because hands' proxy forwards to that API alone
+(`logged_in`, `src/hands/brain/process.py`). Two things do not fit as built:
 
 - **The brain's proxy edits plan-billed requests.** The brain's `ANTHROPIC_BASE_URL`
-  is hands' own proxy (`src/hands/brain/process.py:267`), and the brain runs on the
-  user's Claude plan. The proxy rewrites request bodies, answers some requests itself
+  is hands' own proxy (`src/hands/brain/process.py:274`), and a brain logged in on a
+  Claude plan has its requests billed to that plan. The proxy rewrites request bodies, answers some requests itself
   with a reply written as the model's (`src/hands/sessions/proxy.py:141`), and turns
   some API refusals into its own final 502. That is hands sitting between a
   subscription and its requests, which is closest to what the terms forbid.
-- **The brain refuses every login but the subscription.** Its environment is stripped
-  of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`
-  (`FOREIGN_CREDENTIALS`, `src/hands/brain/process.py:78`), and `hands login` succeeds
-  only on the subscription. That restricts an authentication method built into Claude
-  Code.
 - **fritter's tap is an intermediary.** It decrypts each session's traffic to
   Anthropic with a certificate authority hands supplies (`--tap-ca`,
   `src/hands/sessions/wrapper.py:234`) and copies every exchange to hands. It passes
@@ -66,10 +64,11 @@ Code's own flow (`hands login`). Three things do not fit as built:
   bills usage and hands never holds the session's token. But it is a TLS
   man-in-the-middle on plan-billed traffic, and "intermediate" is the terms' own word.
 
-The first two are code changes: a paid brain either takes any login Claude Code takes
-or does not run on the plan behind an editing proxy. The third, and whatever form the
-brain ends up in, needs written confirmation from Anthropic sales, which the terms name
-as the contact for questions about authentication.
+A brain on a Console key is behind the proxy on the user's own API account, not on a
+plan. Whether the proxy may keep editing a brain on a plan, and whether the tap is
+allowed, needs written confirmation from Anthropic sales, which the terms name as the
+contact for questions about authentication. [terms-question.md](terms-question.md) is
+that question.
 
 ## What the subscription sells
 
