@@ -163,15 +163,16 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 ```
 
 hands' settings are `~/.hands/config.toml`; with no file, every setting is its default. Save an
-edit while hands runs and it restarts on it, keeping its sessions; an edit it cannot read, or one
-naming a backend whose key or login it lacks, is said in `hands log`, and hands runs on as it was.
+edit while hands runs and it restarts on it, keeping its sessions; an edit it cannot read, one
+naming a backend whose key or login it lacks, or one naming a Claude model hands does not offer, is
+said in `hands log`, and hands runs on as it was.
 You can also ask hands by voice to change its own model ("switch yourself to Opus"). It says it is
 switching, writes `model` into this file, and restarts on it:
 
 ```toml
 [llm]
 backend = "claude"            # "anthropic" (the default), "openai", or "claude"
-model = "claude-sonnet-5"     # another model, for any backend
+model = "claude-opus-5-5"     # another model, for any backend
 url = "https://..."           # another server, for anthropic and openai
 
 [telemetry]
@@ -182,10 +183,11 @@ With a collector set, each wide event `hands run` writes to its audit log is als
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
 collector did not take them, why.
 
-The LLM is a backend variant: `anthropic`, the default, is Claude Sonnet 5, keyed by
+The LLM is a backend variant: `anthropic`, the default, is Claude Sonnet 5.5, keyed by
 `ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `openai`
 is `gpt-4.1-mini` through OpenAI's API, keyed by `OPENAI_API_KEY`. `model` names another
-model for either. `url` moves either to another server that speaks its API, keyed only by
+model for either. On Anthropic's own API and on `claude`, the model is one of four:
+`claude-haiku-4-5-20251001`, `claude-sonnet-5-5`, `claude-opus-5-5`, or `claude-fable-5-1`. `url` moves either to another server that speaks its API, keyed only by
 the environment's key (the keychain's key is Anthropic's own and goes nowhere else), and the two take
 it differently: the Anthropic client appends `/v1/messages`, so its URL has no `/v1`
 (`https://api-chicago.codexapi.pro`), while the OpenAI client appends `/chat/completions`, so its URL

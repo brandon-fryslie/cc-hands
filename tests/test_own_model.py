@@ -27,7 +27,7 @@ from test_playback import Heard
 SPOKEN_FILE = """# hands, by hand
 [llm]
 backend = "claude"  # the brain
-model = "claude-sonnet-5"
+model = "claude-sonnet-5-5"
 
 [telemetry]
 collector = "http://otel.example:4318"
@@ -42,7 +42,7 @@ def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_wr
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     _own(home).weigh("claude-opus-5-5")()
-    assert home.config.read_text() == SPOKEN_FILE.replace('model = "claude-sonnet-5"', 'model = "claude-opus-5-5"')
+    assert home.config.read_text() == SPOKEN_FILE.replace('model = "claude-sonnet-5-5"', 'model = "claude-opus-5-5"')
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
 
 
@@ -65,8 +65,9 @@ def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_
     ("model", "said"),
     [
         ("claude opus", "has a space in it"),
-        ("claude-sonnet-5", "hands runs on claude-sonnet-5 already"),
+        ("claude-sonnet-5-5", "hands runs on claude-sonnet-5-5 already"),
         ("", "should be a non-empty string"),
+        ("claude-opus-9", "hands runs Claude on .*, not claude-opus-9$"),
     ],
 )
 def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_path: Path, model: str, said: str) -> None:
@@ -86,7 +87,7 @@ def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_way
     home.config.write_text(SPOKEN_FILE)
     own = _own(home)
     # Saved while the run went on: an edit `edited` has yet to take, or refused.
-    home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5", "claude-opus-5-5"))
+    home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5"))
     with pytest.raises(Rejected, match="names claude-opus-5-5 already and hands is not on it yet: an edit it is about to take, or one it refused.*hands restart"):
         own.weigh(" claude-opus-5-5 ")
 
@@ -142,7 +143,7 @@ class FakeOwn:
         self.kept: list[str] = []
 
     def running(self) -> str:
-        return "claude-sonnet-5"
+        return "claude-sonnet-5-5"
 
     def weigh(self, model: str) -> Callable[[], None]:
         if self.refusal is not None:
@@ -211,7 +212,7 @@ async def test_use_model_switches_once_the_user_has_heard_it_say_so_and_is_the_w
         said = await heard.until(1, TTSSpeakFrame)
     line = "Switching to claude-opus-5-5. I'll be back in a few seconds."
     assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == [line]
-    assert result == {"said": line, "running_on": "claude-sonnet-5", "switching_to": "claude-opus-5-5"}
+    assert result == {"said": line, "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}
     assert own.kept == ["claude-opus-5-5"]
     assert silent(tools["use_model"], result)
 
@@ -242,7 +243,7 @@ async def test_use_model_cut_off_before_its_line_is_heard_switches_nothing() -> 
 
 async def test_model_in_use_is_the_model_hands_runs_on() -> None:
     tools = _tools(FakeOwn(), Player(lambda _entry: None))
-    assert await tools["model_in_use"].body() == {"running_on": "claude-sonnet-5"}
+    assert await tools["model_in_use"].body() == {"running_on": "claude-sonnet-5-5"}
 
 
 async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the_one_switched_to() -> None:
@@ -264,8 +265,8 @@ async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the
         await asyncio.wait_for(call, 2.0)
     events = [entry for entry in recorded if isinstance(entry, WideEvent)]
     assert [(event.outcome, cast(Called, event.facts["called"]).result) for event in events] == [
-        ("ok", {"running_on": "claude-sonnet-5"}),
-        ("ok", {"said": "Switching to claude-opus-5-5. I'll be back in a few seconds.", "running_on": "claude-sonnet-5", "switching_to": "claude-opus-5-5"}),
+        ("ok", {"running_on": "claude-sonnet-5-5"}),
+        ("ok", {"said": "Switching to claude-opus-5-5. I'll be back in a few seconds.", "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}),
         ("failed", {"error": "The user spoke over hands saying it would switch to claude-opus-5-5, so it did not switch. Ask whether they still want it."}),
     ]
 
