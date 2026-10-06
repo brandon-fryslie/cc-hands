@@ -267,17 +267,18 @@ def _stated(event: Moving, was: Session) -> SessionState:
     it is, what it did, and which request it waits on, never whether the session runs.
     """
     match (event, was.state):
-        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Idle(after=after) as idle) if was.turn.turn == after:
-            # Set idle again with no turn heard since: the same idle period. One with a turn heard since, as a prompt
-            # cancelled during its hooks or a turn over between two reads, is a new period, below.
-            return replace(idle, stamp=stamp)
-        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), _):
-            return Idle(stamp, after=was.turn.turn)
-        case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), Running() as running):
+        case (StatusReported(report=Report(status=status.Idle() | status.Shell() as at, stamp=stamp)), Idle(after=after) as idle) if was.turn.turn == after:
+            # Set idle again with no turn heard since: the same idle period, though a background shell began or ended in
+            # it. One with a turn heard since, as a prompt cancelled during its hooks or a turn over between two reads,
+            # is a new period, below.
+            return replace(idle, status=at, stamp=stamp)
+        case (StatusReported(report=Report(status=status.Idle() | status.Shell() as at, stamp=stamp)), _):
+            return Idle(at, stamp, after=was.turn.turn)
+        case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Unknown() as going, stamp=stamp)), Running() as running):
             return replace(running, status=going, stamp=stamp)
-        case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), Idle(stamp=idled)):
+        case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Unknown() as going, stamp=stamp)), Idle(stamp=idled)):
             return Running(going, stamp, idled=idled)
-        case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Shell() | status.Unknown() as going, stamp=stamp)), _):
+        case (StatusReported(report=Report(status=status.Busy() | status.Waiting() | status.Unknown() as going, stamp=stamp)), _):
             # First read running, as when hands attaches mid-turn: no idle before it was read.
             return Running(going, stamp, idled=None)
         case (_, state):
@@ -288,7 +289,7 @@ def _stated(event: Moving, was: Session) -> SessionState:
 def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | None:
     """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it."""
     match (event, dialog):
-        case (StatusReported(report=Report(status=status.Idle())), _):
+        case (StatusReported(report=Report(status=status.Idle() | status.Shell())), _):
             # At its prompt: no dialog is up, whether it was answered at the keyboard or escaped.
             return None
         case (PermissionRequested(request=request), Held(request=held)) if held == request:
@@ -310,7 +311,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
     """The turn after the event, and what the event calls for of it: told, compared, marked."""
     id, turn = was.membership.id, was.turn
     match (event, turn):
-        case (StatusReported(report=Report(status=status.Idle(), stamp=stamp)), Opened() as opened):
+        case (StatusReported(report=Report(status=status.Idle() | status.Shell(), stamp=stamp)), Opened() as opened):
             # [LAW:one-source-of-truth] Claude Code says the turn is over, however it was stopped, so it is. A prompt
             # cancelled by an Escape during its hooks ends here too, and is told as itself if it ran. It is told once the
             # transcript says how it ended: see Untold.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from hands.core.events import Ended, Joined, PermissionRequested, Prompted, StatusReported, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
-from hands.core.status import Busy, Idle, Report, Stamp, Waiting
+from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
 from hands.sessions.focus import set_focus
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
@@ -81,6 +81,17 @@ async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiti
     for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
         await sessions.apply(event)
     assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal"}], "focus": None}
+
+
+async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed_idle(tmp_path: Path) -> None:
+    """As seen live on 2.1.289: a session cleared while a background poll it started ran on reported shell, and sat at
+    its prompt doing nothing."""
+    cleared = membership(tmp_path, "cleared")
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    for event in (Joined(cleared, "clear"), StatusReported(cleared.id, Report(Shell(), Stamp(1)), at=1.0)):
+        await sessions.apply(event)
+    listed = {"id": "cleared", "name": "cleared", "state": "idle, with a shell command it started in the background still running", "mode": "not reported yet", "overlay": "normal"}
+    assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
 
 
 def test_a_name_record_still_being_written_is_not_read(tmp_path: Path) -> None:

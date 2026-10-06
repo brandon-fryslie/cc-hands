@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal, NewType, Self
 
 from hands.core.progress import Doing, Gathering
-from hands.core.status import Going, Stamp
+from hands.core.status import AtPrompt, Going, Stamp
 from hands.core.turn import AgentTask
 
 SessionId = NewType("SessionId", str)
@@ -179,6 +179,7 @@ class Unreported:
 class Idle:
     """Claude Code says the session is at its prompt."""
 
+    status: AtPrompt
     stamp: Stamp
     # The turn last heard when the period began. An idle read with another turn heard since begins a new period, though
     # no busy was read between, as for a turn that ran between two reads.

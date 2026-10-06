@@ -25,6 +25,7 @@ from hands.core.session import (
     Unreported,
     Running,
 )
+from hands.core import status
 from hands.core.status import Busy, Going, Shell, Stamp, UnknownReason, Waiting
 
 SOCKET = Path("/tmp/fritter-1/session.sock")
@@ -39,7 +40,9 @@ def running(going: Going = Busy()) -> Running:
 AT_DIALOG = running(Waiting("permission prompt"))
 
 
-IDLE = Idle(Stamp(1), after=None)
+IDLE = Idle(status.Idle(), Stamp(1), after=None)
+# At its prompt with a background shell command still running.
+SHELLING = Idle(Shell(), Stamp(1), after=None)
 
 
 def registry(state: SessionState, member: Membership = ONE, turn: Turn = Told()) -> Registry:
@@ -50,7 +53,7 @@ def gone(member: Membership = ONE) -> Registry:
     return Registry(permission_deadline=60.0, sessions={ONE.id: Gone(member)}, drafts={})
 
 
-@pytest.mark.parametrize("state", [IDLE, running(), running(Shell()), Unreported()])
+@pytest.mark.parametrize("state", [IDLE, running(), SHELLING, Unreported()])
 def test_a_command_is_typed_as_itself_whatever_the_session_is_doing(state: SessionState) -> None:
     assert decide(registry(state), SendCommand(ONE.id, COMPACT)) == Type(ONE.id, SOCKET, 1, COMPACT)
 

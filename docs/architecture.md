@@ -126,9 +126,9 @@ Known = Session | Gone        # what the registry holds per session
 # word, never inferred from a hook or a record.
 SessionState = Unreported | Idle | Running
 @dataclass(frozen=True)
-class Idle:      stamp: Stamp; after: PromptId | None  # one idle period
+class Idle:      status: Idle | Shell; stamp: Stamp; after: PromptId | None  # one idle period; Shell: a background shell runs
 @dataclass(frozen=True)
-class Running:   status: Busy | Waiting | Shell | Unknown; stamp: Stamp; idled: Stamp
+class Running:   status: Busy | Waiting | Unknown; stamp: Stamp; idled: Stamp
 
 # Each fact about the turn lives on the phase it is true in.
 Turn = Opened | Untold | Told
