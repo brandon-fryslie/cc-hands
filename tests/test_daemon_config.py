@@ -313,7 +313,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable))
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.

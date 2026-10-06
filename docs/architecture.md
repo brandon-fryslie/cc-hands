@@ -2144,7 +2144,13 @@ variant with a real alternative or it does not exist. The fields:
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
-kept in the home's `voice` file. The permission timeout is declared in the hook
+kept in the home's `voice` file. The model is a setting the user may also choose by
+voice. hands has no session id, so a choice aimed at hands itself is a tool of its own
+(`use_model`), never `send_command` aimed at a session. The choice is an edit to
+`config.toml` (`OwnModel`): `[llm] model` is set and every other line stays as written.
+It is weighed by the same `backend` check before it is written, so a refusal is said
+while the user is there, and it is written only once the user has heard hands say it is
+switching (`Player.heard`). The run then starts again on it as on any edit. The permission timeout is declared in the hook
 config, which `hooks.json` is generated from.
 
 ## Stack

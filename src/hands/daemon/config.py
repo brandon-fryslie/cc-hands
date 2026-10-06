@@ -11,7 +11,8 @@ run runs starts the run again, on the file as edited.
 
 A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
 keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
-and it changes while the daemon runs (hands.voice.voices).
+and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
+that choice is an edit to this file (OwnModel), taken as any edit is.
 
 [LAW:no-mode-explosion] the settings cap: every key names a variant or a value, and there are no flags. A key that
 would be a flag is a variant with a real alternative, or it does not exist.
@@ -26,7 +27,10 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+import tomlkit
+
 from hands.sessions.audit import Record, SettingsEdited
+from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -127,6 +131,63 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
         except Rejected as error:
             record(SettingsEdited(path=str(home.config), refused=str(error)))
         weighed = now
+
+
+class OwnModel:
+    """hands' own model: the one the run is on, and the one the user chooses for hands by voice.
+
+    [LAW:one-source-of-truth] config.toml is the one place the model is chosen, by hand or by voice. A choice by voice
+    is an edit to the file, its every other line kept as written, and the run takes it as it takes any edit: by
+    starting again on it once `edited` has weighed it.
+    """
+
+    def __init__(self, home: Home, running: Settings, reachable: Callable[[Config], object]) -> None:
+        self._home = home
+        self._running = running
+        self._reachable = reachable
+
+    def running(self) -> str:
+        """The model the run is on, which the file named as it started."""
+        return self._running.config.llm.model
+
+    def weigh(self, model: str) -> Callable[[], None]:
+        """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
+        a start on it could not reach its model: weighed here as `edited` weighs an edit by hand, so a choice by voice is
+        refused while the user is there to hear why, never written to be refused after."""
+        model = model.strip()
+        # A model is named by its id; one with a space is a name as said aloud, which no backend serves. Only here, where a
+        # name said aloud enters: a model named in the file by hand may be a local server's path, spaces and all.
+        if any(character.isspace() for character in model):
+            raise Rejected(f"{model!r} has a space in it; a model is named by its id, such as {ANTHROPIC_MODEL}")
+        held = _readable(self._home, _held(self._home))
+        edited = _with_model(held, model)
+        chosen = _settings(self._home, edited)
+        if chosen == self._running.config:
+            raise Rejected(f"hands runs on {model} already")
+        if chosen == _settings(self._home, held):
+            # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
+            # same bytes written again would not change. Which of the two is not known here, so the reason names both.
+            raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
+        self._reachable(chosen)
+        return partial(_keep, self._home, held, edited)
+
+
+def _with_model(held: bytes | None, model: str) -> bytes:
+    # Only read once `_settings` has taken the file, so it is TOML and [llm], where there is one, is a table.
+    document = tomlkit.parse(b"" if held is None else held)
+    llm = cast(dict[str, object], document.setdefault("llm", tomlkit.table()))
+    llm["model"] = model
+    return tomlkit.dumps(document).encode()
+
+
+def _keep(home: Home, held: bytes | None, edited: bytes) -> None:
+    # [LAW:one-source-of-truth] one writer at a time: a save by hand since the choice was weighed is the user's, and is
+    # never written over.
+    if _held(home) != held:
+        raise Rejected(f"{home.config} was saved after the model was chosen, so the choice was not written over it")
+    # Through a link to the file, as dotfiles keep one, so the link stays and the file it names takes the edit.
+    target = home.config.resolve()
+    replace_whole(target, edited.decode(), 0o644 if held is None else target.stat().st_mode & 0o777)
 
 
 @dataclass(frozen=True)

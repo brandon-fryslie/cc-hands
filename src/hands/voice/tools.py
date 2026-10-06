@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, Protocol, TypedDict, cast
 
 import aiohttp
 from loguru import logger
@@ -56,6 +56,7 @@ from hands.voice.readback import identifier, keyboard_readback, readback, spoken
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
+from hands.threads import off_loop
 
 Handler = Callable[[FunctionCallParams], Awaitable[None]]
 
@@ -200,7 +201,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, own: "OwnModel", acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act.
@@ -229,6 +230,7 @@ def intermediary_tools(
         modality_tool(switch),
         *trigger_tools(triggers, home.wake_word),
         *voice_tools(Voices(home, player.lines, fetched)),
+        *model_tools(own, player),
         *playback_tools(player),
     ]
     return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
@@ -958,6 +960,54 @@ def voice_tools(voices: Voices) -> list[Tool]:
     return [tool(voices_on_offer), tool(hear_voices), tool(use_voice, completes=True)]
 
 
+class OwnModel(Protocol):
+    """The model hands itself runs on (hands.daemon.config.OwnModel): hands has no session id, so what targets it is a
+    tool of its own, never a session's."""
+
+    def running(self) -> str: ...
+
+    def weigh(self, model: str) -> Callable[[], None]: ...
+
+
+def model_tools(own: OwnModel, player: Player) -> list[Tool]:
+    """Choosing the model hands runs on, which is a setting of hands' own and never a session's.
+
+    [LAW:nothing-unseen] each result names the model hands runs on and, for a choice, the one it switches to, so the
+    call's event holds both.
+    """
+
+    async def model_in_use() -> Result:
+        """The model you, hands, run on now. Call this when the user asks what model you run on."""
+        return {"running_on": own.running()}
+
+    async def use_model(model: str) -> Result:
+        """Run you, hands, on another model: hands restarts on it, back in a few seconds, and stays on it across restarts.
+
+        Call this when the user asks to change your own model. It never touches a session; a session's model is changed
+        by send_command running model in it. Hands says it is switching, and switches once the user has heard that:
+        calling it is the whole reply, so add no words of your own.
+
+        Args:
+            model: the model's id, such as claude-opus-5-5.
+        """
+        try:
+            keep = await off_loop(functools.partial(own.weigh, model), "weighing a model chosen by voice")
+        except Rejected as error:
+            return {"error": str(error)}
+        line = f"Switching to {model.strip()}. I'll be back in a few seconds."
+        # [LAW:no-ambient-temporal-coupling] written only once heard: the edit restarts hands, which would cut the line off.
+        if not await player.heard(line):
+            return {"error": f"The user spoke over hands saying it would switch to {model.strip()}, so it did not switch. Ask whether they still want it."}
+        try:
+            await off_loop(keep, "keeping a model chosen by voice")
+        except (Rejected, OSError) as error:
+            return {"error": str(error)}
+        return {"said": line, "running_on": own.running(), "switching_to": model.strip()}
+
+    # Completes through a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
+    return [tool(model_in_use), tool(use_model, then="silence", completes=True)]
+
+
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
     async def set_overlay(session: str, overlay: Overlay) -> Result:
         """Set how the user hears a session's finished turns: watched, normal, or muted.
@@ -1104,6 +1154,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         """Run a slash command in a session, such as compact, clear, or model. Call it only when the user asks for a command by name.
 
         What the user dictates as a prompt is a draft, even when it begins with a slash; this is only for commands.
+        Hands itself is not a session: its own model is changed by use_model.
         Say the returned readback to the user.
 
         Args:
