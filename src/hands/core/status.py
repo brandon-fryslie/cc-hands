@@ -20,7 +20,8 @@ class Idle:
 
 @dataclass(frozen=True)
 class Busy:
-    pass
+    """A turn or a `!` command runs; or a subagent it started in the background does, from its launch until the turn
+    that reports it back ends, though every turn between has stopped (2.1.289)."""
 
 
 # The waitingFor reasons 2.1.282 writes.

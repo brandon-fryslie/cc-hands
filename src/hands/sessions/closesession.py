@@ -53,7 +53,8 @@ Outcome = Closed | LeftRunning
 
 def done(session: Session) -> bool:
     """Whether a session is done: at its prompt, with no dialog up, no turn opened, and no shell running in the background."""
-    # [LAW:one-source-of-truth] at its prompt is Claude Code's status; a background shell still running is work it was
+    # [LAW:one-source-of-truth] at its prompt is Claude Code's status, which is busy while a background subagent works
+    # (status.Busy), and no SubagentStop says when TaskStop ends one; a background shell still running is work it was
     # set to and has not finished, which ending the session would kill. A turn opens on its prompt's hook, before the
     # status that says it is busy is read, so an opened turn runs whatever the status still says.
     match session:
