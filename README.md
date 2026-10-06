@@ -192,6 +192,12 @@ personality = "Dry and wry, with a bit of wit."   # how hands comes across, in y
 `personality` changes hands' tone and choice of words, and nothing else: replies stay short and
 spoken, and hands does only what you tell it to. Leave it out and hands talks in its own plain way.
 
+hands plays, pauses, and skips Spotify on this Mac, sets its volume, shuffle, and repeat, and says what it is
+playing, through the AppleScript Spotify answers (`src/hands/spotify.py`); macOS asks once whether hands may control
+Spotify. Only playing starts Spotify. To play something you name, hands searches Spotify's catalogue, which needs a
+Spotify developer app's credentials ([developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)) in its
+environment as `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`; without them a search is refused, saying so.
+
 With a collector set, each wide event `hands run` writes to its audit log is also sent there as a span, straight to that address and past any proxy, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
 collector did not take them, why.

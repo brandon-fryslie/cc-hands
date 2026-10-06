@@ -59,6 +59,7 @@ from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 from hands.threads import off_loop
+from hands import spotify
 
 Handler = Callable[[FunctionCallParams], Awaitable[None]]
 
@@ -203,7 +204,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, own: "OwnModel", acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, own: "OwnModel", catalogue: spotify.Catalogue, acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act.
@@ -234,6 +235,7 @@ def intermediary_tools(
         *voice_tools(Voices(home, player.lines, fetched)),
         *model_tools(own, player),
         *playback_tools(player),
+        *spotify_tools(spotify.Player(), catalogue),
     ]
     return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
 
@@ -1053,6 +1055,112 @@ def usage_tool(usage: Usage) -> Tool:
         }
 
     return tool(context_usage)
+
+
+def spotify_tools(player: spotify.Player, catalogue: spotify.Catalogue) -> list[Tool]:
+    """Spotify on this Mac: what it plays, played, paused, skipped, and set, and its catalogue searched for what to play.
+
+    [LAW:nothing-unseen] each result is what Spotify said or did, or why it would not, so the call's event holds it.
+    """
+
+    async def spotify_now_playing() -> Result:
+        """What Spotify is playing on this Mac: whether it is playing, paused, stopped, or not running, and the track."""
+        return await _refusable(_now(player))
+
+    async def spotify_play(link: str = "") -> Result:
+        """Play music in Spotify on this Mac, starting Spotify if it is not running.
+
+        To play something the user names, find it with spotify_search and pass the link of the one they meant.
+
+        Args:
+            link: The spotify: link of the track, album, artist, or playlist to play from its start, or an
+                open.spotify.com link the user gave. Leave it out to go on with what was playing.
+        """
+        uri = spotify.link(link) if link else None
+        if link and uri is None:
+            return {"error": f"{link!r} is no Spotify link; find what to play with spotify_search"}
+        return await _refusable(_done(player.play(uri), {"playing": uri or "what was playing"}))
+
+    async def spotify_pause() -> Result:
+        """Pause Spotify on this Mac."""
+        return await _refusable(_done(player.pause(), {"paused": True}))
+
+    async def spotify_skip(to: Literal["next", "previous"]) -> Result:
+        """Skip Spotify on this Mac to the next track, or back to the previous one.
+
+        Args:
+            to: Which track to skip to.
+        """
+        return await _refusable(_done(player.skip(to), {"skipped_to": to}))
+
+    async def spotify_volume(level: int) -> Result:
+        """Set Spotify's own volume on this Mac, which is not the Mac's.
+
+        Args:
+            level: From 0, silent, to 100, its loudest.
+        """
+        if not 0 <= level <= 100:
+            return {"error": f"Spotify's volume runs from 0 to 100, not {level}"}
+        return await _refusable(_done(player.volume(level), {"volume": level}))
+
+    async def spotify_shuffle(on: bool) -> Result:
+        """Turn Spotify's shuffle on or off on this Mac.
+
+        Args:
+            on: True to shuffle, false to play in order.
+        """
+        return await _refusable(_done(player.shuffle(on), {"shuffle": on}))
+
+    async def spotify_repeat(on: bool) -> Result:
+        """Turn Spotify's repeat on or off on this Mac.
+
+        Args:
+            on: True to repeat, false not to.
+        """
+        return await _refusable(_done(player.repeat(on), {"repeat": on}))
+
+    async def spotify_search(query: str, kind: spotify.Kind = "track") -> Result:
+        """Search Spotify's catalogue for something to play: up to five, best match first, each with the link
+        spotify_play takes.
+
+        Args:
+            query: What the user named, in their words: a song, an album, an artist, or a playlist, and who made it
+                where they said.
+            kind: What they asked for.
+        """
+        return await _refusable(_searched(catalogue, query, kind))
+
+    return [
+        tool(spotify_now_playing),
+        tool(spotify_play, completes=True),
+        tool(spotify_pause, completes=True),
+        tool(spotify_skip, completes=True),
+        tool(spotify_volume, completes=True),
+        tool(spotify_shuffle, completes=True),
+        tool(spotify_repeat, completes=True),
+        tool(spotify_search),
+    ]
+
+
+async def _refusable(act: Awaitable[Result]) -> Result:
+    """What `act` handed back, or, where Spotify refused it, why: a refusal the model is asked to answer."""
+    try:
+        return await act
+    except spotify.Refused as refused:
+        return {"error": str(refused)}
+
+
+async def _now(player: spotify.Player) -> Result:
+    return spotify.said(await player.now_playing())
+
+
+async def _done(act: Awaitable[None], result: Result) -> Result:
+    await act
+    return result
+
+
+async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind) -> Result:
+    return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
