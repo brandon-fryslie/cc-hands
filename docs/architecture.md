@@ -1683,20 +1683,29 @@ local transport's two halves, joined by the echo canceller of the streams open
 (`hands.voice.echo`, WebRTC's AEC3 through LiveKit's binding). Each reopen opens the new
 pair of streams on a new canceller, which learns the new room from nothing. The old
 canceller is closed on the thread that closed its microphone stream, so a stream still
-calling back never reaches a canceller that has been let go of. The `Speaker` gives the canceller everything it writes,
-on its writer thread as each chunk goes to the device, so a chunk whose write an
-interruption cancels still counts. The `KeyedMicrophone` hears every buffer through the
+calling back never reaches a canceller that has been let go of. The `Speaker`'s stream is a
+`Playout` fed from PortAudio's callback: the device takes 20 ms whenever it needs it, what
+was written and then silence, and the canceller is given exactly that, on the device's
+clock. Told what was written as it was written instead, the reference moved against its
+echo after every silence by where a reading's first write fell between the two devices'
+callbacks, and AEC3 let each reading's opening through. A write fills at most 140 ms of
+waiting sound as the device makes room, as a blocking stream's write fills its buffer. The `KeyedMicrophone` hears every buffer through the
 canceller in PortAudio's capture callback, key up or down and at either place, so the
 canceller keeps learning the room. The callback then lets the buffer through only while
 the key is down. If the canceller raises there, the pipeline is ended and the run with it,
 instead of PyAudio aborting the stream and leaving hands deaf. AEC3
 wants one frame of reference for every frame of microphone, as a device that plays and
-records at once gives them, but the pipeline writes only while it speaks, and up to an
-output buffer ahead. So the canceller holds what was written, and each 10 ms of
-microphone takes the next 10 ms of it, or silence when there is none. Each microphone
-stream let go of is one `microphone.let_go` wide event, carrying how many frames its
-canceller heard, how many of those had nothing playing, and how much of the speaker's
-sound it dropped unheard. Every frame the microphone pushes carries the same sound as it
+records at once gives them. The two devices keep clocks of their own, so the canceller
+holds what the speaker's device took, and each 10 ms of microphone takes the next 10 ms
+of it, or silence when there is none. How much is held is how far the reference lags its
+echo: the speaker starts before the microphone at a reopen, and its clock may run fast,
+and reference held through a whole second that no microphone frame needed, but for one
+spare buffer, is slipped. Each microphone stream let go of is one `microphone.let_go`
+wide event, carrying how many frames its canceller heard, how many of those had nothing
+playing, how many it dropped unheard because the microphone had stopped taking them, and
+how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
+many frames its device took, how many of those had nothing written, and how many
+callbacks PortAudio said came too late. Every frame the microphone pushes carries the same sound as it
 was captured, before the canceller (`KeyedAudio.captured`), and Whisper keeps it for the
 frames a hold is made of, so each hold's `HoldHeard` line says its mean power in dBFS
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
