@@ -33,8 +33,9 @@ _SPARE_FRAMES = 2
 
 
 # What a canceller counts over its life: microphone frames heard through it; of those, the ones heard with nothing
-# playing, matched with silence; frames of the speaker's sound dropped unheard, because the microphone had stopped
-# taking them; and frames slipped, held through a whole window that never needed them.
+# playing, matched with silence; frames the speaker's device took, silence included, dropped unheard because the
+# microphone had stopped taking them (how much of the device's sound was silence is the speaker's own `unwritten`);
+# and frames slipped, held through a whole window that never needed them.
 COUNTS = ("heard", "unplayed", "dropped", "slipped")
 
 
