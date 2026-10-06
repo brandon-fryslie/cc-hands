@@ -1426,10 +1426,12 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
 - **State** comes from the reducer applied to hook events since the daemon attached.
 - **What Claude Code says the session is doing** is the file Claude Code itself keeps
   for every interactive session, `sessions/<pid>.json` in the config directory that
-  holds the session's transcript (2.1.280 to 2.1.282): `status` is `idle`, `busy`,
+  holds the session's transcript (2.1.280 to 2.1.289): `status` is `idle`, `busy`,
   `waiting` (with `waitingFor`, `permission prompt` or `input needed`), or `shell`, and
   `statusUpdatedAt` is when it was set, in epoch milliseconds. A `!` command reports
-  `busy`. `hands.sessions.statusfile` reads every listed session's file ten times a
+  `busy`. `shell` is written in place of `idle` while a background bash task the session
+  started still runs (2.1.289): the session is at its prompt, no turn runs, and hands
+  holds it as `Idle` with that status, so everything said below of `idle` holds of it. `hands.sessions.statusfile` reads every listed session's file ten times a
   second and applies a `StatusReported` each time its stamp differs from the one the registry holds, so a status set
   again to what it was, or an idle, busy, idle between two reads, is still heard. A
   status or reason hands does not know arrives as an unknown variant and is logged,

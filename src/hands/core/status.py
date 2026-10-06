@@ -45,7 +45,8 @@ class Waiting:
 class Shell:
     """At its prompt, with a shell command it ran in the background still running: Claude Code writes shell where it
     would write idle while any of its background bash tasks has not ended (2.1.289). No turn runs; the task's end is
-    news to the session, which opens one."""
+    news to the session, which opens one. Claude Code's own session list labels it working, for the task; hands says
+    what the session does, which is wait at its prompt, where a typed prompt runs at once."""
 
 
 @dataclass(frozen=True)

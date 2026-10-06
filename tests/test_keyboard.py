@@ -68,10 +68,12 @@ def test_an_interrupt_presses_escape_even_at_a_dialog(state: SessionState) -> No
     assert decide(registry(state), Interrupt(ONE.id)) == Type(ONE.id, SOCKET, 1, Key("escape"))
 
 
+@pytest.mark.parametrize("state", [IDLE, SHELLING])
 @pytest.mark.parametrize("turn", [Told(), Opened(PromptId("p1"))])
-def test_a_session_at_its_prompt_has_nothing_to_interrupt_whatever_turn_was_heard(turn: Turn) -> None:
-    """Claude Code's status alone says whether anything runs: it is set busy before a prompt's hooks run."""
-    assert decide(registry(IDLE, turn=turn), Interrupt(ONE.id)) == NothingRunning(ONE.id)
+def test_a_session_at_its_prompt_has_nothing_to_interrupt_whatever_turn_was_heard(state: SessionState, turn: Turn) -> None:
+    """Claude Code's status alone says whether anything runs: it is set busy before a prompt's hooks run. A shell
+    command running in the background is no turn, and Escape at the prompt does not stop it."""
+    assert decide(registry(state, turn=turn), Interrupt(ONE.id)) == NothingRunning(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])

@@ -157,6 +157,9 @@ def test_no_hook_or_record_moves_a_session_between_running_and_not(before: Sessi
         # At its prompt, with a background shell command running: no turn runs (2.1.289).
         (BUSY, said(Shell(), 3000, at=10.0), Idle(Shell(), Stamp(3000), after=None)),
         (IDLE, said(Shell(), 3000), replace(IDLE, status=Shell(), stamp=Stamp(3000))),
+        # Its background shell over: the same idle period, and the notification turn after it runs from that idle.
+        (replace(IDLE, status=Shell()), said(status.Idle(), 3000), replace(IDLE, stamp=Stamp(3000))),
+        (replace(IDLE, status=Shell()), said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=IDLE.stamp)),
         (BUSY, said(Waiting("permission prompt"), 3000), Running(Waiting("permission prompt"), Stamp(3000), idled=BUSY.idled)),
         (AT_DIALOG, said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=AT_DIALOG.idled)),
         (BUSY, said(Unknown("dreaming"), 3000), Running(Unknown("dreaming"), Stamp(3000), idled=BUSY.idled)),
