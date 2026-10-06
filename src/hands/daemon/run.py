@@ -195,7 +195,7 @@ async def mind(
                 (Noting(front, modality, record),),
                 (),
                 Pushed(),
-                lambda _kind, instruction, max_tokens, timeout: summariser(backend, instruction, max_tokens, timeout),
+                lambda kind, instruction, max_tokens, timeout: summariser(backend, record, kind, instruction, max_tokens, timeout),
             )
         case ClaudeCodeBackend(model=model, config_dir=config_dir, account=account):
             spans = CallSpans()

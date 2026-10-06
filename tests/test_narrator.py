@@ -29,7 +29,8 @@ from hands.voice.narrator import Recount, Recounts, narrate, recount
 from hands.voice.speech import REPLY_SHOWN, Names, Narrated, Pushed, Tailed, Telling, Told, Unprompted, frames, sent, told
 from hands.voice.utterance import Utterance, Utterances, Uttered, Uttering
 from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
-from hands.voice.summary import SummaryFailed, summariser
+from hands.voice.summary import SUMMARY_FAILURES, SummaryFailed, summariser
+from hands.brain.asides import AsideKind
 
 from conftest import ServeChat
 from hands.core.status import Stamp
@@ -423,7 +424,7 @@ async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_tu
     chat_server: ServeChat,
 ) -> None:
     server = await chat_server("  Fixed the test.  ")
-    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), list[Entry]().append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)
     assert await summarise("The user asked:\nfix it") == "Fixed the test."
     [request] = server.asked
     assert request["model"] == "m" and request["max_tokens"] == 50
@@ -435,7 +436,7 @@ async def test_the_anthropic_summariser_sends_the_instruction_and_the_turn_with_
     chat_server: ServeChat,
 ) -> None:
     server = await chat_server("  Fixed the test.  ")
-    summarise = summariser(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    summarise = summariser(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), list[Entry]().append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)
     assert await summarise("The user asked:\nfix it") == "Fixed the test."
     [request] = server.asked
     assert request["model"] == "m" and request["max_tokens"] == 50 and request["system"] == "Summarise."
@@ -443,9 +444,42 @@ async def test_the_anthropic_summariser_sends_the_instruction_and_the_turn_with_
     assert server.keys == ["k"]
 
 
+@pytest.mark.parametrize(
+    ("shape", "usage"),
+    [
+        ("openai", {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11, "cache_read_input_tokens": 4}),
+        ("anthropic", {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4, "output_tokens": 2}),
+    ],
+)
+async def test_each_summary_is_one_request_event_saying_what_it_was_for_and_the_usage_its_api_reported(
+    chat_server: ServeChat, shape: str, usage: dict[str, int]
+) -> None:
+    server = await chat_server("Fixed the test.")
+    recorded: list[Entry] = []
+    backend = OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m") if shape == "openai" else AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m")
+    await summariser(backend, recorded.append, AsideKind.NAME, "Summarise.", max_tokens=50, timeout=5.0)("The user asked:\nfix it")
+    [event] = recorded
+    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("model.request", "ok")
+    assert event.facts == {"kind": AsideKind.NAME, **usage}
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", api_key="k", model="m"), AnthropicBackend(base_url="http://127.0.0.1:9", api_key="k", model="m")],
+)
+async def test_a_summary_request_that_raises_is_a_failed_request_event_with_what_it_raised(backend: AnthropicBackend | OpenAICompatibleBackend) -> None:
+    recorded: list[Entry] = []
+    with pytest.raises(SUMMARY_FAILURES) as raised:
+        await summariser(backend, recorded.append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)("The user asked:\nfix it")
+    [event] = recorded
+    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("model.request", "failed")
+    assert event.error == f"{type(raised.value).__name__}: {raised.value}"
+    assert event.facts == {"kind": AsideKind.SUMMARY}
+
+
 async def test_a_summary_with_nothing_in_it_is_a_failure(chat_server: ServeChat) -> None:
     server = await chat_server(None)
-    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), "Summarise.", max_tokens=50, timeout=5.0)
+    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), list[Entry]().append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)
     with pytest.raises(SummaryFailed):
         await summarise("The user asked:\nfix it")
 

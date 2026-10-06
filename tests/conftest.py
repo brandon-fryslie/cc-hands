@@ -147,6 +147,7 @@ async def chat_server(api_server: ServeApi) -> ServeChat:
                 {
                     "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
                     "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+                    "usage": {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11, "prompt_tokens_details": {"cached_tokens": 4}},
                 }
             )
 
@@ -157,7 +158,7 @@ async def chat_server(api_server: ServeApi) -> ServeChat:
                 {
                     "id": "m1", "type": "message", "role": "assistant", "model": "m", "stop_reason": "end_turn", "stop_sequence": None,
                     "content": [] if content is None else [{"type": "text", "text": content}],
-                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "usage": {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4, "output_tokens": 2},
                 }
             )
 

@@ -2280,7 +2280,8 @@ request asks for prompt caching, so a request within five minutes of the last re
 instruction and tools from the cache. Each request the intermediary makes, on either backend,
 is one `model.request` event carrying the usage the API reported, cache reads and writes
 included; Anthropic's is read off the stream itself because Pipecat 1.10.0 double counts
-its input. Measured on 2026-09-12, full
+its input. The summariser's requests, made on a client of their own, are `model.request`
+events too, each with the `kind` of side question it answers. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.
 
