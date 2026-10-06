@@ -25,6 +25,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams, FunctionCallRunnerItem, LLMService
 
 from hands.voice.tool import Result, Tool, silent, tool, whole
+from hands.brain.usage import Tally
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
@@ -1029,6 +1030,33 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
 
     # Completes through a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
     return [tool(model_in_use), tool(use_model, then="silence", completes=True)]
+
+
+class Metered(Protocol):
+    """What hands' conversation with its own model has cost, as the wire says it (hands.brain.usage.Usage)."""
+
+    def reading(self) -> Tally | None: ...
+
+
+def usage_tool(usage: Metered) -> Tool:
+    """[LAW:nothing-unseen] the result is the reading, so the call's event holds it."""
+
+    async def context_usage() -> Result:
+        """How many tokens your conversation holds now, and how many it has spent, as the API counted them on your replies.
+
+        Call this when the user asks how much context or how many tokens you have used, or when you need to know how full
+        your context is. These are the real figures; a token total in your system reminders is not your usage.
+        """
+        reading = usage.reading()
+        if reading is None:
+            return {"error": "No reply of yours has been counted yet."}
+        return {
+            "model": reading.model,
+            "in_context_tokens": reading.in_context,
+            "spent": {"input_tokens": reading.spent.input_tokens, "output_tokens": reading.spent.output_tokens, "replies": reading.spent.replies},
+        }
+
+    return tool(context_usage)
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:

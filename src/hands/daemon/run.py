@@ -95,12 +95,13 @@ from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Edge, Trigger, Triggers
 from hands.voice.tool import Tool
-from hands.voice.tools import audited, intermediary_tools
+from hands.voice.tools import audited, intermediary_tools, usage_tool
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
+from hands.brain.usage import Usage
 from hands.core.session import SessionId
 
 # How late a permission deadline can be heard.
@@ -194,11 +195,15 @@ async def mind(
             )
         case ClaudeCodeBackend(model=model, config_dir=config_dir, account=account):
             spans = CallSpans()
+            talk = conversation(config_dir, SessionId(str(uuid4())))
+            # Only the brain is behind hands' proxy, so only it has its usage read off the wire, and a tool to ask it with.
+            usage = Usage(talk.session)
+            tools = [*tools, audited(usage_tool(usage), record)]
             server = await serve_mcp(tools, record, spans)
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
-                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), conversation(config_dir, SessionId(str(uuid4())))), record)
+                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall), server.config(), talk), record)
                 except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error
@@ -208,7 +213,7 @@ async def mind(
                     asides = Asides(station, record)
                     stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
                     keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-                    with wire.joined(Kept(stage, keeper, asides, brain)):
+                    with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                         watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                         # A summary is as long as its Claude Code makes it: only its time is the summary's own.
                         # The brain's stage notes each turn of the user's itself, as it types it.

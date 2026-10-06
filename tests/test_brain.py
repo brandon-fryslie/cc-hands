@@ -1379,6 +1379,8 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     async with mind(claude, [tool(echo)], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed() and minded.noting == ()
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
+        # The brain alone is behind the proxy, so it alone is given its usage read off the wire.
+        assert list(minded.llm._tools) == ["mcp__hands__echo", "mcp__hands__context_usage"]  # pyright: ignore[reportPrivateUsage]
         [launched] = events(recorded, "brain.launch")
         assert (launched.facts["cwd"], launched.facts["account"]) == (tmp_path / "brain" / "cwd", "brain@example.com")
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
