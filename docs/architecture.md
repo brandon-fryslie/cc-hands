@@ -2072,7 +2072,10 @@ thing that failed `[LAW:no-silent-failure]`:
    the kernel (the `kern.proc.pid` sysctl that `ps` itself reads, about 10 µs), and it
    is the rule the session sweep uses, from `hands.sessions.processes`. A pid that a
    later process took, after a crash or a reboot, reads as down rather than as not
-   responding.
+   responding. `hands tmux-status` draws the same title for a tmux status line, styled by the
+   light (`indicator.segment`): green up, yellow not responding or degraded, red down, refused,
+   or unreadable, grey off. tmux runs it every `status-interval`, so the line is never
+   staler than that, and it exits 0 whatever the verdict, since tmux shows what is printed.
 3. **Log.** Every effect and every failure is one line in the segmented log
    `~/.hands/audit/`, written by the daemon and by each `hands` command, under one lock
    (`hands.sessions.audit`). Each

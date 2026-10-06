@@ -1,4 +1,4 @@
-"""`hands`: run the daemon, ask whether it is up, show it in the menu bar, follow what it did."""
+"""`hands`: run the daemon, ask whether it is up, show it in the menu bar and a tmux status line, follow what it did."""
 
 import argparse
 import asyncio
@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
-from hands.daemon import readiness
+from hands.daemon import indicator, readiness
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
@@ -151,6 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
+    commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
     logging_in = commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
@@ -272,6 +273,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
     match arguments.command:
         case "status":
             return report(home)
+        case "tmux-status":
+            return show_segment(home)
         case "check":
             from hands.voice import talkkey
 
@@ -597,6 +600,15 @@ def report(home: Home) -> int:
             out, code = sys.stderr, 2
     print(heartbeat.describe(verdict, now), file=out)
     return code
+
+
+def show_segment(home: Home) -> int:
+    verdict = heartbeat.look(home.status, datetime.now(UTC))
+    # [LAW:nothing-unseen] what the segment was drawn from.
+    wide.annotate(verdict=verdict)
+    print(indicator.segment(verdict))
+    # A status line shows the segment whatever the exit, so the segment carries the verdict and the exit nothing.
+    return 0
 
 
 def check(home: Home, granted: bool) -> int:
