@@ -66,6 +66,12 @@ def test_a_compaction_is_spent_but_is_not_the_conversation_and_the_turn_after_it
     assert reading.spent == Spent(90001 + 90011 + 2500, 10 + 2000 + 20, 3)
 
 
+def test_a_count_a_delta_gives_as_null_keeps_the_one_before() -> None:
+    nulled = Heard("a", MessageDelta("end_turn", {"output_tokens": 40, "cache_read_input_tokens": None}))
+    usage = heard(Usage(BRAIN), sent("a"), started("a", 2, cached=90000), nulled)
+    assert cast(Tally, usage.reading()).in_context == 2 + 90000 + 40
+
+
 def test_a_late_frame_of_an_earlier_main_turn_does_not_stand_for_the_conversation() -> None:
     usage = heard(Usage(BRAIN), sent("a"), started("a", 100), sent("b"), started("b", 200), delta("a", 7))
     assert cast(Tally, usage.reading()).in_context == 200 + 1

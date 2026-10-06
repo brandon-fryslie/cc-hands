@@ -556,6 +556,12 @@ def assemble(events: Sequence[WireEvent]) -> Streamed | Garbled:
         return Garbled(str(broken))
 
 
+def usage_after(usage: Mapping[str, object], delta: Mapping[str, object]) -> Mapping[str, object]:
+    """A reply's usage once a message_delta has said its own: each count the delta gives is the reply's total so far and
+    replaces the one before, and a count it gives as null is one it did not give."""
+    return {**usage, **{name: count for name, count in delta.items() if count is not None}}
+
+
 def _fold(events: Sequence[WireEvent]) -> Message:
     message: Message | None = None
     # [LAW:types-are-the-program] a block is _Open until its stop and a Block after it, so a delta after the stop and a
@@ -590,7 +596,7 @@ def _fold(events: Sequence[WireEvent]) -> Message:
             case MessageDelta(stop_reason=stop_reason, usage=usage):
                 if message is None:
                     raise _Broken("a message_delta before message_start")
-                message = replace(message, stop_reason=stop_reason, usage={**message.usage, **usage})
+                message = replace(message, stop_reason=stop_reason, usage=usage_after(message.usage, usage))
             case MessageStopped():
                 stopped = True
             case Ping():
