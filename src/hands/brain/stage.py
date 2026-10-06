@@ -45,7 +45,7 @@ from hands.core.beside import beside
 from hands.core.place import Modality
 from hands.core.permissions import heard
 from hands.core.front import InFront
-from hands.core.session import SessionId
+from hands.core.session import Permission, SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
     Answering,
@@ -72,7 +72,7 @@ from hands.sessions.wide import annotate, child, continuing, count, fail, here, 
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
-from hands.voice.speech import Aloud, Narrated, brain_asks
+from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tool import Result, Tool, silent, whole
 
@@ -197,6 +197,9 @@ class _Turn:
     # The permission whose question the user has heard to its end: what they say next answers it while it is open. Only a
     # question heard can be answered, so a yes said over the brain's words, or over a question cut off, allows nothing.
     heard: Asked | None = None
+    # The permissions the user was asked and refused with no word of the turn's said since, which hands says at its end:
+    # a refusal met with silence would pass for the work done.
+    unacknowledged: list[Permission] = field(default_factory=list[Permission])
     # Told to stop by hands, which Claude Code 2.1.285 ends with an error_during_execution result: asked for, not a failure.
     stopped: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
@@ -426,6 +429,12 @@ class BrainStage(FrameProcessor):
                 turn.acknowledging.cancel()
                 said.put_nowait(None)
             await asyncio.wait({turn.speaking})
+            # [LAW:single-enforcer] a refusal the user heard asked is never left to silence, whatever the model did after it.
+            refusals = tuple(brain_refused(permission) for permission in turn.unacknowledged)
+            annotate(refusals=refusals)
+            for refusal in refusals:
+                # Kept out of the context: the brain never said it.
+                await self.push_frame(TTSSpeakFrame(refusal, append_to_context=False))
             for readback in turn.readbacks:
                 # Said by hands, since the model that would have said it was not asked to go on.
                 await self.push_frame(TTSSpeakFrame(readback))
@@ -517,6 +526,9 @@ class BrainStage(FrameProcessor):
             match words:
                 case str():
                     turn.spoken.append(words)
+                    # The brain's own words after a refusal are its acknowledgement of it.
+                    if words.strip():
+                        turn.unacknowledged.clear()
                     await self.push_frame(LLMTextFrame(words))
                 case Asked(permission=permission) as asked if asked.open:
                     await self._aside(turn, TTSSpeakFrame(brain_asks(permission)))
@@ -525,6 +537,8 @@ class BrainStage(FrameProcessor):
                     await self.push_frame(Mark(partial(turn.hear, asked)))
                     # One question at a time, so what the user answers is the question they heard last.
                     await asyncio.wait({asked.decision})
+                    if isinstance(asked.decision.result(), Deny):
+                        turn.unacknowledged.append(permission)
                     await self._reply(turn, True)
                 case Asked():
                     # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.
@@ -565,6 +579,8 @@ class BrainStage(FrameProcessor):
         # None of them was heard to its end, or the user's words would have answered it: now none can be.
         for asked in turn.asked:
             asked.settle(Deny(SPOKEN_OVER))
+        # The user is speaking: what they say is the next turn, which the brain answers knowing what was refused.
+        turn.unacknowledged.clear()
         # A tool whose effect must land runs to its end; stopped by the harness, it would land and be written in
         # history as refused. Its turn's next request is held instead, so the model is not asked to go on either way.
         turn.running = tuple(turn.calls.values())

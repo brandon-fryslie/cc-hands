@@ -1250,6 +1250,42 @@ async def test_anything_but_a_plain_yes_refuses_the_permission_and_hands_the_bra
     assert rig.brain.asked == [heard("make the notes say hello"), heard("thanks")]
 
 
+async def refuse_the_edit(rig: Rig) -> str:
+    """A turn whose permission to edit the notes the user hears asked and refuses; the request that carries the refusal."""
+    await rig.say({"role": "user", "content": "make the notes say hello"})
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll write it.")
+    asked = rig.brain.permit("Edit", {"file_path": "/Users/bmf/notes.txt"})
+    await rig.until(lambda: "May I use Edit on notes.txt? Say yes to allow it." in rig.out.said())
+    rig.context.add_message({"role": "user", "content": "no"})
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: not asked.open)
+    after, _ = rig.request()
+    return after
+
+
+async def test_a_refusal_the_brain_says_nothing_after_is_said_by_hands_so_silence_never_passes_for_it_done(rig: Rig) -> None:
+    after = await refuse_the_edit(rig)
+    rig.stream(after, "  ")
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    assert rig.out.said()[-1] == "I did not use Edit on notes.txt, so that is not done."
+    assert acknowledgements(rig) == ["I did not use Edit on notes.txt, so that is not done."]
+    [turn] = turns(rig.recorded)
+    assert turn.facts["refusals"] == ("I did not use Edit on notes.txt, so that is not done.",)
+
+
+async def test_a_refusal_the_brain_speaks_to_is_not_said_again_by_hands(rig: Rig) -> None:
+    after = await refuse_the_edit(rig)
+    rig.stream(after, "Okay, I left the notes alone.")
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    assert rig.out.said()[-1] == "Okay, I left the notes alone."
+    assert acknowledgements(rig) == []
+    [turn] = turns(rig.recorded)
+    assert turn.facts["refusals"] == ()
+
+
 async def test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "make the notes say hello"})
     exchange, _ = rig.request()

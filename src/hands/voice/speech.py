@@ -321,19 +321,29 @@ def _asks(on: Blocker) -> str:
 
 
 def brain_asks(on: Permission) -> str:
-    """What hands says for a permission the brain's own setup asks about: the command it would run or the address it would
-    fetch, or the tool and the file it would touch by name and never by path, and that a yes allows it."""
+    """What hands says for a permission the brain's own setup asks about, and that a yes allows it."""
+    return f"May I use {_use(on)}? Say yes to allow it."
+
+
+def brain_refused(on: Permission) -> str:
+    """What hands says for a permission the user was asked and refused, when the brain said nothing after it: without it,
+    silence would pass for the work done."""
+    return f"I did not use {_use(on)}, so that is not done."
+
+
+def _use(on: Permission) -> str:
+    """The use a permission is for: the command it would run or the address it would fetch, or the tool and the file it
+    would touch by name and never by path."""
     match on.input:
         # Said whole, however long: a yes allows exactly this, so the user hears all of it.
         case {"command": str() as command}:
-            what = f"{on.tool} to run {command}"
+            return f"{on.tool} to run {command}"
         case {"url": str() as url}:
-            what = f"{on.tool} on {url}"
+            return f"{on.tool} on {url}"
         case {"file_path": str() as path} | {"notebook_path": str() as path}:
-            what = f"{on.tool} on {PurePath(path).name}"
+            return f"{on.tool} on {PurePath(path).name}"
         case _:
-            what = on.tool
-    return f"May I use {what}? Say yes to allow it."
+            return on.tool
 
 
 def _question(question: AskedQuestion) -> str:
