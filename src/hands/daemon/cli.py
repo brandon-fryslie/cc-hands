@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
-from hands.daemon import readiness
+from hands.daemon import readiness, startsession
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
@@ -154,6 +154,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
+    starting = commands.add_parser("start-session", help="start `claude` in a folder, in a new window of the tmux session named for the folder, as from a terminal outside any session, and wait until it joined hands; prints the session's id and pane, and exits 0 only when it joined under fritter")
+    starting.add_argument("folder", type=Path, help="the folder the session works in")
+    starting.add_argument("--model", help="the model the session starts on, as `claude --model` takes it; its own default without")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     recalling = commands.add_parser("recall", help="print what was said, sent to a session, and answered for one, oldest first, from the audit log: the newest moments that hold every word given, or the newest of all with none")
@@ -276,6 +279,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return tail_log(home, arguments.lines)
         case "recall":
             return recall_moments(home, record, arguments.words, arguments.most)
+        case "start-session":
+            return start_session(home, record, arguments.folder, arguments.model)
         case "phone":
             return show_phone(home)
         case "login":
@@ -742,6 +747,17 @@ def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most:
         for moment in found.moments:
             # One line a moment, so a reader can grep it again; the time is this Mac's, as the user says it.
             print(f"{moment.at.astimezone():%a %d %b %H:%M} {moment.heading}: {' '.join(moment.text.split())}".translate(VISIBLE))
+    return 0
+
+
+def start_session(home: Home, record: audit.Record, folder: Path, model: str | None) -> int:
+    """Start a session for the user and say which joined, or why none did."""
+    try:
+        started = startsession.start(home, record, folder, model, os.environ)
+    except startsession.NotStarted as why:
+        print(f"hands start-session: {why}", file=sys.stderr)
+        return 1
+    print(f"Session {started.session} joined hands, in tmux pane {started.pane} of tmux session {started.tmux_session}.")
     return 0
 
 

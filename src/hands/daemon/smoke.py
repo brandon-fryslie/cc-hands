@@ -37,13 +37,12 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
 from hands.core.session import Membership, SessionId
+from hands.daemon.startsession import as_from_a_terminal, joined
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
-from hands.sessions.membership import parse_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
-from hands.sessions.untap import untapped
 from hands.sessions.wide import annotate
 from hands.voice import transcription
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
@@ -63,16 +62,6 @@ SAID = (
     f"Tell the {FOLDER} session to reply with only the name of the one file in its folder.",
     "Send it.",
     f"What did the {FOLDER} session say?",
-)
-# What a session gives each process it runs, naming itself as their parent: Claude Code's (2.1.288), and fritter's
-# address. A `claude` started under Claude Code's is a child of that session, not one of its own: it writes its turns
-# into the parent's transcript, and its own is never made, so hands has nothing to read; and one started outside hands'
-# shim under fritter's would join hands as that session's. `hands smoke` run from a session's shell starts its session
-# as from a terminal outside one.
-SESSION_GIVEN = (
-    "FRITTER_SOCKET", "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-    "CLAUDE_CODE_TMUX_TRUECOLOR",
 )
 # Words a recogniser and a synthesized voice agree on, each with one spelling (a recogniser wrote "harbor" as "Harbour"),
 # none of them a word anyone says to hands unprompted.
@@ -164,27 +153,6 @@ def errors(lines: Sequence[Line]) -> list[str]:
         for line in lines
         if line.get("level") == "error"
     ]
-
-
-def joined(home: Home, folder: Path, before: frozenset[str]) -> Membership | None:
-    """The membership a session started in `folder` since `before` was listed wrote at its first hook, if one has."""
-    for path in sorted(home.memberships.glob("*.json")):
-        if path.stem in before:
-            continue
-        try:
-            membership = parse_membership(SessionId(path.stem), path.read_bytes())
-        except (OSError, Rejected):
-            # Being written, or already removed: read again at the next poll.
-            continue
-        if membership.cwd.resolve() == folder:
-            return membership
-    return None
-
-
-def as_from_a_terminal(environment: Mapping[str, str], home: Home) -> dict[str, str]:
-    """`environment` as a terminal outside any session has it, the home's sessions report to named: no tap and nothing
-    else of a session the test may have been run inside."""
-    return {**{name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN}, "HANDS_HOME": str(home.root)}
 
 
 @dataclass

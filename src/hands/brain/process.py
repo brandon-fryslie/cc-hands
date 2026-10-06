@@ -259,6 +259,11 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
     ]
 
 
+# [LAW:one-source-of-truth] what environment() gives a slim Claude Code beyond hands' own environment, by name: what a
+# session started from its shell is started without (`hands.daemon.startsession`).
+GIVEN = (*SLIM, "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL")
+
+
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
     """A slim Claude Code's environment: hands' own, less any credential that is not the login in `config_dir`, reaching the API at `base_url`."""
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped

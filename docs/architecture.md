@@ -1653,6 +1653,16 @@ prompt: `/` a command, `@` a file mention, `!` shell mode. Behind a space each i
 plain text, so `Text` is always typed with a leading space, whatever it starts with,
 and its newlines stay inside the prompt because fritter pastes it.
 
+**Starting a session.** No tool starts one: the brain, which has a shell, runs `hands start-session FOLDER
+[--model MODEL]` as its `hands:start` skill says (`hands.daemon.startsession`). It runs `claude` in a new window of the
+tmux session named for the folder, made when there is none, as from a terminal outside any session: what Claude Code,
+fritter, or the brain's own setup put in the calling shell's environment is left out, so the session is the user's. A
+tmux server already running gives the window its own environment, the user's, so the home the session reports to is
+given each window by name. The command returns once the session's membership is written, printing its id and pane, and
+exits 1 saying why when there is no tmux, `claude` ended first, it has not joined in 30 seconds (usually a dialog, whose
+pane it prints), or it joined outside fritter. A session started has been told nothing: what the user wants of it is
+staged and sent as any prompt is. Each start is a `session.start` event.
+
 ## The audio side
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on

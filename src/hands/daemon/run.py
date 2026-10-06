@@ -181,7 +181,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 @asynccontextmanager
 async def mind(
     config: VoiceConfig, tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
-    log: Path, recall: str, record: Record, environment: Mapping[str, str],
+    log: Path, hands: str, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
     through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions."""
@@ -206,7 +206,7 @@ async def mind(
             try:
                 station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
                 try:
-                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall, config.personality), server.config(), talk), record)
+                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, hands, config.personality), server.config(), talk), record)
                 except Unstartable as error:
                     # hands runs on no brain it could not start: its start is refused, saying why.
                     raise CannotStart(str(error)) from error
@@ -296,7 +296,7 @@ async def run(
         if config is not None:
             tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), lambda: quiet_cues.owe(WORKING))]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
+            async with mind(config, tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
