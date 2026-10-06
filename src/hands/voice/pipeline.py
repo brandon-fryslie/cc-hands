@@ -63,6 +63,7 @@ from hands.voice.turnstop import KeyTurnStop
 from hands.voice import conversation, voices
 from hands.voice.whisper import Whisper
 from hands.voice.backends import AnthropicBackend, LLMBackend, OpenAICompatibleBackend
+from hands.voice.token_usage import INPUT_USAGE, USAGE, reported
 
 @dataclass(frozen=True)
 class VoiceConfig:
@@ -190,12 +191,6 @@ class RequestEvents(EmptyReplyFails):
         return self._request
 
 
-# What a request read fresh, wrote to the prompt cache, and read from it, as message_start and message_delta report them;
-# and what the model wrote back, which only message_delta does: message_start's is a count before the reply is written.
-INPUT_USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-USAGE = (*INPUT_USAGE, "output_tokens")
-
-
 class AnthropicService(RequestEvents, AnthropicLLMService):
     """Claude through Pipecat's Anthropic service, whose request that timed out is said as the OpenAI-compatible one's is."""
 
@@ -220,16 +215,12 @@ async def _usage_read(stream: AsyncIterator[Any], usage: dict[str, Fact]) -> Asy
     async for event in stream:
         match event.type:
             case "message_start":
-                usage.update(_reported(event.message.usage, INPUT_USAGE))
+                usage.update(reported(event.message.usage, INPUT_USAGE))
             case "message_delta":
-                usage.update(_reported(event.usage, USAGE))
+                usage.update(reported(event.usage, USAGE))
             case _:
                 pass
         yield event
-
-
-def _reported(usage: Any, names: tuple[str, ...]) -> dict[str, Fact]:
-    return {name: value for name in names if (value := getattr(usage, name)) is not None}
 
 
 class FailFastOpenAILLMService(RequestEvents, OpenAILLMService):
