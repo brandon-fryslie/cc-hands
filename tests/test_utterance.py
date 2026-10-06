@@ -2,10 +2,12 @@
 transport by the frames sent with what says it."""
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
+import numpy as np
 import pytest
 from pipecat.frames.frames import Frame, InterruptionFrame, LLMMessagesAppendFrame, OutputAudioRawFrame, TTSAudioRawFrame, TTSSpeakFrame
 from pipecat.observers.base_observer import FramePushed
@@ -19,10 +21,10 @@ from hands.voice.speech import AsWritten, Known, Pushed, Tailed, sent
 from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering
 
 from conftest import running
-from hands.voice.microphone import DefaultDevices, KeyedAudioTransport
+from hands.voice.microphone import DefaultDevices, KeyedAudioTransport, Pull
 from hands.voice.ptt import PushToTalk
 from pipecat.transports.local.audio import LocalAudioTransportParams
-from test_microphone import FreshPortAudio, Room, SimpleStream, _phone  # pyright: ignore[reportPrivateUsage]
+from test_microphone import FreshPortAudio, Room, _phone  # pyright: ignore[reportPrivateUsage]
 
 API = SessionId("api")
 EXPIRED = Speak(Expired(API, Permission("Bash", {"command": "ls"})))
@@ -155,14 +157,41 @@ async def test_an_utterance_settled_twice_is_refused(rig: Rig) -> None:
     assert (await rig.event()).facts["fate"] == "dropped"
 
 
+class Playing:
+    """A speaker device driven as PortAudio drives a callback stream: it takes 20 ms of sound every millisecond, as fast
+    as it is given it, unless it is holding."""
+
+    def __init__(self) -> None:
+        self.pull: Pull | None = None
+        self.holding = False
+        self.sounded = 0  # samples taken that were not silence
+        self._stopped = threading.Event()
+
+    def start_stream(self) -> None:
+        threading.Thread(target=self._play, daemon=True).start()
+
+    def stop_stream(self) -> None:
+        self._stopped.set()
+
+    def close(self) -> None: ...
+
+    def _play(self) -> None:
+        assert self.pull is not None, "opened before it is started"
+        while not self._stopped.wait(0.001):
+            if not self.holding:
+                taken = self.pull(None, 320, {}, 0)[0]
+                self.sounded += int(np.count_nonzero(np.frombuffer(taken, np.int16)))
+
+
 class Speakers(FreshPortAudio):
-    """PortAudio whose speaker takes every write, as a device that plays does."""
+    """PortAudio whose speaker is a device that plays."""
 
     def __init__(self) -> None:
         super().__init__([])
-        self.speaker = SimpleStream()
+        self.speaker = Playing()
 
-    def open(self, **settings: object) -> SimpleStream:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def open(self, **settings: object) -> Playing:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.speaker.pull = cast(Pull, settings["stream_callback"])
         return self.speaker
 
 
@@ -187,7 +216,7 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
         await asyncio.gather(keeping, return_exceptions=True)
     [event] = recorded
     assert isinstance(event, WideEvent) and event.facts["fate"] == "played" and isinstance(event.facts["first_audio_ms"], float)
-    assert speakers.speaker.written
+    assert speakers.speaker.sounded  # the line reached the device
 
 
 async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_audio_cuts_it_and_its_close_still_arrives() -> None:
@@ -201,22 +230,22 @@ async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_
     try:
         async with running([speaker], observers=[Audible(speaker)]) as run:
             # The device takes its first chunk and holds it: the rest of the line waits in the output transport.
-            speakers.speaker.blocking = True
+            speakers.speaker.holding = True
             await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20)), Uttered((utterance,))])
             await asyncio.sleep(0.1)
             await run.worker.queue_frame(InterruptionFrame())
             await asyncio.sleep(0.1)
-            speakers.speaker.blocking = False
+            speakers.speaker.holding = False
             async with asyncio.timeout(5):
                 while not recorded:
                     await asyncio.sleep(0.01)
     finally:
-        speakers.speaker.blocking = False
+        speakers.speaker.holding = False
         keeping.cancel()
         await asyncio.gather(keeping, return_exceptions=True)
     [event] = recorded
     assert isinstance(event, WideEvent) and event.facts["fate"] == "cut"
-    assert len(speakers.speaker.written) < 20
+    assert speakers.speaker.sounded < 20 * 1600
 
 
 async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its_utterance_s() -> None:
@@ -230,18 +259,18 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
     utterance = utterances.heard(API, EXPIRED)
     try:
         async with running([speaker], observers=[Audible(speaker)]) as run:
-            speakers.speaker.blocking = True
+            speakers.speaker.holding = True
             await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20))])
             await asyncio.sleep(0.1)
             await run.worker.queue_frames([InterruptionFrame(), Resumed((utterance,))])
             await asyncio.sleep(0.1)
-            speakers.speaker.blocking = False
+            speakers.speaker.holding = False
             await run.worker.queue_frames([TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1), Uttered((utterance,))])
             async with asyncio.timeout(5):
                 while not recorded:
                     await asyncio.sleep(0.01)
     finally:
-        speakers.speaker.blocking = False
+        speakers.speaker.holding = False
         keeping.cancel()
         await asyncio.gather(keeping, return_exceptions=True)
     [event] = recorded

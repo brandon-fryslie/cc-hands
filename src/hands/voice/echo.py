@@ -20,9 +20,9 @@ _FRAMES_PER_SECOND = 100
 
 _SAMPLE_BYTES = 2  # 16-bit, as the transport opens both streams
 
-# The most reference held for the microphone to take, in 10 ms frames. The speaker writes about one output buffer
-# (138 ms on a MacBook's speakers) ahead of what it plays; anything older than this can never be matched to an echo,
-# and is only there because the microphone has stopped taking frames: a Mac with no input device.
+# The most reference held for the microphone to take, in 10 ms frames. The speaker's device and the microphone each
+# take 20 ms at a time, so a few frames are held between them; anything older than this can never be matched to an
+# echo, and is only there because the microphone has stopped taking frames: a Mac with no input device.
 _HELD_FRAMES = 100
 
 
@@ -45,28 +45,28 @@ class EchoCanceller:
     """WebRTC's AEC3, with its reference paced by the microphone's clock.
 
     AEC3 expects one frame of reference for every frame of microphone, as a device that plays and records at once
-    gives them: when nothing has been written, the speaker plays silence. The pipeline writes only while it speaks,
-    and up to an output buffer ahead, so what it writes is held, and each microphone frame takes the next frame of it,
-    or silence when there is none. Held audio left at an interruption is taken as the device plays it out.
+    gives them. The speaker's device gives its every frame, silence included, as it takes it
+    (`hands.voice.microphone.Playout`), on a clock of its own, so what it plays is held, and each microphone frame takes
+    the next frame of it, or silence when there is none.
     """
 
     def __init__(self) -> None:
         self._apm = rtc.AudioProcessingModule(echo_cancellation=True)
-        # The speaker's audio short of a whole frame, carried to its next chunk: a cue is any length. The speaker's
-        # writer thread alone touches it.
+        # The speaker's audio short of a whole frame, carried to its next buffer. The speaker's device callback alone
+        # touches it.
         self._unplayed = b""
-        # [LAW:no-shared-mutable-globals] written by the speaker's writer thread, taken by the microphone's capture
+        # [LAW:no-shared-mutable-globals] written by the speaker's device callback, taken by the microphone's capture
         # thread, under the one lock; a ring buffer, so the oldest goes first when nothing takes it.
         self._held: deque[rtc.AudioFrame] = deque(maxlen=_HELD_FRAMES)
         self._holding = threading.Lock()
-        # The reference's format, from the speaker's first write; silence is made in it until then.
+        # The reference's format, from the speaker's first buffer; silence is made in it until then.
         self._format = (16000, 1)
         # [LAW:nothing-unseen] the canceller's own decisions, read onto the microphone's event as it is let go of.
         # Each is written by one thread: `heard` and `unplayed` by the capture thread, `dropped` under the lock.
         self._counts: dict[str, int] = dict.fromkeys(COUNTS, 0)
 
     def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
-        """Hold sound as it goes to the speaker, silence included, for the microphone frames that hear its echo."""
+        """Hold sound as the speaker's device takes it, silence included, for the microphone frames that hear its echo."""
         size = sample_rate // _FRAMES_PER_SECOND * channels * _SAMPLE_BYTES
         pending = self._unplayed + audio
         whole = len(pending) - len(pending) % size
