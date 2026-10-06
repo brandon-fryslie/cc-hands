@@ -248,19 +248,39 @@ async def test_a_tool_hands_called_is_a_moment_of_the_conversation_and_no_part_o
     log.record(Transcribed("switch to the wake word"))
     await audited(tool(set_trigger), log.record).body(trigger="wake word")
     log.record(Replied("Okay.", False))
-    folded = Moments()
-    for line in forwards(home.audit):
-        folded.take(json.loads(line))
-    assert [moment.kind for moment in folded.moments()] == ["heard", "called", "said"]
-    assert [moment.kind for moment in folded.moments(2)] == ["called", "said"]
+    assert [moment.kind for moment in folded(home, Moments()).moments()] == ["heard", "called", "said"]
+    assert [moment.kind for moment in folded(home, Moments(2)).moments()] == ["called", "said"]
     assert [moment.text for moment in recall(home.audit, [], 20).moments] == ["switch to the wake word", "Okay."]
 
 
 def test_a_send_seen_to_fail_is_a_change_to_the_moment_it_was(tmp_path: Path) -> None:
     home = Home(tmp_path)
     written(home, [typed("first"), TypingFailed(typed("first").effect, "cannot talk to the fritter")])
-    folded = Moments()
+    taken = folded(home, Moments())
+    assert taken.changes == 2
+    assert [moment.heading for moment in taken.moments()] == [f"not sent to {BILLING}"]
+
+
+def test_only_the_newest_kept_are_held_and_a_send_no_longer_kept_fails_unseen(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    written(home, [typed("first"), typed("second"), typed("third"), TypingFailed(typed("first").effect, "gone")])
+    taken = folded(home, Moments(2))
+    assert [moment.heading for moment in taken.moments()] == [f"sent to {BILLING}"] * 2
+    assert taken.changes == 3
+
+
+def test_a_session_named_after_its_send_is_a_change_and_one_named_again_the_same_is_not(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    written(home, [typed("first")])
+    before = folded(home, Moments()).changes
+    written(home, [prompted(NameGiven("payments")), prompted(NameGiven("payments"))])
+    taken = folded(home, Moments())
+    assert taken.changes == before + 1
+    assert [moment.heading for moment in taken.moments()] == ["sent to payments"]
+
+
+def folded(home: Home, moments: Moments) -> Moments:
+    """`moments` with every line of `home`'s log taken."""
     for line in forwards(home.audit):
-        folded.take(json.loads(line))
-    assert folded.changes == 2
-    assert [moment.heading for moment in folded.moments()] == [f"not sent to {BILLING}"]
+        moments.take(json.loads(line))
+    return moments

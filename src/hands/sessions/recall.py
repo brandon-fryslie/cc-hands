@@ -8,6 +8,7 @@ a permission was answered the Reply an applied event performed for a PermissionR
 """
 
 import json
+from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -103,19 +104,23 @@ def moments(entries: Iterable[Mapping[str, object]]) -> list[Moment]:
 
 
 class Moments:
-    """The moments of the log's lines taken so far, oldest first, each session as hands speaks it, by its project and the
-    last name the run gave it; by its id when the run never saw it join.
+    """The `kept` newest moments of the log's lines taken so far (every one, for None), oldest first, each session as
+    hands speaks it, by its project and the last name the run gave it; by its id when the run never saw it join.
 
-    A send seen to fail later is said again where it was: `changes` counts every moment added or said again, so a reader
-    holding the moments as they were at one count knows them as they are while it stands.
+    A send seen to fail later is said again where it was, and a session named or seen to join is spoken anew wherever it
+    went: `changes` counts every moment added and every such change, so a reader holding the moments as they were at one
+    count knows them as they are while it stands.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, kept: int | None = None) -> None:
         self._projects: dict[str, Path] = {}
         self._names: dict[str, str] = {}
         self._asked: dict[str, str] = {}
-        self._said: list[_Said] = []
-        # Where each send not yet seen to fail sits in `said`, by the Typing line's effect, which a TypingFailed repeats.
+        self._said: deque[_Said] = deque(maxlen=kept)
+        # How many moments have been taken, so the oldest still kept is moment `taken - len(said)`.
+        self._taken = 0
+        # The moment each send still kept and not yet seen to fail is, by the Typing line's effect, which a TypingFailed
+        # repeats; oldest first, as they were taken.
         self._sending: dict[str, int] = {}
         self.changes = 0
 
@@ -127,12 +132,12 @@ class Moments:
                 {"type": "WideEvent", "event": "hook", "facts": {"session": str(session), "name": {"type": "NameGiven", "name": str(name)} | {"type": "NameWithheld", "held": str(name)}}}
                 | {"type": "WideEvent", "event": "name.judged", "facts": {"session": str(session), "before": str(name)}}
             ):
-                self._names[session] = name
+                self._changed(self._names, session, name)
             case {"type": "WideEvent", "event": "applied", "at": str(at), "facts": {"applied": object() as applied, "effects": object() as effects}}:
                 match applied:
                     # Every event that carries a session's membership says where it works.
                     case {"membership": {"id": str(session), "cwd": str(cwd)}}:
-                        self._projects[session] = Path(cwd)
+                        self._changed(self._projects, session, Path(cwd))
                     case {"type": "PermissionRequested", "request": str(request), "on": object() as on}:
                         self._asked[request] = _blocker(on)
                     case _:
@@ -154,23 +159,33 @@ class Moments:
             case {"type": "Replied", "at": str(at), "text": str(text)} if text.strip():
                 self._add(_Said(datetime.fromisoformat(at), "said", "you", None, text))
             case {"type": "Typing", "at": str(at), "effect": {"session": str(session), "input": object() as typed} as effect}:
-                self._sending[json.dumps(effect, sort_keys=True)] = len(self._said)
+                self._sending[json.dumps(effect, sort_keys=True)] = self._taken
                 self._add(_Said(datetime.fromisoformat(at), "sent", "sent to", session, _typed(typed)))
             case {"type": "TypingFailed", "effect": object() as effect, "reason": str(reason)}:
-                if (index := self._sending.pop(json.dumps(effect, sort_keys=True), None)) is not None:
+                if (taken := self._sending.pop(json.dumps(effect, sort_keys=True), None)) is not None:
+                    index = taken - (self._taken - len(self._said))
                     self._said[index] = replace(self._said[index], verb="not sent to", text=f"{self._said[index].text}, because: {reason}")
                     self.changes += 1
             case _:
                 pass
 
-    def moments(self, newest: int | None = None) -> list[Moment]:
-        """The moments taken, oldest first: the `newest` of them, or all."""
-        kept = self._said if newest is None else self._said[max(len(self._said) - newest, 0) :]
-        return [Moment(each.at, each.kind, each.verb if each.session is None else f"{each.verb} {_spoken(each.session, self._projects, self._names)}", each.text) for each in kept]
+    def moments(self) -> list[Moment]:
+        """The moments kept, oldest first."""
+        return [Moment(each.at, each.kind, each.verb if each.session is None else f"{each.verb} {_spoken(each.session, self._projects, self._names)}", each.text) for each in self._said]
 
     def _add(self, said: _Said) -> None:
         self._said.append(said)
+        self._taken += 1
         self.changes += 1
+        # A send no longer kept is said again nowhere when it fails.
+        oldest = self._taken - len(self._said)
+        while self._sending and next(iter(self._sending.values())) < oldest:
+            del self._sending[next(iter(self._sending))]
+
+    def _changed[V](self, known: dict[str, V], session: str, value: V) -> None:
+        if known.get(session) != value:
+            known[session] = value
+            self.changes += 1
 
 
 def _spoken(session: str, projects: Mapping[str, Path], names: Mapping[str, str]) -> str:

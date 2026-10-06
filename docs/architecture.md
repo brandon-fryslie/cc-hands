@@ -1924,12 +1924,13 @@ in `hands.voice.phoneaddress`, the one check of it). It shows the newest 200 mom
 the audit log as `hands recall` folds them (`hands.sessions.recall.Moments`): what the
 user said, what hands said, what was sent to a session and answered there, and each
 tool hands called (its `tool.run` event), whose arguments and result open on request.
-`hands recall` leaves the tool calls out. The daemon keeps one fold, read on from the
-log offset it last reached. A page's read says how many changes it has seen and waits
-up to 25 s for another, so it is answered once something is said, and a send seen to
-fail later is redrawn where it was. Words typed are queued into the voice's pipeline as
-`Typed`, and Whisper takes them as a hold of their own, opened, ended, heard and
-resolved at once, with the `typed` opener. That is not an edge: it moves no gate and
+`hands recall` leaves the tool calls out. The daemon keeps one fold of the newest 200,
+read on from the log offset it last reached. A page's read says how many changes it has
+seen and waits up to 25 s for another, so it is answered once something is said, and a
+send seen to fail later, or a session named after it, is redrawn where it was. Words
+typed are queued into the voice's pipeline as `Typed`, which no interruption drops, and
+Whisper takes them as a hold of their own with the `typed` opener: opened and ended at
+once, and heard in line behind the holds of the key's still being transcribed. That is not an edge: it moves no gate and
 leaves hands where it is. A typed hold cuts hands off as it opens, as a press does,
 and joins a turn a hold of the key's has open. From there the words reach the model,
 and come back to the page through the log, as words said do. Each read is one

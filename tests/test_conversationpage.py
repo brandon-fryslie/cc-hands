@@ -149,9 +149,9 @@ async def test_words_typed_are_handed_to_the_voice_and_counted(page: Page) -> No
     assert (event.outcome, event.facts["chars"]) == ("ok", 13)
 
 
-@pytest.mark.parametrize("body", [{"text": "   "}, {"words": "hi"}, "hi"])
-async def test_words_typed_that_are_none_are_refused_and_handed_to_nobody(page: Page, body: object) -> None:
-    refused = await page.client.post("/conversation/typed", json=body, headers=KEYED)
+@pytest.mark.parametrize("body", [b'{"text": "   "}', b'{"words": "hi"}', b'"hi"', b"hi", b'{"text": "\xff"}'])
+async def test_words_typed_that_are_none_are_refused_and_handed_to_nobody(page: Page, body: bytes) -> None:
+    refused = await page.client.post("/conversation/typed", data=body, headers={**KEYED, "Content-Type": "application/json"})
     assert refused.status == 400
     assert page.typed == []
     [event] = page.events("conversation.typed")

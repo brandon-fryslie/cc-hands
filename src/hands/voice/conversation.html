@@ -67,7 +67,9 @@ document.getElementById("phone").href = `/${location.hash}`;
 // How long the page waits to read again after a read that failed, as hands is restarted or the network drops.
 const AGAIN_MS = 2000;
 
-function say(line, bad = false) { state.textContent = line; state.classList.toggle("bad", bad); }
+// One line says how the page stands, and whoever said it, the reading or the sending, is the one that takes it back.
+function say(by, line, bad = false) { state.textContent = line; state.dataset.by = by; state.classList.toggle("bad", bad); }
+function unsay(by) { if (state.dataset.by === by) say(by, ""); }
 
 function asked(path, init = {}) {
   return fetch(path, {...init, headers: {...init.headers, "Authorization": `Bearer ${key}`}});
@@ -92,7 +94,8 @@ function shown(moment) {
       break;
     case "called": {
       const details = document.createElement("details");
-      details.dataset.at = moment.at;
+      // Which call this is, across redraws: two calls alike in all of this read the same either way.
+      details.dataset.call = `${moment.at} ${moment.heading} ${moment.text}`;
       const summary = document.createElement("summary");
       const body = document.createElement("pre");
       summary.append(stamped(moment.at), moment.heading);
@@ -118,24 +121,24 @@ async function reading() {
     try {
       response = await asked(seen === null ? "/conversation/moments" : `/conversation/moments?seen=${seen}`);
     } catch {
-      say("hands is out of reach; trying again…", true);
+      say("reading", "hands is out of reach; trying again…", true);
       await new Promise(done => setTimeout(done, AGAIN_MS));
       continue;
     }
-    if (response.status === 401) { say("Open this page from the address `hands phone` prints.", true); return; }
+    if (response.status === 401) { say("reading", "Open this page from the address `hands phone` prints.", true); return; }
     if (!response.ok) {
-      say(`hands could not read the conversation: ${await response.text()}`, true);
+      say("reading", `hands could not read the conversation: ${await response.text()}`, true);
       await new Promise(done => setTimeout(done, AGAIN_MS));
       continue;
     }
     const read = await response.json();
     const followed = seen === null || following();
     // Every read redraws the conversation whole; a tool call the reader opened stays open across it.
-    const opened = new Set([...moments.querySelectorAll("details[open]")].map(details => details.dataset.at));
+    const opened = new Set([...moments.querySelectorAll("details[open]")].map(details => details.dataset.call));
     moments.replaceChildren(...read.moments.map(shown));
-    for (const details of moments.querySelectorAll("details")) details.open = opened.has(details.dataset.at);
+    for (const details of moments.querySelectorAll("details")) details.open = opened.has(details.dataset.call);
     if (followed) moments.scrollTop = moments.scrollHeight;
-    if (state.classList.contains("bad")) say("");
+    unsay("reading");
     seen = read.changes;
   }
 }
@@ -147,10 +150,10 @@ async function sending(event) {
   send.disabled = true;
   try {
     const response = await asked("/conversation/typed", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({text: words})});
-    if (response.ok) { text.value = ""; say(""); }
-    else say(`Not sent: ${await response.text()}`, true);
+    if (response.ok) { text.value = ""; unsay("sending"); }
+    else say("sending", `Not sent: ${await response.text()}`, true);
   } catch {
-    say("Not sent: hands is out of reach.", true);
+    say("sending", "Not sent: hands is out of reach.", true);
   } finally {
     send.disabled = false;
     text.focus();
@@ -158,12 +161,12 @@ async function sending(event) {
 }
 
 form.addEventListener("submit", sending);
-// Return sends, as in a chat; Shift-Return is a new line.
+// Return presses Send, as in a chat, and does nothing while Send is held down by a send under way; Shift-Return is a new line.
 text.addEventListener("keydown", event => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); send.click(); }
 });
 
-if (key) reading(); else { say("Open this page from the address `hands phone` prints.", true); send.disabled = true; }
+if (key) reading(); else { say("reading", "Open this page from the address `hands phone` prints.", true); send.disabled = true; }
 </script>
 </body>
 </html>

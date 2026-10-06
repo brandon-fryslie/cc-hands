@@ -550,6 +550,15 @@ async def test_words_typed_while_a_hold_is_open_join_its_turn_and_leave_its_audi
     assert rig.heard[0].startswith(b"\x01\x00" * 320 * 2)
 
 
+async def test_words_typed_while_a_hold_is_being_transcribed_come_after_its_words(rig: Rig) -> None:
+    await rig.hold(["down", "up"])
+    await rig.until(lambda: rig.out.holds == [1])
+    await rig.worker.queue_frame(Typed(text="and the tests"))
+    await rig.until(lambda: rig.out.holds == [1, 2])
+    await rig.texts.put("run the parser")
+    assert await rig.everything_sent(holds=2) == ["run the parser and the tests"]
+
+
 async def test_a_dropped_hold_ends_its_turn_and_sends_nothing(rig: Rig) -> None:
     await rig.hold(["down", "down", "dropped"])
     assert await rig.everything_sent(holds=1) == []

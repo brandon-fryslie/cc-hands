@@ -40,7 +40,7 @@ class Conversation:
 
     def __init__(self, directory: Path) -> None:
         self._directory = directory
-        self._moments = Moments()
+        self._moments = Moments(NEWEST)
         self._reading = Reading()
         # The log offset the next read begins at: 0 is the oldest segment kept, wherever retention has left it.
         self._offset = 0
@@ -55,7 +55,7 @@ class Conversation:
         return self._moments.changes
 
     def newest(self) -> list[Moment]:
-        return self._moments.moments(NEWEST)
+        return self._moments.moments()
 
     def _catch_up(self) -> None:
         while True:
@@ -79,9 +79,14 @@ def parse_seen(query: str | None) -> int | None:
             raise Rejected("seen is the changes a page was last given, a whole number")
 
 
-def parse_typed(body: object) -> str:
-    """The words a page sent; raises Rejected naming what is wrong with them."""
-    match body:
+def parse_typed(body: bytes) -> str:
+    """The words a page sent, as its request's body; raises Rejected naming what is wrong with them."""
+    try:
+        sent: object = json.loads(body)
+    except ValueError as error:
+        # Not JSON, or not text at all: JSONDecodeError and UnicodeDecodeError are both ValueErrors.
+        raise Rejected(f"words typed are JSON: {error}") from error
+    match sent:
         case {"text": str(text)} if text.strip():
             return text.strip()
         case _:
@@ -127,8 +132,8 @@ def conversation_routes(conversation: Conversation, typed: Callable[[str], Await
                 fail("typed without the phone's key")
                 return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
             try:
-                text = parse_typed(await request.json())
-            except (Rejected, json.JSONDecodeError) as error:
+                text = parse_typed(await request.read())
+            except Rejected as error:
                 fail(str(error))
                 return web.Response(status=400, text=str(error))
             annotate(chars=len(text))
