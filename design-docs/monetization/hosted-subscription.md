@@ -4,7 +4,7 @@ hands cannot be hosted, and a subscription for it cannot include any Claude usag
 What is left to sell is hands itself: a monthly fee for the software and its updates.
 Each user pays Anthropic directly for the Claude usage hands drives, through their own
 Claude plan or API key. hands as built does not yet meet Anthropic's terms for a
-product that runs Claude Code, and four parts of it have to change or be cleared with
+product that runs Claude Code, and three parts of it have to change or be cleared with
 Anthropic before it charges money. This settles hands-monetization-76j.twv.
 
 ## Why nothing can be hosted
@@ -45,7 +45,7 @@ The same page sets the conditions a paid hands has to meet:
 
 hands meets the first two conditions only in part. fritter wraps Claude Code in a
 pseudo-terminal and leaves the binary unchanged, and the brain signs in through Claude
-Code's own flow (`hands login`). Four things do not fit as built:
+Code's own flow (`hands login`). Three things do not fit as built:
 
 - **The brain's proxy edits plan-billed requests.** The brain's `ANTHROPIC_BASE_URL`
   is hands' own proxy (`src/hands/brain/process.py:267`), and the brain runs on the
@@ -58,21 +58,18 @@ Code's own flow (`hands login`). Four things do not fit as built:
   (`FOREIGN_CREDENTIALS`, `src/hands/brain/process.py:78`), and `hands login` succeeds
   only on the subscription. That restricts an authentication method built into Claude
   Code.
-- **Tapped copies carry the session's credentials.** fritter's tap decrypts each
-  session's traffic to Anthropic with a certificate authority hands supplies
-  (`--tap-ca`, `src/hands/sessions/wrapper.py:234`) and copies every request to hands,
-  headers included. Nothing removes the OAuth bearer token on the way, so hands
-  receives the user's Claude.ai session token for every driven session.
-- **The tap itself is an intermediary.** It passes requests and replies through
-  unchanged and runs on the user's machine, so it neither resells nor bills usage. But
-  it is a TLS man-in-the-middle on plan-billed traffic, and "intermediate" is the
-  terms' own word.
+- **fritter's tap is an intermediary.** It decrypts each session's traffic to
+  Anthropic with a certificate authority hands supplies (`--tap-ca`,
+  `src/hands/sessions/wrapper.py:234`) and copies every exchange to hands. It passes
+  requests and replies through unchanged, drops credential headers from the copies
+  (`fritter/tap.go:69`), and runs on the user's machine, so it neither resells nor
+  bills usage and hands never holds the session's token. But it is a TLS
+  man-in-the-middle on plan-billed traffic, and "intermediate" is the terms' own word.
 
-The first three are code changes: the copies drop credentials before they leave
-fritter, and a paid brain either takes any login Claude Code takes or does not run on
-the plan behind an editing proxy. The fourth, and whatever form the brain ends up in,
-needs written confirmation from Anthropic sales, which the terms name as the contact
-for questions about authentication.
+The first two are code changes: a paid brain either takes any login Claude Code takes
+or does not run on the plan behind an editing proxy. The third, and whatever form the
+brain ends up in, needs written confirmation from Anthropic sales, which the terms name
+as the contact for questions about authentication.
 
 ## What the subscription sells
 
