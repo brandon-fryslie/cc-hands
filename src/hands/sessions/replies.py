@@ -15,7 +15,7 @@ import brotli
 import zstandard
 from loguru import logger
 
-from hands.core.wire import Body, Elsewhere, Garbled, Kind, Observed, Seconds, UsageLimitReached, Sent, Unknown, Unkept, WireEvent, answered, assemble, classify, frames, is_stream, parse, session_of
+from hands.core.wire import Body, Elsewhere, Garbled, Kind, Observed, Seconds, UsageLimitReached, Sent, Unknown, Unkept, WireEvent, assemble, classify, frames, is_stream, parse, session_of, unstreamed
 
 
 def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
@@ -93,7 +93,7 @@ def reply_reader(kind: Kind, headers: Mapping[str, str], hear: Callable[[WireEve
         case Elsewhere():
             return _Unread()
         case _:
-            return _Decoded(named.get("content-encoding", "identity"), _Events(hear) if is_stream(named.get("content-type", "")) else _Whole())
+            return _Decoded(named.get("content-encoding", "identity"), _Events(hear) if is_stream(named.get("content-type", "")) else _Whole(hear))
 
 
 class _Unread:
@@ -122,20 +122,30 @@ class _Events:
     def finish(self) -> Body:
         if self._pending.strip():
             return Garbled(f"the stream ended mid-frame: {self._pending[:200]!r}")
-        return assemble(self._events)
+        return assemble(self._events, streamed=True)
 
 
 class _Whole:
-    """Any other reply, read whole: a count_tokens answer, or an error the API sent instead of a stream."""
+    """Any other reply, read whole: a message sent without a stream, its events heard once it is all here, a count_tokens
+    answer, or an error the API sent instead of a message."""
 
-    def __init__(self) -> None:
+    def __init__(self, hear: Callable[[WireEvent], None]) -> None:
+        self._hear = hear
         self._parts: list[bytes] = []
 
     def feed(self, plain: bytes) -> None:
         self._parts.append(plain)
 
     def finish(self) -> Body:
-        return answered(b"".join(self._parts))
+        match unstreamed(b"".join(self._parts)):
+            case tuple() as events:
+                # [LAW:one-source-of-truth] heard and folded as the stream it stands for, so every listener reads the
+                # message the one way, however it came.
+                for event in events:
+                    self._hear(event)
+                return assemble(events, streamed=False)
+            case unread:
+                return unread
 
 
 class _Decoded:

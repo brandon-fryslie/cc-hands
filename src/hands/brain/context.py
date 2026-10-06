@@ -33,8 +33,8 @@ from hands.core.wire import (
     Send,
     Sent,
     Steer,
-    Streamed,
     Stub,
+    Written,
     tool_answers,
 )
 from hands.sessions.audit import Record
@@ -121,7 +121,7 @@ class Keeper:
                 self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
             case Exchanged(session=session, kind=MainTurn(), reply=Held()) if session == self._session:
                 self._turn_ended()
-            case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Streamed(message=message))) if (
+            case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Written(message=message))) if (
                 session == self._session and message.stop_reason != "tool_use"
             ):
                 self._turn_ended()

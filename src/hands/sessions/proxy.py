@@ -39,6 +39,7 @@ from hands.core.wire import (
     Sent,
     Unreached,
     edited,
+    is_stream,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 from hands.sessions.wide import root
@@ -176,16 +177,17 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 reply = reader.finish()
 
             try:
-                if reached.status < 400:
+                if reached.status < 400 and is_stream(reached.headers.get("Content-Type", "")):
                     response = _relayed(reached)
                     await response.prepare(request)
                     await read(response.write)
                     await response.write_eof()
                 else:
-                    # A refusal is read whole before it is answered: whether it is held final turns on what it says.
-                    # Held final, it reaches the client as the proxy's own, which Claude Code ends on, since it asks
-                    # again after an overload whatever the header says, and waits out a spent limit to continue the task
-                    # at its reset (autoContinueAtUsageLimit, 2.1.286); whoever speaks the turn's failure reads it off the wire.
+                    # A reply sent whole is read whole before it is answered: a message is heard only once it is all
+                    # here, and a refusal is held final or not on what it says. Held final, it reaches the client as the
+                    # proxy's own, which Claude Code ends on, since it asks again after an overload whatever the header
+                    # says, and waits out a spent limit to continue the task at its reset (autoContinueAtUsageLimit,
+                    # 2.1.286); whoever speaks the turn's failure reads it off the wire.
                     parts: list[bytes] = []
 
                     async def keep(chunk: bytes) -> None:

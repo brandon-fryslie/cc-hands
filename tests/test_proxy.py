@@ -16,6 +16,7 @@ import zstandard
 from aiohttp import web
 from loguru import logger
 
+from hands.brain.usage import Spent, Usage
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
@@ -28,13 +29,14 @@ from hands.core.wire import (
     Held,
     Hold,
     MainTurn,
+    Message,
     Observed,
     Reached,
     Route,
     Send,
     Sent,
     Tail,
-    Streamed,
+    Written,
     Text,
     TextDelta,
     Unreached,
@@ -171,7 +173,7 @@ async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchang
     assert isinstance(exchange.reply, Reached)
     assert exchange.reply.status == 200 and exchange.reply.reply_bytes == len(body)
     assert exchange.requested_at < exchange.sent_at < exchange.reply.first_byte_at < exchange.reply.last_byte_at
-    assert isinstance(exchange.reply.body, Streamed)
+    assert isinstance(exchange.reply.body, Written)
     assert exchange.reply.body.message.content == (Text("hello from the wire"),)
 
 
@@ -182,6 +184,61 @@ async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serv
     texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
     assert texts == ["hello ", "from the wire"]
     assert isinstance(wire.seen[-1], Exchanged)
+
+
+async def test_a_message_sent_whole_is_heard_as_the_message_it_is(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    # Claude Code asks again without streaming once a stream fails, and is answered one whole message.
+    usage = {"input_tokens": 7, "cache_read_input_tokens": 90, "output_tokens": 3}
+    message = {
+        "type": "message",
+        "id": "msg_2",
+        "model": "m",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "said whole"}],
+        "stop_reason": "end_turn",
+        "usage": usage,
+    }
+    answer = json.dumps(message).encode()
+
+    async def whole(_request: web.Request) -> web.Response:
+        return web.Response(body=answer, headers={"Content-Type": "application/json"})
+
+    _, wire = await serve(whole)
+    assert (await post(wire.proxy.url))[::2] == (200, answer)
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and reply.body == Written(Message("msg_2", "m", (Text("said whole"),), "end_turn", usage), False)
+    texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
+    assert texts == ["said whole"]
+    assert isinstance(wire.seen[-1], Exchanged)
+    # The turn counts toward what the conversation holds, as a streamed one does.
+    heard = Usage(SessionId("s1"))
+    for seen in wire.seen:
+        heard.hear(seen)
+    reading = heard.reading()
+    assert reading is not None and (reading.in_context, reading.spent) == (100, Spent(97, 3, 1))
+
+
+async def test_a_message_sent_whole_is_heard_before_the_client_has_a_byte_of_it(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    # Claude Code runs a whole reply's tool call once it has parsed it, and hands' tools read what the wire heard.
+    answer = json.dumps({"type": "message", "id": "msg_3", "model": "m", "content": [{"type": "text", "text": "in two parts"}], "stop_reason": "end_turn"}).encode()
+
+    async def halves(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "application/json"})
+        await response.prepare(request)
+        await response.write(answer[:10])
+        # Long enough for a proxy that relays as it reads to pass the first half on before the second comes.
+        await asyncio.sleep(0.05)
+        await response.write(answer[10:])
+        await response.write_eof()
+        return response
+
+    _, wire = await serve(halves)
+    async with aiohttp.ClientSession() as client:
+        async with client.post(wire.proxy.url + "/v1/messages?beta=true", data=REQUEST, headers=HEADERS) as response:
+            first = await response.content.readany()
+            texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
+            assert texts == ["in two parts"]
+            assert first + await response.read() == answer
 
 
 async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_decompressed(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
@@ -215,7 +272,7 @@ async def test_every_encoding_claude_code_asks_for_is_read(
     _, wire = await serve(compressed)
     assert (await post(wire.proxy.url))[::2] == (200, packed)
     reply = only_exchange(wire).reply
-    assert isinstance(reply, Reached) and isinstance(reply.body, Streamed)
+    assert isinstance(reply, Reached) and isinstance(reply.body, Written)
     assert reply.body.message.content == (Text("hello from the wire"),)
 
 
@@ -512,8 +569,8 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
     # A whole message with the one text block, ended, as the API would have streamed it.
     whole, rest = frames(body)
     assert rest == b""
-    reply = assemble([parse(frame) for frame in whole])
-    assert isinstance(reply, Streamed)
+    reply = assemble([parse(frame) for frame in whole], streamed=True)
+    assert isinstance(reply, Written)
     assert (reply.message.model, reply.message.content, reply.message.stop_reason) == ("claude-opus-5-5", (Text("(stayed silent)"),), "end_turn")
     exchange = only_exchange(wire)
     assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Held) and exchange.reply.said == "(stayed silent)"

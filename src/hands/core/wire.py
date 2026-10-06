@@ -410,8 +410,7 @@ def parse(frame: Frame) -> WireEvent:
 def _event(name: str, data: dict[str, object]) -> WireEvent | None:
     match name:
         case "message_start":
-            message = _object(data["message"])
-            return MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message.get("usage", {})))
+            return _started(_object(data["message"]))
         case "content_block_start":
             return BlockStarted(index=_int(data["index"]), block=_object(data["content_block"]))
         case "content_block_delta":
@@ -443,6 +442,17 @@ def _delta(index: int, delta: Mapping[str, object]) -> WireEvent | None:
             return JsonDelta(index, _str(delta["partial_json"]))
         case _:
             return None
+
+
+def _started(message: Mapping[str, object]) -> MessageStarted:
+    """A message's head, as its stream's message_start carries it and as a message sent whole begins."""
+    return MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message.get("usage", {})))
+
+
+def _array(value: object) -> list[object]:
+    if not isinstance(value, list):
+        raise TypeError(f"expected an array, got {type(value).__name__}")
+    return cast(list[object], value)
 
 
 def _object(value: object) -> Mapping[str, object]:
@@ -494,7 +504,7 @@ Block = Text | Thinking | RedactedThinking | ToolUse
 
 @dataclass(frozen=True)
 class Message:
-    """A streamed reply put back together: the same message a request without streaming would have been answered with."""
+    """A message the model wrote: a streamed reply put back together, or one a request without streaming was answered with."""
 
     id: str
     model: str
@@ -504,15 +514,17 @@ class Message:
 
 
 @dataclass(frozen=True)
-class Streamed:
-    """A stream that ran to message_stop with every frame read."""
+class Written:
+    """A message the model wrote, every part of it read: streamed to message_stop, or sent whole when the request asked
+    for no stream, as Claude Code asks again after a stream that fails before any block of it is finished (2.1.289)."""
 
     message: Message
+    streamed: bool
 
 
 @dataclass(frozen=True)
 class Garbled:
-    """A stream that cannot be put back together, and why: an error mid-stream, a frame not read, or an early end.
+    """A reply that cannot be put back together, and why: an error mid-stream, a frame or a part not read, or an early end.
 
     The bytes still reached the client unchanged; only hands' reading of them failed, so nothing is said from them.
     """
@@ -522,7 +534,7 @@ class Garbled:
 
 @dataclass(frozen=True)
 class Answered:
-    """A reply that was not a stream: a count_tokens answer, or an error the API sent instead of a stream."""
+    """A reply sent whole that is not a message: a count_tokens answer, or an error the API sent instead of one."""
 
     body: object
 
@@ -534,7 +546,7 @@ class Unkept:
     exchange."""
 
 
-Body = Streamed | Garbled | Answered | Unkept
+Body = Written | Garbled | Answered | Unkept
 
 
 # A block not yet stopped: what it holds so far, and the pieces of a tool call's input not yet joined.
@@ -548,10 +560,11 @@ class _Broken(Exception):
     pass
 
 
-def assemble(events: Sequence[WireEvent]) -> Streamed | Garbled:
-    """The reply a whole stream carried, folded from its events in order."""
+def assemble(events: Sequence[WireEvent], streamed: bool) -> Written | Garbled:
+    """The message these events carry, folded in order: a stream's as its frames came, or the ones a message sent whole
+    stands for."""
     try:
-        return Streamed(_fold(events))
+        return Written(_fold(events), streamed)
     except _Broken as broken:
         return Garbled(str(broken))
 
@@ -654,13 +667,49 @@ def _closed(blocks: Mapping[int, _Open | Block], index: int) -> Block:
     return replace(building.block, input=cast(dict[str, object], parsed))
 
 
-def answered(data: bytes) -> Answered:
-    """A reply that was not a stream: its JSON when it is JSON, else its text as it came."""
+def unstreamed(data: bytes) -> tuple[WireEvent, ...] | Answered | Garbled:
+    """A reply sent whole: the events its stream would have carried when it is a message, so it is heard and assembled as
+    one; else its JSON when it is JSON, else its text as it came."""
     text = data.decode("utf-8", errors="replace")
     try:
-        return Answered(json.loads(text))
+        body = json.loads(text)
     except json.JSONDecodeError:
         return Answered(text)
+    match body:
+        case {"type": "message"}:
+            try:
+                return _streamed(cast(dict[str, object], body))
+            except (KeyError, TypeError) as error:
+                return Garbled(f"a message sent whole lacks a field or has one of the wrong type: {error!r}")
+        case _:
+            return Answered(body)
+
+
+def _streamed(message: Mapping[str, object]) -> tuple[WireEvent, ...]:
+    """The events a stream of this whole message would have carried, its usage given at its start, whole already."""
+    blocks = [_object(block) for block in _array(message["content"])]
+    stop = message.get("stop_reason")
+    return (
+        _started(message),
+        *(event for index, block in enumerate(blocks) for event in (*_block_streamed(index, block), BlockStopped(index))),
+        MessageDelta(stop_reason=None if stop is None else _str(stop), usage={}),
+        MessageStopped(),
+    )
+
+
+def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[WireEvent, ...]:
+    """A whole block as its stream would carry it: opened empty, then what it holds as deltas."""
+    match block:
+        case {"type": "text", "text": str() as text}:
+            return BlockStarted(index, {**block, "text": ""}), TextDelta(index, text)
+        case {"type": "thinking", "thinking": str() as thinking, "signature": str() as signature}:
+            return BlockStarted(index, {**block, "thinking": "", "signature": ""}), ThinkingDelta(index, thinking), SignatureDelta(index, signature)
+        case {"type": "tool_use", "input": dict()}:
+            return BlockStarted(index, {**block, "input": {}}), JsonDelta(index, json.dumps(block["input"]))
+        case _:
+            # [LAW:single-enforcer] a block with nothing to stream, or one hands does not read, opens as it came, and
+            # the fold reads or refuses it as it would a streamed one.
+            return (BlockStarted(index, block),)
 
 
 # A content-type is a stream when it names text/event-stream, whatever parameters follow.

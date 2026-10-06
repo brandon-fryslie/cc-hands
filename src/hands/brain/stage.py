@@ -647,8 +647,9 @@ class BrainStage(FrameProcessor):
             return
         now = self._now()
         match observed:
-            # Said as it arrives, and never twice: a reply the API breaks mid-stream is not asked for again, streamed or
-            # not; the turn ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
+            # Said as it arrives. A reply the API breaks once a block of it is finished is not asked for again; the turn
+            # ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
+            # One broken before then is asked again without a stream, and its whole answer is said too (2.1.289).
             case Heard(exchange=exchange, event=BlockStarted(block={"type": "text"})) if exchange in turn.exchanges:
                 turn.ahead = turn.between
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
