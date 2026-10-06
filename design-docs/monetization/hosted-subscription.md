@@ -86,4 +86,4 @@ is flat-rate, so what they cost is the plan tier a day of hands needs before it 
 the plan's usage limits. The intermediary runs on whichever backend `config.toml`
 names: an Anthropic API key (from `ANTHROPIC_API_KEY` or the keychain item
 `HANDS_LLM_ANT_KEY`), an OpenAI-compatible key, or the brain's plan. Only the keyed
-backends cost per token. hands-monetization-76j.lbi measures both parts.
+backends cost per token. [cost-per-hour.md](cost-per-hour.md) measures both parts.
