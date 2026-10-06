@@ -3,8 +3,9 @@
 import asyncio
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal, get_args
 
 from loguru import logger
@@ -18,6 +19,7 @@ from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
+from hands.core.tmux import InPane, NotInTmux
 from hands.sessions.audit import Record, Typing, TypingFailed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
@@ -27,6 +29,7 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
+from hands.sessions import tmux
 from hands.sessions.typing import Untyped, type_into
 
 
@@ -64,7 +67,8 @@ class Sessions:
         clock: Callable[[], Instant],
         record: Record,
         changes: Changes | None = None,
-        typist: Callable[[Type[Input]], None] = type_into,
+        typist: Callable[[Type[Input]], Awaitable[None]] = partial(type_into, {}),
+        panes: Callable[[Sequence[int]], Awaitable[list[InPane]]] = partial(tmux.panes, environment={}),
         stamp: Callable[[], Stamp] = stamp_now,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
@@ -83,6 +87,8 @@ class Sessions:
         self._changes = changes or NoChanges()
         # What types a Type into its session, or raises Untyped.
         self._typist = typist
+        # The tmux pane each of a list of processes runs in, which a session's writer is chosen by.
+        self._panes = panes
         # The names hands decided and has not yet given, which every listing names its session by. A daemon given none
         # has decided none.
         self._names = names or Names()
@@ -258,7 +264,8 @@ class Sessions:
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:
         """Apply a draft request. A send is typed into its session, and the outcome is whether that was done."""
-        self._registry, decided = drafts.decide(self._registry, request)
+        pane = await self._pane(request.session)
+        self._registry, decided = drafts.decide(self._registry, request, pane)
         match decided:
             case Type() as effect:
                 return await self._type(effect)
@@ -267,18 +274,29 @@ class Sessions:
 
     async def keyboard(self, request: KeyboardRequest) -> KeyboardOutcome:
         """Apply a command or an interrupt. It is typed into its session, and the outcome is whether that was done."""
-        match keyboard.decide(self._registry, request):
+        pane = await self._pane(request.session)
+        match keyboard.decide(self._registry, request, pane):
             case Type() as effect:
                 return await self._type(effect)
             case outcome:
                 return outcome
+
+    async def _pane(self, session: SessionId) -> InPane:
+        """The tmux pane the session runs in now, read before a request to type into it is decided."""
+        match self._registry.sessions.get(session):
+            case None:
+                # A session the registry does not know is answered as unknown before its pane is looked at.
+                return NotInTmux()
+            case known:
+                [pane] = await self._panes([known.membership.pid])
+                return pane
 
     async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I]:
         # [LAW:single-enforcer] everything typed into a session passes here, so every one is in the log before it is typed,
         # joined to the event of the tool call that typed it by its span.
         self._record(Typing(effect, here()))
         try:
-            await asyncio.to_thread(self._typist, effect)
+            await self._typist(effect)
         except Untyped as error:
             # [LAW:no-silent-failure] said, with what was to be typed, on the line that pairs with the Typing before it.
             self._record(TypingFailed(effect, str(error)))

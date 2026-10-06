@@ -36,7 +36,7 @@ from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
-from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered, pane_of
+from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
@@ -48,7 +48,6 @@ from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
-from hands.sessions.terminals import ancestor_terminals, process_table
 from hands.sessions import attention as settings
 from hands.core import playback
 from hands.core.place import Modality
@@ -359,7 +358,7 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes, focus = await asyncio.gather(_panes([listing.session.membership.pid for listing in listings], environment), _focus(home))
+        panes, focus = await asyncio.gather(tmux.panes([listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
             "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
             "focus": focus,
@@ -367,17 +366,6 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
 
     return tool(list_sessions)
 
-
-async def _panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
-    """The tmux pane each of `pids` runs in, from one read of the processes and of every tmux server."""
-    try:
-        servers, processes = await asyncio.gather(tmux.servers(environment), asyncio.to_thread(process_table))
-    except Exception as error:
-        # [LAW:no-silent-failure] the pane is a fact the listing can go without: a read that broke is logged with where,
-        # and each session says why its pane is missing, rather than the listing failing whole.
-        logger.opt(exception=error).error("reading which tmux pane each session runs in broke")
-        return [PaneUnread(f"{type(error).__name__}: {error}")] * len(pids)
-    return [pane_of(ancestor_terminals(pid, processes), servers) for pid in pids]
 
 
 def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool:
@@ -396,7 +384,7 @@ def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no session {session} is running: list_sessions names the ones that are"}
-        [pane] = await _panes([live.membership.pid], environment)
+        [pane] = await tmux.panes([live.membership.pid], environment)
         match pane:
             case Pane(socket=socket, id=pane_id):
                 match await tmux.shown(environment, socket, pane_id):

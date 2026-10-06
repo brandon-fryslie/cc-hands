@@ -167,7 +167,7 @@ Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | A
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
-class Type:     session: SessionId; socket: Path; pid: int; input: Input  # through fritter
+class Type:     session: SessionId; writer: Fritter | Pane; input: Input  # through fritter, or tmux into its pane
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ That block is the design, not the code. `core/effects.py` has eight of those nin
 `Text` alone so far; `Command` and `Key` are `hands-keyboard-gxr.i5n`. `Type` is emitted by
 `core.drafts.decide` for a send rather than by `reduce`, and `Sessions.draft` performs it:
 the draft leaves the registry the moment the send is decided, so it is sent at most once,
-and the send's answer is whether fritter typed it.
+and the send's answer is whether its writer typed it.
 
 Because every transition is `reduce` on values, the test suite for the session
 lifecycle is a table: state before, event, state after, effects. There is no pipeline,
@@ -326,8 +326,12 @@ session driven with the display asleep: no window, no grant, no focus.
 fritter publishes its socket's address to the process it wrapped in `FRITTER_SOCKET`.
 The hook runs as a child of that process and inherits it, so the address reaches
 `Membership.fritter` without either side deriving a path from a pid. A session started
-outside fritter has no address, and a send to it is refused by name rather than written
-into nothing. Nobody has to remember to wrap one: `hands install-fritter` puts a `claude`
+outside fritter has no address. If it runs in a tmux pane, tmux types into that pane
+instead (`hands.sessions.tmux.typed`): what is pasted, bracketed, and the Return, in one tmux
+command list, so they land together or not at all. A session in no pane is refused by name
+rather than written into nothing. Which writer a session gets is `core.reach.writer`, from its
+membership and the pane it runs in, which `Sessions` reads just before deciding; fritter wins
+whenever there is one. Nobody has to remember to wrap one: `hands install-fritter` puts a `claude`
 in `<hands home>/bin` that runs every interactive claude under fritter, and runs a pipe, a
 script, a subcommand, or `claude -p` as the real claude with no address (`hands.sessions.wrapper`). Inheritance also hands the address to a session started from inside a
 wrapped one, so an address alone does not say which session it reaches: every request

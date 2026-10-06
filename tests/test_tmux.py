@@ -2,22 +2,28 @@
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 from collections.abc import Generator
+from functools import partial
 from pathlib import Path
 
 import pytest
 
+from hands.core.drafts import SendDraft, StageDraft
+from hands.core.effects import Command, Input, Key, Text, Type, Typed
 from hands.core.events import Joined
-from hands.core.session import Membership, SessionId
+from hands.core.session import CommandName, Membership, PromptText, SessionId, Staged
 from hands.core.tmux import Listed, NotInTmux, Pane, PaneUnread, Unanswered, pane_of
 from hands.sessions import tmux
 from hands.sessions.registry import Sessions
 from hands.sessions.tmux import Answered
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
+from hands.sessions.typing import Untyped, type_into
+from hands.sessions.wide import unit
 from hands.voice.tool import Result
 from hands.voice.tools import read_screen_tool
 
@@ -213,3 +219,73 @@ def test_read_screen_says_why_for_a_session_in_no_pane_one_not_running_and_a_pan
         "error": f"the screen of framed could not be read: tmux at {sockets / 'default'} did not answer capture-pane in 2 seconds",
         "tmux": {"socket": str(sockets / "default"), "pane": pane, "session": "work", "window": 0},
     }
+
+
+def recording(sockets: Path, session: str, into: Path) -> tuple[Pane, int]:
+    """A new tmux session of the default server whose process turns bracketed paste on, as Claude Code does, and keeps
+    every byte typed into its pane, raw, in `into`; its pane and the process's pid, once it is reading."""
+    keep = f"printf '\\033[?2004h'; stty raw -echo; exec cat > {into}"
+    started = subprocess.run([str(TMUX), "-f", "/dev/null", "-L", "default", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", session, "sh", "-c", keep], capture_output=True, text=True, check=True)
+    pane, pid = started.stdout.split()
+    deadline = time.monotonic() + 5
+    while not into.exists():
+        assert time.monotonic() < deadline, "the pane's process never began reading"
+        time.sleep(0.05)
+    return Pane(sockets / "default", pane, session, 0), int(pid)
+
+
+def kept(into: Path, expected: bytes) -> bytes:
+    """What the pane's process kept, once it has kept as much as `expected`, or after five seconds."""
+    deadline = time.monotonic() + 5
+    while len(into.read_bytes()) < len(expected) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return into.read_bytes()
+
+
+@needs_tmux
+@pytest.mark.parametrize(
+    ("input", "received"),
+    [
+        # Pasted bracketed behind its space, its newline kept a newline, and sent by the Return behind the paste.
+        (Text(PromptText("/fix the tests\nand report")), b"\x1b[200~ /fix the tests\nand report\x1b[201~\r"),
+        (Command(CommandName("compact"), None), b"/compact\r"),
+        # The command pressed as keys, and its arguments pasted behind it.
+        (Command(CommandName("model"), PromptText("opus")), b"/model\x1b[200~ opus\x1b[201~\r"),
+        (Key("escape"), b"\x1b"),
+        (Key("shift_tab"), b"\x1b[Z"),
+    ],
+)
+def test_what_is_typed_into_a_pane_reaches_its_process_as_someone_at_the_keyboard_would_type_it(input: Input, received: bytes, sockets: Path, tmp_path: Path) -> None:
+    into = tmp_path / "typed"
+    pane, _ = recording(sockets, "work", into)
+    asyncio.run(type_into(os.environ, Type(SessionId("s1"), pane, input)))
+    assert kept(into, received) == received
+    # Each paste's buffer is gone once pasted.
+    assert subprocess.run([str(TMUX), "-L", "default", "list-buffers"], capture_output=True, text=True, check=True).stdout == ""
+
+
+@needs_tmux
+def test_a_pane_tmux_could_not_type_into_is_said_with_why(sockets: Path, tmp_path: Path) -> None:
+    pane, _ = recording(sockets, "work", tmp_path / "typed")
+    with pytest.raises(Untyped, match=re.escape(f"tmux did not type into session s1: no tmux is on the PATH to type into pane {pane.id} of tmux at {pane.socket}")):
+        asyncio.run(type_into({"PATH": "/nonexistent"}, Type(SessionId("s1"), pane, Key("escape"))))
+    subprocess.run([str(TMUX), "-L", "default", "kill-server"], check=True)
+    with pytest.raises(Untyped, match=re.escape(f"tmux did not type into session s1: tmux at {pane.socket} did not type into pane {pane.id}: ")):
+        asyncio.run(type_into(os.environ, Type(SessionId("s1"), pane, Text(PromptText("hello")))))
+
+
+@needs_tmux
+def test_a_session_nobody_wrapped_is_sent_a_draft_through_the_tmux_pane_it_runs_in(sockets: Path, tmp_path: Path) -> None:
+    into = tmp_path / "typed"
+    _, pid = recording(sockets, "work", into)
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=partial(type_into, os.environ), panes=partial(tmux.panes, environment=os.environ))
+    asyncio.run(sessions.apply(Joined(Membership(SessionId("s1"), pid, Path("/code/cc-hands"), Path("/nonexistent")), "startup")))
+
+    async def sent() -> object:
+        # Inside a unit of work, as every tool call the daemon makes is.
+        with unit("tool.run", lambda _: None):
+            await sessions.draft(StageDraft(SessionId("s1"), Staged(PromptText("run the tests"), ())))
+            return await sessions.draft(SendDraft(SessionId("s1")))
+
+    assert asyncio.run(sent()) == Typed(SessionId("s1"), Text(PromptText("run the tests")))
+    assert kept(into, b"\x1b[200~ run the tests\x1b[201~\r") == b"\x1b[200~ run the tests\x1b[201~\r"

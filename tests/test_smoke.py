@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from hands.core.effects import Summarise, Text, Type
+from hands.core.effects import Fritter, Summarise, Text, Type
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
@@ -41,7 +41,7 @@ def as_logged(record: object) -> Line:
 
 
 def typing(session: SessionId, span: str = SPAN) -> Line:
-    effect = Type(session, Path("/tmp/f/session.sock"), 7, Text(PromptText("Reply with the file.")))
+    effect = Type(session, Fritter(Path("/tmp/f/session.sock"), 7), Text(PromptText("Reply with the file.")))
     return as_logged(Typing(effect, Span("t", span, None)))
 
 
@@ -112,7 +112,7 @@ def test_a_send_is_typed_only_once_the_unit_that_typed_it_has_ended() -> None:
 
 
 def test_a_send_that_failed_is_never_typed_and_says_why() -> None:
-    effect = Type(SESSION, Path("/tmp/f/session.sock"), 7, Text(PromptText("Reply with the file.")))
+    effect = Type(SESSION, Fritter(Path("/tmp/f/session.sock"), 7), Text(PromptText("Reply with the file.")))
     failed = as_logged(TypingFailed(effect, "this socket types into process 45443"))
     with pytest.raises(NotReached) as raised:
         proof("typed", [typing(SESSION), failed, ended()], SESSION)

@@ -1,6 +1,6 @@
 """The focus: the session the user's words go to when they name none, set in one call, held in the home, and never a lock."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +12,7 @@ from hands.brain.mcp import CallSpans, serve_mcp
 from hands.core.effects import Input, Text, Type
 from hands.core.events import Joined
 from hands.core.session import Membership, PromptText, SessionId
+from hands.core.tmux import InPane, NotInTmux
 from hands.sessions.audit import AuditLog, Record, tail as audit_tail
 from hands.sessions.focus import Unreadable, focused, set_focus
 from hands.sessions.home import Home
@@ -35,7 +36,13 @@ LAWS = SessionId("s-laws")
 
 
 async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=typed.append)
+    async def typist(effect: Type[Input]) -> None:
+        typed.append(effect)
+
+    async def panes(pids: Sequence[int]) -> list[InPane]:
+        return [NotInTmux()] * len(pids)
+
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=typist, panes=panes)
     for id, project in ((HANDS, "cc-hands"), (LAWS, "laws")):
         await sessions.apply(Joined(Membership(id, 4242, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
     return sessions
@@ -64,7 +71,7 @@ async def say(given: dict[str, Tool], text: str, **session: str) -> dict[str, ob
 
 
 def typed_to(typed: list[Type[Input]]) -> list[tuple[str, Input]]:
-    return [(effect.socket.stem, effect.input) for effect in typed]
+    return [(effect.session, effect.input) for effect in typed]
 
 
 async def test_unnamed_turns_reach_the_focus_and_one_call_moves_it_while_a_named_turn_reaches_the_one_named(tmp_path: Path) -> None:
