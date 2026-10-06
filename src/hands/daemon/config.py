@@ -3,7 +3,7 @@ run runs starts the run again, on the file as edited.
 
     [llm]
     backend = "claude"           # "anthropic" (the default), "openai", or "claude", the brain
-    model = "claude-sonnet-5"    # any backend's
+    model = "claude-sonnet-5-5"  # any backend's
     url = "https://..."          # "anthropic" and "openai" only: another server that speaks the API
 
     [telemetry]
@@ -40,7 +40,11 @@ EDIT_SECONDS = 1.0
 
 # The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
 ANTHROPIC_URL = "https://api.anthropic.com"
-ANTHROPIC_MODEL = "claude-sonnet-5"
+ANTHROPIC_MODEL = "claude-sonnet-5-5"
+# The models hands runs on through Anthropic's API or the brain: one Haiku, Sonnet, Opus, and Fable each. A model
+# outside them is refused before hands starts on it (hands.daemon.backend), since by voice a turn that fails on it
+# could never choose another.
+CLAUDE_MODELS = ("claude-haiku-4-5-20251001", ANTHROPIC_MODEL, "claude-opus-5-5", "claude-fable-5-1")
 OPENAI_URL = "https://api.openai.com/v1"
 # Not a reasoning model, so no thinking precedes the first spoken word; it calls tools and takes max_tokens.
 OPENAI_MODEL = "gpt-4.1-mini"

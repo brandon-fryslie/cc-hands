@@ -18,7 +18,7 @@ import pytest
 
 from conftest import onboard
 from hands.daemon import cli, config, run
-from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
+from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, CLAUDE_MODELS, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
 from hands.daemon.starting import CannotStart, Ended, Start, start
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat, wrapper
@@ -159,7 +159,28 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account="brain@example.com")
-    assert backend(Claude(model="claude-other"), home, os.environ).model == "claude-other"
+    assert backend(Claude(model="claude-opus-5-5"), home, os.environ).model == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize("model", CLAUDE_MODELS)
+def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
+    assert backend(Claude(model=model), home, os.environ).model == model
+    assert backend(Anthropic(model=model), HOME, {"ANTHROPIC_API_KEY": "k"}).model == model
+
+
+def test_a_claude_model_not_on_offer_is_refused_before_its_key_or_login_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming
+    # the four, before the keychain or the brain's login is asked, neither of which a model off the list could use.
+    def unread(service: str) -> str:
+        pytest.fail(f"the keychain was read for {service}")
+
+    monkeypatch.setattr("hands.daemon.backend.keychain_password", unread)
+    for model in ("opus", "claude-opus-9", "claude-sonnet-5"):
+        for llm in (Anthropic(model=model), Claude(model=model)):
+            with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
+                backend(llm, HOME, {})
 
 
 def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
