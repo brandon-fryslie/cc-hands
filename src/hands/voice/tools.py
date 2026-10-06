@@ -40,7 +40,7 @@ from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
-from hands.sessions import catchup, startsession, tmux
+from hands.sessions import catchup, closesession, startsession, tmux
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.focus import Unreadable, focused
@@ -1239,6 +1239,37 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
 
     # A barge-in never stops a start part way: the session would be running, and the user never told.
     return tool(start_session, completes=True)
+
+
+def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
+    """[LAW:nothing-unseen] each close is its own session.close event, inside the call's."""
+
+    async def close_session(session: str, asked: closesession.Asked) -> Result:
+        """End a Claude Code session the user is finished with: its claude exits, as at a closed terminal, and it leaves
+        your session listing. Returns once it has, with its name, or says why it did not. A tmux window hands opened for
+        it closes with it; a terminal the user started it from stays.
+
+        Args:
+            session: The session's id, from list_sessions.
+            asked: `named` when the user named this session: it ends whatever it is doing. `done` when they asked for
+                the sessions that are done: it ends only at its prompt, with no dialog up and nothing running in the
+                background, and is otherwise left running, which the result says.
+        """
+        id = SessionId(session)
+        # Its name as the user knows it, read while it is still listed.
+        name = spoken_name(sessions, id)
+        try:
+            match await closesession.close(home, record, sessions.live_session, id, asked):
+                case closesession.Closed():
+                    return {"closed": name}
+                case closesession.LeftRunning(session=found):
+                    # [LAW:one-source-of-truth] what it was found doing, as list_sessions says it.
+                    return {"left_running": name, "state": _spoken_state(found.state, found.dialog, found.turn)}
+        except closesession.NotClosed as why:
+            return {"error": str(why)}
+
+    # A barge-in never stops a close part way: the session would be ending, and the user never told.
+    return tool(close_session, completes=True)
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:

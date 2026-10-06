@@ -254,6 +254,7 @@ Beside them, hands gives it skills of hands' own, shipped with the code they ser
 `hands:prompt` is how it writes a draft for a session from what you said, a small cut of `laws:prompt` made for that one job.
 `hands:chat` is how it talks with you, a small cut of `laws:chat` made for replies you hear.
 `hands:start` is how it starts a new session when you ask for one, with hands' `start_session` tool.
+`hands:close` is how it closes the sessions you are finished with, by name or the ones that are done, with `close_session`.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,
