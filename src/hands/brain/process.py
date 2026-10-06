@@ -178,9 +178,8 @@ def held(config_dir: Path) -> Path:
 def conversation(config_dir: Path, new: SessionId) -> Conversation:
     """The conversation a brain on `config_dir` starts in: the one held, while Claude Code still has its transcript, or
     else one begun under `new`."""
-    try:
-        session = SessionId(held(config_dir).read_text().strip())
-    except FileNotFoundError:
+    session = _holding(config_dir)
+    if session is None:
         return Fresh(new, None)
     # [LAW:one-source-of-truth] Claude Code's own transcript says whether there is a conversation to resume: named by
     # its session, under any project directory, as Claude Code finds the session it resumes (2.1.289, measured).
@@ -197,9 +196,19 @@ def hold(config_dir: Path, session: SessionId) -> None:
     written.replace(path)
 
 
-def let_go(config_dir: Path) -> None:
-    """Forget the brain's conversation, so the next brain on `config_dir` begins a new one."""
+def let_go(config_dir: Path) -> SessionId | None:
+    """Forget the brain's conversation, so the next brain on `config_dir` begins a new one: the session that was held,
+    when one was."""
+    session = _holding(config_dir)
     held(config_dir).unlink(missing_ok=True)
+    return session
+
+
+def _holding(config_dir: Path) -> SessionId | None:
+    try:
+        return SessionId(held(config_dir).read_text().strip())
+    except FileNotFoundError:
+        return None
 
 
 def slim(claude: Path, model: str, conversation: Conversation) -> list[str]:
@@ -930,7 +939,7 @@ async def start(launch: Launch, record: Record) -> Brain:
             except Unstartable:
                 # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
                 # Claude Code keeps its transcript (2.1.289 exits "No conversation found" on one it cannot read).
-                let_go(station.config_dir)
+                annotate(let_go=let_go(station.config_dir))
                 raise
             # Held once the brain is up in it, so the next start resumes what this one says.
             hold(station.config_dir, launch.session)

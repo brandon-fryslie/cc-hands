@@ -1208,8 +1208,11 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
     brain.mkdir()
     (brain / "conversation").write_text("c1\n")
     transcript(brain, "c1")
+    recorded: list[Entry] = []
     with pytest.raises(Unstartable, match="No conversation found"):
-        await start(replace(launch(tmp_path), conversation=conversation(brain, SessionId("n1"))), lambda _entry: None)
+        await start(replace(launch(tmp_path), conversation=conversation(brain, SessionId("n1"))), recorded.append)
+    [launched] = events(recorded, "brain.launch")
+    assert (launched.outcome, launched.facts["conversation"], launched.facts["let_go"]) == ("failed", "resumed", "c1")
     assert conversation(brain, SessionId("n2")) == Fresh(SessionId("n2"), None)
 
 
