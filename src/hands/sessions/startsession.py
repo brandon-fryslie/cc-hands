@@ -159,10 +159,9 @@ async def _opened(tmux: str, terminal: Mapping[str, str], name: str, folder: Pat
 
 
 def _window(opened: Ran) -> _Window:
-    # The socket last: the one field that may hold a space.
+    # The socket last: the one field that may hold a space. Every tmux hands runs on names it: #{socket_path} is 2.2's,
+    # and the -f filters hands lists panes by are 3.2's.
     pane, pid, socket = opened.out.decode().rstrip("\n").split(" ", 2)
-    if not socket:
-        raise NotStarted(f"tmux opened pane {pane} without saying which server's socket holds it: a tmux older than 3.2?")
     return _Window(pane, int(pid), Path(socket))
 
 
