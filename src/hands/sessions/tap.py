@@ -19,7 +19,7 @@ from loguru import logger
 
 from hands.core.events import Closed
 from hands.core.session import SessionId
-from hands.core.wire import Exchanged, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Seconds, Sent, Written, Text, Uncopied, Unreached, WireEvent
+from hands.core.wire import Body, Exchanged, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Seconds, Sent, Written, Text, Uncopied, Unreached, WireEvent
 from hands.sessions.audit import CopiesLost, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.replies import Reader, reply_reader, sent_of, shielded
@@ -126,11 +126,31 @@ def moves(observed: Observed) -> tuple[Closed, ...]:
             return ()
 
 
-async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> asyncio.Server:
-    """Take copies on the socket until the returned server is closed."""
-    tell = shielded(observe)
+@dataclass(frozen=True)
+class Tap:
+    """The socket copies are taken on, and the copies being read from it."""
 
-    async def take(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    server: asyncio.Server
+    reading: set[asyncio.Task[None]]
+
+    async def close(self) -> None:
+        """Take no more copies, and stop reading those still coming: each ends its exchange while what hears it listens."""
+        self.server.close()
+        # [LAW:no-ambient-temporal-coupling] the server holds every connection it accepted, one whose copy is not yet being
+        # read among them: until it holds none, each copy being read is stopped, and ends its exchange as it stops.
+        closed = asyncio.ensure_future(self.server.wait_closed())
+        while not closed.done():
+            for task in self.reading:
+                task.cancel()
+            await asyncio.wait({closed, *self.reading}, return_when=asyncio.FIRST_COMPLETED)
+
+
+async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> Tap:
+    """Take copies on the socket until the returned tap is closed."""
+    tell = shielded(observe)
+    reading: set[asyncio.Task[None]] = set()
+
+    async def read(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             await _copy(reader, tell, record, clock)
         except Exception:
@@ -140,11 +160,17 @@ async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Rec
         finally:
             writer.close()
 
+    def take(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Held from the moment its connection is made, so no copy's reading starts where closing the tap cannot reach it.
+        task = asyncio.create_task(read(reader, writer))
+        reading.add(task)
+        task.add_done_callback(reading.discard)
+
     claim_socket(path)
     server = await asyncio.start_unix_server(take, path=str(path), limit=LINE_LIMIT)
     # The copies are the user's conversations: theirs alone to dial into.
     path.chmod(0o600)
-    return server
+    return Tap(server, reading)
 
 
 async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> None:
@@ -158,8 +184,11 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
     if request.lost:
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
-    reply = await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock)
-    tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
+
+    def end(reply: Reached | Unreached | Uncopied) -> None:
+        tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
+
+    await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock, end)
 
 
 def _opened(raw: bytes) -> tuple[Request, Sent]:
@@ -186,35 +215,92 @@ async def _next(reader: asyncio.StreamReader) -> Line | str:
         return f"a line hands cannot read: {error}"
 
 
-async def _reply(reader: asyncio.StreamReader, kind: Kind, hear: Callable[[WireEvent], None], clock: Callable[[], Seconds]) -> Reached | Unreached | Uncopied:
-    """How the exchange ended, as its copy tells it; a copy that breaks off, however it does, is a reply of its own."""
-    reading: tuple[Response, Reader] | None = None
+async def _reply(
+    reader: asyncio.StreamReader,
+    kind: Kind,
+    hear: Callable[[WireEvent], None],
+    clock: Callable[[], Seconds],
+    end: Callable[[Reached | Unreached | Uncopied], None],
+) -> None:
+    """Read the reply as its copy tells it, and `end` the exchange once with how it ended; a copy that breaks off, however
+    it does, is a reply of its own, and whatever stops hands reading it goes on as it came once the exchange has ended."""
+    # [LAW:single-enforcer] before the reply's head, whatever stops the reading ends the exchange here: no head, uncopied.
+    try:
+        opened = await _opening(reader, clock)
+    except BaseException as error:
+        end(Uncopied(_stopped(error), clock()))
+        raise
+    match opened:
+        case Response() as head:
+            pass
+        case ending:
+            return end(ending)
+    came = _Came(head)
+    # [LAW:single-enforcer] from the head on, whatever stops the reading ends the exchange here: reached, garbled.
+    try:
+        reply = await _rest(reader, reply_reader(kind, head.headers, hear), came)
+    except BaseException as error:
+        end(came.reached(head.at, Garbled(_stopped(error))))
+        raise
+    end(reply)
+
+
+async def _opening(reader: asyncio.StreamReader, clock: Callable[[], Seconds]) -> Response | Unreached | Uncopied:
+    """The reply's head, or how the exchange ended without one."""
+    match await _next(reader):
+        case Response() as head:
+            return head
+        case NoUpstream(at=at, error=error):
+            return Unreached(error, at)
+        case str() as broken:
+            return Uncopied(broken, clock())
+        case unexpected:
+            return Uncopied(_disordered(unexpected), clock())
+
+
+@dataclass
+class _Came:
+    """What of a reply has come so far: its head, and when and how much of its body."""
+
+    head: Response
     first: Seconds | None = None
     last: Seconds | None = None
-    size = 0
+    size: int = 0
+
+    def took(self, chunk: Chunk) -> None:
+        self.first = chunk.at if self.first is None else self.first
+        self.last = chunk.at
+        self.size += len(chunk.data)
+
+    def reached(self, ended: Seconds, body: Body) -> Reached:
+        """The reply as it reached hands, its last byte at `ended` where none of its body came."""
+        return Reached(self.head.status, self.head.at if self.first is None else self.first, ended if self.last is None else self.last, self.size, body)
+
+
+async def _rest(reader: asyncio.StreamReader, feeder: Reader, came: _Came) -> Reached:
+    """The reply from its head to its end, each chunk fed to `feeder` and counted in `came` as it comes."""
     while True:
-        line = await _next(reader)
-        match (line, reading):
-            case (Response() as head, None):
-                reading = (head, reply_reader(kind, head.headers, hear))
-                continue
-            case (Chunk(at=at, data=data), (_, feeder)):
-                first = at if first is None else first
-                last = at
-                size += len(data)
-                feeder.feed(data)
-                continue
-            case (End(at=at, error=error), (head, feeder)):
-                body = feeder.finish() if error is None else Garbled(error)
-                return Reached(head.status, head.at if first is None else first, at if last is None else last, size, body)
-            case (NoUpstream(at=at, error=error), None):
-                return Unreached(error, at)
-            case (str() as broken, _):
-                pass
-            case (unexpected, _):
-                broken = f"a {type(unexpected).__name__} line out of its order"
-        match reading:
-            case None:
-                return Uncopied(broken, clock())
-            case (head, _):
-                return Reached(head.status, head.at if first is None else first, head.at if last is None else last, size, Garbled(broken))
+        match await _next(reader):
+            case Chunk() as chunk:
+                came.took(chunk)
+                feeder.feed(chunk.data)
+            case End(at=at, error=error):
+                return came.reached(at, feeder.finish() if error is None else Garbled(error))
+            case str() as broken:
+                return came.reached(came.head.at, Garbled(broken))
+            case unexpected:
+                return came.reached(came.head.at, Garbled(_disordered(unexpected)))
+
+
+def _disordered(line: Line) -> str:
+    return f"a {type(line).__name__} line out of its order"
+
+
+def _stopped(error: BaseException) -> str:
+    """Why hands stopped reading a copy before its end."""
+    match error:
+        # Only a stopping daemon cancels a copy's reading: its fritter hanging up is the copy breaking off.
+        case asyncio.CancelledError():
+            return "hands stopped reading the copy: cancelled, as hands stopped"
+        case _:
+            return f"hands stopped reading the copy: {type(error).__name__}: {error}"
