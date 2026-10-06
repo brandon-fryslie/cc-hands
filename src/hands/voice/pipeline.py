@@ -10,7 +10,7 @@ import asyncio
 import math
 from itertools import takewhile
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from anthropic import AsyncAnthropic
@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
 )
+from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -41,9 +42,8 @@ from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from hands.sessions.audit import Record
 from hands.sessions.model_facts import ModelFault, ModelReplyEmpty
-from hands.sessions.wide import annotate, fail, unit
+from hands.sessions.wide import Begun, Fact, begun, ended
 from hands.voice.transcript import TranscriptObserver
 from hands.voice.wakeword import Pretrained, Word
 from hands.voice.floor import Floor
@@ -125,59 +125,94 @@ def _answers_call(context: LLMContext) -> bool:
 
 def _cancelling() -> bool:
     """The task pushing a frame is being cancelled, as Pipecat cancels a reply's task to stop it."""
+    return _this_task().cancelling() > 0
+
+
+def _this_task() -> asyncio.Task[Any]:
     task = asyncio.current_task()
     if task is None:
-        raise RuntimeError("an LLM frame was pushed outside a task, so whether its reply was cancelled cannot be known")
-    return task.cancelling() > 0
+        raise RuntimeError("an LLM frame was pushed outside a task, so the reply it belongs to cannot be known")
+    return task
 
 
-# What a reply's usage says the request read fresh, wrote to the prompt cache, read from it, and what the model wrote back.
-USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+@dataclass
+class _Request:
+    """A request a service is answering: when it began, the task answering it, the usage its API reported, and what the
+    service said failed it, the exception where there was one."""
+
+    began: Begun
+    task: asyncio.Task[Any]
+    usage: dict[str, Fact] = field(default_factory=dict[str, Fact])
+    raised: BaseException | None = None
+    failure: str | None = None
 
 
-class AnthropicService(EmptyReplyFails, AnthropicLLMService):
-    """Claude through Pipecat's Anthropic service, whose request that timed out is said as the OpenAI-compatible one's is,
-    and each of whose requests is one wide event saying what the API reported it cost."""
+class RequestEvents(EmptyReplyFails):
+    """An LLM service whose empty reply fails, and each of whose requests is one wide event, `model.request`, saying how
+    it ended and the usage its API reported."""
+
+    # The request being answered, in the task its context frame came in on: a service answers one at a time.
+    _request: _Request | None = None
 
     def __init__(self, *args: Any, record: Record, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._record = record
-        # A request is being answered, its event open in this task.
-        self._requesting = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         if not isinstance(frame, LLMContextFrame):
             await super().process_frame(frame, direction)
             return
-        # [LAW:nothing-unseen] every request is asked by a context frame, and answered in this task before it returns.
-        with unit("model.request", self._record):
-            self._requesting = True
-            try:
-                await super().process_frame(frame, direction)
-            finally:
-                self._requesting = False
+        # [LAW:nothing-unseen] every request is asked by a context frame and answered before its processing returns.
+        # Emitted by `ended`, not run as a `unit`: a unit is open in the context each task the request starts copies,
+        # and a tool call it starts is work of its own that outlives it.
+        request = self._request = _Request(begun(), _this_task())
+        raised: BaseException | None = None
+        try:
+            await super().process_frame(frame, direction)
+        except BaseException as error:
+            raised = error
+            raise
+        finally:
+            self._request = None
+            ended("model.request", self._record, request.began, raised or request.raised, request.failure, **request.usage)
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
-        if isinstance(frame, ErrorFrame) and frame.processor is self and self._requesting:
-            # [LAW:no-silent-failure] Pipecat catches what the API raised and says it as this frame alone, so the
-            # request's event fails by it rather than ending ok.
-            fail(frame.error)
+        request = self._request
+        # [LAW:no-silent-failure] Pipecat catches what the API raised and says it as this frame alone, so the request
+        # fails by it. Only by one the answering task pushes: a tool call says its own failure from its own task.
+        if isinstance(frame, ErrorFrame) and frame.processor is self and request is not None and request.task is _this_task():
+            request.raised, request.failure = frame.exception, frame.error
         await super().push_frame(frame, direction)
+
+    def _answering(self) -> _Request:
+        if self._request is None:
+            raise LookupError("a reply's usage was read with no request being answered")
+        return self._request
+
+
+# What a request read fresh, wrote to the prompt cache, and read from it, as message_start and message_delta report them;
+# and what the model wrote back, which only message_delta does: message_start's is a count before the reply is written.
+INPUT_USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+USAGE = (*INPUT_USAGE, "output_tokens")
+
+
+class AnthropicService(RequestEvents, AnthropicLLMService):
+    """Claude through Pipecat's Anthropic service, whose request that timed out is said as the OpenAI-compatible one's is."""
 
     async def _create_message_stream(self, api_call: Any, params: Any) -> AsyncIterator[Any]:
         stream = await super()._create_message_stream(api_call, params)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in Pipecat)
-        return _usage_annotated(cast(AsyncIterator[Any], stream))
+        return _usage_read(cast(AsyncIterator[Any], stream), self._answering().usage)
 
     async def _call_event_handler(self, event_name: str, *args: Any, **kwargs: Any) -> None:
         if event_name == "on_completion_timeout":
             # [LAW:no-silent-failure] Pipecat's Anthropic service drops a request that timed out with this event alone
             # (1.10.0), where the OpenAI one pushes an error too. A timeout is the model out of reach, not an empty reply.
-            await self.push_error("LLM completion timeout", exception=TimeoutError())  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            await self.push_error("LLM completion timeout", exception=TimeoutError("LLM completion timeout"))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         await super()._call_event_handler(event_name, *args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
 
-async def _usage_annotated(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
-    """The stream as it came, with the usage its events report annotated on the request's event as each arrives.
+async def _usage_read(stream: AsyncIterator[Any], usage: dict[str, Fact]) -> AsyncIterator[Any]:
+    """The stream as it came, with the usage its events report written into `usage` as each arrives.
 
     Read here, not from Pipecat's figures: Pipecat adds message_delta's usage to message_start's (1.10.0), and the API
     reports message_delta's cumulatively, so its input count is twice what was read. Each later report replaces an
@@ -185,17 +220,19 @@ async def _usage_annotated(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
     async for event in stream:
         match event.type:
             case "message_start":
-                usage = event.message.usage
+                usage.update(_reported(event.message.usage, INPUT_USAGE))
             case "message_delta":
-                usage = event.usage
+                usage.update(_reported(event.usage, USAGE))
             case _:
-                usage = None
-        if usage is not None:
-            annotate(**{name: value for name in USAGE if (value := getattr(usage, name)) is not None})
+                pass
         yield event
 
 
-class FailFastOpenAILLMService(EmptyReplyFails, OpenAILLMService):
+def _reported(usage: Any, names: tuple[str, ...]) -> dict[str, Fact]:
+    return {name: value for name in names if (value := getattr(usage, name)) is not None}
+
+
+class FailFastOpenAILLMService(RequestEvents, OpenAILLMService):
     """An OpenAI-compatible model whose failed request is reported at once, not retried with backoff."""
 
     def create_client(self, *args: Any, **kwargs: Any) -> AsyncOpenAI:
@@ -203,6 +240,12 @@ class FailFastOpenAILLMService(EmptyReplyFails, OpenAILLMService):
         # against inferno); in a voice turn that sounds like thinking, so the failure is spoken instead.
         client: AsyncOpenAI = super().create_client(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         return client.with_options(max_retries=0)
+
+    async def start_llm_usage_metrics(self, tokens: LLMTokenUsage) -> None:
+        # Pipecat holds the last usage the stream reported and gives it here once, in the answering task, cut off or not.
+        # Its prompt_tokens is gross of the cache, as these APIs count it, where Anthropic's input_tokens is net.
+        self._answering().usage.update(tokens.model_dump(exclude_none=True))
+        await super().start_llm_usage_metrics(tokens)
 
 
 def build_llm(
@@ -220,7 +263,7 @@ def build_llm(
                 record=record,
                 settings=AnthropicService.Settings(
                     # Pipecat marks the last two user messages, and the cache is a prefix: the tools and the instruction
-                    # ahead of them are read from it on every request after the first, at a tenth of the input price.
+                    # ahead of them are read from it, at a tenth of the input price, by a request within five minutes of the last.
                     model=model, system_instruction=instruction, max_tokens=max_tokens, enable_prompt_caching=True
                 ),
             )
@@ -228,6 +271,7 @@ def build_llm(
             return FailFastOpenAILLMService(
                 base_url=base_url,
                 api_key=api_key,
+                record=record,
                 settings=OpenAILLMService.Settings(
                     model=model, system_instruction=instruction, max_tokens=max_tokens
                 ),

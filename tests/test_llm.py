@@ -76,7 +76,9 @@ def openai_stream(reply: Reply) -> list[str]:
         case "stay_silent":
             call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": "stay_silent", "arguments": "{}"}}
             chunks = [chunk({"role": "assistant", "tool_calls": [call]}, None), chunk({}, "tool_calls")]
-    return [*(f"data: {json.dumps(each)}\n\n" for each in chunks), "data: [DONE]\n\n"]
+    # Asked for by stream_options, the usage comes last, in a chunk of its own; its prompt_tokens counts the cached ones.
+    usage: dict[str, object] = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m", "choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 7}}}
+    return [*(f"data: {json.dumps(each)}\n\n" for each in [*chunks, usage]), "data: [DONE]\n\n"]
 
 
 def anthropic_stream(reply: Reply) -> list[str]:
@@ -223,11 +225,11 @@ async def test_a_reply_cut_off_by_the_pipeline_stopping_is_no_empty_reply(stream
 
 async def test_an_anthropic_request_that_times_out_is_said_as_the_model_out_of_reach_and_its_event_failed(streaming: Callable[[Reply, bool], Awaitable[Streaming]]) -> None:
     server = await streaming("empty", True)
-    recorded: list[Entry] = []
+    recorded = asyncio.Queue[Entry]()
     llm = AnthropicService(
         api_key="k",
         client=AsyncAnthropic(base_url=server.api.anthropic_url, api_key="k", max_retries=0, timeout=0.2),
-        record=recorded.append,
+        record=recorded.put_nowait,
         settings=AnthropicService.Settings(model="m", system_instruction="Speak.", max_tokens=50),
     )
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
@@ -235,11 +237,16 @@ async def test_an_anthropic_request_that_times_out_is_said_as_the_model_out_of_r
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
         [error] = run.errors
         assert model_fact(error) == ModelUnreachable()
-        while not recorded:
-            await asyncio.sleep(0.01)
-    [event] = recorded
+        event = await request_event(recorded)
+    assert (event.outcome, event.error) == ("failed", "TimeoutError: LLM completion timeout")
+
+
+async def request_event(recorded: asyncio.Queue[Entry]) -> WideEvent:
+    """The one event recorded, a request's."""
+    event = await asyncio.wait_for(recorded.get(), PATIENCE_SECS)
     assert isinstance(event, WideEvent) and event.event == "model.request"
-    assert (event.outcome, event.error) == ("failed", "LLM completion timeout")
+    assert recorded.empty()
+    return event
 
 
 def answered(llm: FrameProcessor, *after: ChatCompletionUserMessageParam) -> LLMContextFrame:
@@ -270,15 +277,38 @@ async def test_an_empty_reply_to_a_calls_result_is_no_failure(streaming: Callabl
         assert run.errors == []
 
 
-async def test_each_request_is_one_event_saying_what_it_read_fresh_and_from_the_cache_and_what_it_wrote(streaming: Callable[[Reply, bool], Awaitable[Streaming]]) -> None:
-    recorded: list[Entry] = []
-    llm = service("anthropic", await streaming("words", False), recorded.append)
+@pytest.mark.parametrize(
+    ("shape", "usage"),
+    [
+        # message_delta's usage is the whole request's, as the API reports it: counted on top of message_start's, it doubles.
+        ("anthropic", {"input_tokens": 3, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 7, "output_tokens": 2}),
+        ("openai", {"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14, "cache_read_input_tokens": 7}),
+    ],
+)
+async def test_each_request_is_one_event_saying_the_usage_its_api_reported(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape, usage: dict[str, int]) -> None:
+    recorded = asyncio.Queue[Entry]()
+    llm = service(shape, await streaming("words", False), recorded.put_nowait)
     async with running([llm, Ends(ended := asyncio.Event())]) as run:
         await run.worker.queue_frame(asked(llm))
         await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
-        while not recorded:
-            await asyncio.sleep(0.01)
-    [event] = recorded
-    assert isinstance(event, WideEvent) and event.event == "model.request" and event.outcome == "ok"
-    # message_delta's usage is the whole request's, as the API reports it: counted on top of message_start's, it doubles.
-    assert event.facts == {"input_tokens": 3, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 7, "output_tokens": 2}
+        event = await request_event(recorded)
+    assert event.outcome == "ok"
+    assert event.facts == usage
+
+
+@pytest.mark.parametrize("shape", ["openai", "anthropic"])
+async def test_an_error_the_service_says_from_another_task_while_a_request_is_answered_is_not_the_requests(streaming: Callable[[Reply, bool], Awaitable[Streaming]], shape: Shape) -> None:
+    """As a tool call the request started says its own failure, from the task Pipecat runs it in."""
+    server = await streaming("words", True)
+    recorded = asyncio.Queue[Entry]()
+    llm = service(shape, server, recorded.put_nowait)
+    async with running([llm, Ends(ended := asyncio.Event())]) as run:
+        await run.worker.queue_frame(asked(llm))
+        await asyncio.wait_for(server.received.wait(), PATIENCE_SECS)
+        await llm.push_error("the call failed", exception=RuntimeError("the call failed"))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        server.release.set()
+        await asyncio.wait_for(ended.wait(), PATIENCE_SECS)
+        event = await request_event(recorded)
+        [error] = run.errors
+    assert error.error == "the call failed"
+    assert event.outcome == "ok"
