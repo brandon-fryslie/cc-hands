@@ -31,7 +31,7 @@ from hands.core.progress import Doing, said
 from hands.core.session import Blocker, Membership, CommandName, Dialog, Opened, Turn, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
-from hands.core.attention import Attention, Overlay, Spoken, Withheld
+from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
@@ -811,7 +811,7 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
 
 
 class Change(TypedDict):
-    kind: Literal["finished", "progress", "ended", "quiet"]
+    kind: Kind
     level: Literal["off", "brief", "full", "on"]
 
 
@@ -825,6 +825,10 @@ def attention_tool(home: Home) -> Tool:
         - progress: the focused session's steps as it works. off says none; brief says what it says it is doing; full
           says each step.
         - ended: a session ending, on or off.
+        - Claude Code's hooks, each off, brief (what happened), or full (and what the hook says of it), and off until
+          set: permission_denied, auto mode refusing a call; subagent_start and subagent_stop, a subagent the session
+          started starting and finishing; task_completed, a task on its list marked done; config_change, its settings
+          or skills changing; pre_compact, its context about to be compacted; clear, a /clear.
         - quiet: on holds everything above, whatever its level, until it is off again, and leaves the levels as they
           were. "Be quiet for a while" is quiet on; "you can talk again" is quiet off.
         What a session asks, a permission, a question, or a plan, is said whatever is set: it needs an answer.

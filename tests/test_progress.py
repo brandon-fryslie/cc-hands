@@ -104,7 +104,11 @@ def test_a_burst_is_due_once_it_settles_and_no_later_than_its_longest_wait() -> 
     ],
 )
 def test_only_the_focus_is_heard_working_and_never_a_muted_one(focused: bool, overlay: Overlay, route: Route) -> None:
-    assert progress_route(Attention(), focused, overlay) == route
+    assert progress_route(Attention(progress="full"), focused, overlay) == route
+
+
+def test_no_session_is_heard_working_until_the_user_sets_progress_to_be() -> None:
+    assert progress_route(Attention(), True, "normal") == "note"
 
 
 @pytest.mark.parametrize(

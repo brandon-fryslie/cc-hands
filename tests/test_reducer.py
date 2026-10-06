@@ -212,7 +212,7 @@ def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState
 )
 def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event: Event) -> None:
     # Most often the user answered the dialog at the keyboard; a voice reply after that would decide nothing.
-    assert reduce(in_turn(AT_DIALOG, HELD), event)[1] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+    assert [effect for effect in reduce(in_turn(AT_DIALOG, HELD), event)[1] if isinstance(effect, Reply)] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
 
 
 @pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD), in_turn(IDLE)])

@@ -261,9 +261,9 @@ async def test_an_end_removes_membership_and_leaves_the_listing(home: Home, sess
 
 
 async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Home, sessions: Sessions) -> None:
-    code, _, stderr = await shim(home, {**COMMON, "hook_event_name": "PreCompact"})
+    code, _, stderr = await shim(home, {**COMMON, "hook_event_name": "Notification"})
     assert code == 1
-    assert "refused this hook (400): hook event 'PreCompact' is not one hands handles" in stderr
+    assert "refused this hook (400): hook event 'Notification' is not one hands handles" in stderr
     assert sessions.live() == []
 
 
@@ -273,7 +273,7 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
     runner = await serve_hooks(home, registry, Names(), recorded.append)
     try:
         await shim(home, START)
-        await shim(home, {**COMMON, "hook_event_name": "PreCompact"})
+        await shim(home, {**COMMON, "hook_event_name": "Notification"})
         await shim(home, PROMPT)
         # Nothing is waiting to be read: the Stop is decided as it is heard.
         await shim(home, STOP)
@@ -284,7 +284,7 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
         await shim(home, {**STOP, "prompt_id": "p3"})
     finally:
         await runner.cleanup()
-    rejected = "rejected hook: hook event 'PreCompact' is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins"
+    rejected = "rejected hook: hook event 'Notification' is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins"
     assert hooks(recorded) == [
         ("ok", None, {"hook": "SessionStart"}),
         ("failed", rejected, {}),

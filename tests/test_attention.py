@@ -6,6 +6,7 @@ import asyncio
 import json
 import subprocess
 import zlib
+from dataclasses import fields
 from pathlib import Path
 from typing import cast
 
@@ -216,7 +217,7 @@ async def test_what_is_said_unprompted_is_set_by_voice_in_one_call_and_holds_acr
     setting = attention_tool(home := Home(tmp_path)).body
     result = await setting(changes=[{"kind": "finished", "level": "brief"}, {"kind": "ended", "level": "off"}])
     assert result == {
-        "readback": "I tell each finished turn in a few words. I tell each step the focused session takes. I don't say when a session ends. What needs your answer is always said."
+        "readback": "I tell each finished turn in a few words. I don't tell what the focused session is doing. I don't say when a session ends. I tell none of Claude Code's other events. What needs your answer is always said."
     }
     assert attention(Home(tmp_path)) == Attention(finished="brief", ended="off")
     # Quiet holds the rest and leaves its levels as they were, so talking again is back to them.
@@ -229,7 +230,7 @@ async def test_what_is_said_unprompted_is_set_by_voice_in_one_call_and_holds_acr
 async def test_asking_what_is_set_changes_nothing_and_says_it(tmp_path: Path) -> None:
     result = await attention_tool(Home(tmp_path)).body(changes=[])
     assert result == {
-        "readback": "Finished turns wait until you ask, except a watched session's. I tell each step the focused session takes. I say when a session ends. What needs your answer is always said."
+        "readback": "Finished turns wait until you ask, except a watched session's. I don't tell what the focused session is doing. I say when a session ends. I tell none of Claude Code's other events. What needs your answer is always said."
     }
     # Read and never written, so it cannot land over a change made meanwhile.
     assert not Home(tmp_path).attention.exists()
@@ -258,12 +259,13 @@ async def test_a_kind_turned_on_is_all_of_it_and_a_level_a_kind_does_not_have_is
     assert attention(home).progress == "full"
     result = await setting(changes=[{"kind": "finished", "level": "off"}, {"kind": "ended", "level": "brief"}])
     assert result == {"error": "'brief' is no level of ended; it is one of on, off"}
-    assert attention(home) == Attention()
+    assert attention(home) == Attention(progress="full")
 
 
 def test_the_model_is_offered_only_the_kinds_and_levels_there_are(tmp_path: Path) -> None:
     items = cast(dict[str, dict[str, object]], cast(dict[str, object], attention_tool(Home(tmp_path)).properties["changes"]["items"])["properties"])
-    assert (items["kind"]["enum"], items["level"]["enum"]) == (["finished", "progress", "ended", "quiet"], ["off", "brief", "full", "on"])
+    # Every setting there is, and no other: the kinds offered are Attention's own.
+    assert (items["kind"]["enum"], items["level"]["enum"]) == ([field.name for field in fields(Attention)], ["off", "brief", "full", "on"])
 
 
 def test_a_file_holding_anything_but_settings_is_refused_and_a_kind_never_written_is_at_its_default(tmp_path: Path) -> None:
@@ -415,7 +417,7 @@ def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: P
     ("arguments", "refused"),
     [
         (("quiet",), "hands attention: expected a kind and its level, in pairs, got 'quiet'\n"),
-        (("volume", "up"), "hands attention: 'volume' is no kind of thing hands says unprompted; it is one of finished, progress, ended, quiet\n"),
+        (("volume", "up"), "hands attention: 'volume' is no kind of thing hands says unprompted; it is one of finished, progress, ended, quiet, permission_denied, subagent_start, subagent_stop, task_completed, config_change, pre_compact, clear\n"),
     ],
 )
 def test_the_skill_refuses_what_is_no_setting_and_leaves_what_is_set_alone(tmp_path: Path, plugin: Path, arguments: tuple[str, ...], refused: str) -> None:

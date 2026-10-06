@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 from hands.core.status import Report, Stamp
@@ -192,6 +193,14 @@ class ToolFinished:
 
 
 @dataclass(frozen=True)
+class Occurred:
+    """A hook said something happened in the session that moves nothing in it, for the user to hear of as they set."""
+
+    session: SessionId
+    occurrence: Occurrence
+
+
+@dataclass(frozen=True)
 class Ended:
     session: SessionId
     reason: EndReason
@@ -216,7 +225,7 @@ class Tick:
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
 Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Read | StatusReported | PermissionRequested | ToolFinished
-SessionEvent = Moving | Progressed | Displayed | Ended
+SessionEvent = Moving | Progressed | Displayed | Occurred | Ended
 # What a session's transcript says that none of its hooks do: of its turn, and how far it has been read.
 Transcribed = Taken | Interrupted | Continued | Progressed | Read
 # What the liveness sweep saw in one membership file.

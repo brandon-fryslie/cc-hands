@@ -2,12 +2,14 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import get_args, overload
 
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Attached, Displayed, Ended, EndReason, Event, Joined, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
+from hands.core.events import Attached, Displayed, Ended, EndReason, Event, Joined, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
+from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
 from hands.sessions.home import Home
@@ -74,8 +76,42 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
             return PermissionRequested(session, at, request, called(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
             return ToolFinished(session, at, _ran(payload), _mode(payload))
+        # What a hook hands only passes on says happened, in the fields its reference names (code.claude.com/docs/en/hooks).
+        case "PermissionDenied":
+            return Occurred(session, AutoDenied(payload.text("tool_name"), payload.text("reason"), payload.mapping("tool_input")))
+        case "SubagentStart":
+            return Occurred(session, SubagentStarted(payload.text("agent_type")))
+        case "SubagentStop":
+            return Occurred(session, SubagentStopped(payload.text("agent_type"), payload.optional_text("last_assistant_message") or None))
+        case "TaskCompleted":
+            completed = TaskCompleted(payload.text("task_subject"), payload.optional_text("task_description") or None, payload.optional_text("teammate_name") or None)
+            return Occurred(session, completed)
+        case "ConfigChange":
+            return Occurred(session, ConfigChanged(_config_source(payload.text("source")), _path(payload.optional_text("file_path"))))
+        case "PreCompact":
+            return Occurred(session, Compacting(_trigger(payload.text("trigger")), payload.optional_text("custom_instructions") or None))
         case other:
             raise Rejected(f"hook event {other!r} is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins")
+
+
+def _config_source(source: str) -> ConfigSource:
+    match source:
+        case "user_settings" | "project_settings" | "local_settings" | "policy_settings" | "skills":
+            return source
+        case other:
+            raise Rejected(f"ConfigChange source {other!r} is not one hands knows")
+
+
+def _path(path: str | None) -> Path | None:
+    return None if path is None else Path(path)
+
+
+def _trigger(trigger: str) -> CompactTrigger:
+    match trigger:
+        case "manual" | "auto":
+            return trigger
+        case other:
+            raise Rejected(f"PreCompact trigger {other!r} is not one hands knows")
 
 
 def called(payload: Payload) -> Blocker:

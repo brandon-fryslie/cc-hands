@@ -1,6 +1,6 @@
 ---
-description: Set what hands says unprompted, or say what is set. Kinds and levels, given in pairs - finished (each turn a session finishes) off, brief, or full; progress (the focused session's steps as it works) off, brief, or full; ended (a session ending) on or off; quiet on or off, which holds all of them, whatever their level, until it is off again. Off, a thing is told only when asked for. Permission requests, questions asked in a dialog, and plans are always spoken. Takes effect from the next thing hands would have said, with no restart, and lasts across restarts.
-argument-hint: "[finished|progress|ended|quiet LEVEL]..."
+description: Set what hands says unprompted, or say what is set. Kinds and levels, given in pairs - finished (each turn a session finishes) off, brief, or full; progress (the focused session's steps as it works) off, brief, or full; ended (a session ending) on or off; each of Claude Code's hooks hands passes on, off, brief, or full - permission_denied (auto mode refused a call), subagent_start, subagent_stop, task_completed, config_change, pre_compact, clear (a /clear); quiet on or off, which holds all of them, whatever their level, until it is off again. Off, a thing is told only when asked for. Permission requests, questions asked in a dialog, and plans are always spoken. Takes effect from the next thing hands would have said, with no restart, and lasts across restarts.
+argument-hint: "[finished|progress|ended|quiet|permission_denied|subagent_start|subagent_stop|task_completed|config_change|pre_compact|clear LEVEL]..."
 allowed-tools: Bash(*hands.sessions.attention*)
 ---
 

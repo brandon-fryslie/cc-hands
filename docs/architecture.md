@@ -496,7 +496,12 @@ name, as one identifier: "cc-hands, naming fix".
 | `PermissionRequest` | `tool_name`, `tool_input`, `permission_suggestions` |
 | `PostToolUse`, `PostToolUseFailure` | `tool_name`, `tool_input`, `tool_use_id`, and the response or the error |
 | `Notification` | `message`, `title`, `notification_type` in `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog` |
-| `SubagentStop` | `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message` |
+| `SubagentStart` | `agent_id`, `agent_type` |
+| `SubagentStop` | `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message` (absent for a report handed back through a tool, 2.1.289) |
+| `PermissionDenied` | `tool_name`, `tool_input`, `tool_use_id`, `reason` |
+| `TaskCompleted` | `task_id`, `task_subject`, and optionally `task_description`, `teammate_name` |
+| `ConfigChange` | `source`, and optionally `file_path` |
+| `PreCompact` | `trigger`, `custom_instructions` |
 | `MessageDisplay` | `turn_id`, `message_id`, `index`, `final`, `delta` |
 | `SessionEnd` | the common fields |
 
@@ -570,7 +575,11 @@ SubagentStop TaskCompleted TaskCreated TeammateIdle UserPromptExpansion
 UserPromptSubmit WorktreeCreate WorktreeRemove
 ```
 
-The daemon subscribes to the events in the table. Each hook posted, to the socket or the display route, is one `hook`
+The daemon subscribes to the events in the table. `PermissionDenied`, `SubagentStart`, `SubagentStop`,
+`TaskCompleted`, `ConfigChange`, and `PreCompact` it only passes on (`hands.core.occurrences`), as does a
+`SessionStart` from `/clear`: each is told to the user as `/hands:attention` sets its kind, off until set, and is
+otherwise a noted utterance. They run in the background. The subagent hooks match `.+`, because Claude Code's own
+internal agents (prompt suggestions, `/btw`) fire them under an empty `agent_type`. Each hook posted, to the socket or the display route, is one `hook`
 wide event, open as long as the hook holds its session: which hook and session, and the branch it was answered by — a
 Stop `decided` or `let go` at the hold, the reply a permission was given (`cancelled` when its session closed it), the
 name a prompt gave or withheld. One the daemon refuses is a failed event saying why.

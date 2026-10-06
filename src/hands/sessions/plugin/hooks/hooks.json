@@ -101,6 +101,98 @@
         ]
       }
     ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
+            "args": [
+              "-m",
+              "hands.sessions.shim"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".+",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
+            "args": [
+              "-m",
+              "hands.sessions.shim"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": ".+",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
+            "args": [
+              "-m",
+              "hands.sessions.shim"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
+            "args": [
+              "-m",
+              "hands.sessions.shim"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
+            "args": [
+              "-m",
+              "hands.sessions.shim"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python",
+            "args": [
+              "-m",
+              "hands.sessions.shim"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
     "MessageDisplay": [
       {
         "hooks": [

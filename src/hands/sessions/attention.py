@@ -82,6 +82,29 @@ def _in_effect(home: Home) -> Attention:
         return Attention()
 
 
+# Each hook kind as the readback names it, in the order it says them.
+_HOOKS: Mapping[str, str] = {
+    "permission_denied": "auto mode's refusals",
+    "subagent_start": "subagents starting",
+    "subagent_stop": "subagents finishing",
+    "task_completed": "tasks completed",
+    "config_change": "settings changing",
+    "pre_compact": "compaction",
+    "clear": "a session cleared",
+}
+
+
+_HOW: Mapping[str, str] = {"brief": "briefly", "full": "in full"}
+
+
+def _hooks(attention: Attention) -> list[tuple[str, str]]:
+    return [(kind, getattr(attention, kind)) for kind in _HOOKS]
+
+
+def _listed(parts: Sequence[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
 def described(attention: Attention) -> str:
     """What is set, as a sentence a person can be read: each kind, then quiet, then what is spoken whatever is set."""
     finished = {
@@ -95,11 +118,13 @@ def described(attention: Attention) -> str:
         "full": "I tell each step the focused session takes.",
     }[attention.progress]
     ended = {"on": "I say when a session ends.", "off": "I don't say when a session ends."}[attention.ended]
+    told = [f"{_HOOKS[kind]} {_HOW[level]}" for kind, level in _hooks(attention) if level != "off"]
+    hooks = f"Of Claude Code's other events, I tell {_listed(told)}." if told else "I tell none of Claude Code's other events."
     quiet = {
         "on": "I'm keeping quiet for now: none of that is said until you let me talk again, and you can ask for any of it.",
         "off": "",
     }[attention.quiet]
-    return " ".join(part for part in (finished, progress, ended, quiet, "What needs your answer is always said.") if part)
+    return " ".join(part for part in (finished, progress, ended, hooks, quiet, "What needs your answer is always said.") if part)
 
 
 def main(argv: Sequence[str]) -> int:

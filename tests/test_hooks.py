@@ -234,7 +234,7 @@ def test_a_question_that_does_not_parse_is_rejected_by_name(home: Home, asked: d
         (b"not json", "not JSON"),
         (body(hook_event_name="SessionStart", source="teleport"), "source 'teleport' is not one hands knows"),
         (b"[1, 2]", "JSON object"),
-        (body(hook_event_name="PreCompact"), "'PreCompact' is not one hands handles"),
+        (body(hook_event_name="Notification"), "'Notification' is not one hands handles"),
         (body(hook_event_name="PermissionRequest", tool_input={}), "missing field 'tool_name'"),
         (body(hook_event_name="PermissionRequest", tool_name="Bash", tool_input="ls"), "'tool_input' should be an object"),
         (json.dumps({**COMMON, "session_id": "../../etc/x", "hook_event_name": "Stop"}).encode(), "not a Claude Code session id"),
