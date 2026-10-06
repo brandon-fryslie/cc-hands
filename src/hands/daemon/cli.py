@@ -20,7 +20,7 @@ from loguru import logger
 
 from hands.daemon import readiness
 from hands.daemon.backend import backend
-from hands.daemon.config import Config, OwnModel, Settings, edited, load
+from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.sessions import audit, heartbeat, marketplace, recall, wide, wrapper
@@ -143,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
+    running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
@@ -168,18 +169,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     match arguments.command:
         case "run":
-            return run_daemon(home, arguments.restarted)
+            return run_daemon(home, arguments.restarted, arguments.model)
         case _:
             return commanded(home, arguments)
 
 
-def run_daemon(home: Home, restarted: int | None) -> int:
+def model_id(text: str) -> str:
+    """[LAW:parse-dont-validate] --model's value as the id it names, which a blank names none of."""
+    if not (model := text.strip()):
+        raise argparse.ArgumentTypeError(f"a model's id, such as {ANTHROPIC_MODEL}, not {text!r}")
+    return model
+
+
+def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is the one command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
     run_start = Start(restarted=restarted is not None)
+    # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, said by a start refused first.
+    run_start.heard(model_flag=model)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
     audit_log = audit_log_of(home)
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
@@ -195,7 +205,7 @@ def run_daemon(home: Home, restarted: int | None) -> int:
             # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
             after_crash = restarted is None and crashed_before(home)
             run_start.heard(after_crash=after_crash)
-            settings = door(home, run_start)
+            settings = door(home, run_start, model)
         except CannotStart as cannot:
             run_start.ended(audit_log.record, cannot)
             refuse(cannot, held)
@@ -210,7 +220,9 @@ def run_daemon(home: Home, restarted: int | None) -> int:
             case "quit":
                 return 0
             case "restart":
-                again(invocation(home, "run", "--restarted", str(shown)))
+                # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
+                # one argument, so an id that begins with a dash is never read as an option.
+                again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
 def commanded(home: Home, arguments: argparse.Namespace) -> int:
@@ -294,7 +306,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home, run_start: Start) -> Settings:
+def door(home: Home, run_start: Start, model: str | None) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, the
     home's copy of fritter, and the settings it starts on. CannotStart where any is missing or stale."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
@@ -321,7 +333,7 @@ def door(home: Home, run_start: Start) -> Settings:
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:
-        return load(home)
+        return load(home, model)
     except Rejected as error:
         raise CannotStart(str(error)) from error
 
