@@ -20,15 +20,26 @@ from pipecat.frames.frames import (
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
-from hands.voice.trigger import Edge
+from hands.voice.trigger import Opener
 
 
 @dataclass(frozen=True)
 class Hold:
-    """One hold, by the number Whisper gave it as it opened, and the edge that opened it."""
+    """One hold, by the number Whisper gave it as it opened, and what opened it."""
 
     number: int
-    edge: Edge
+    opener: Opener
+
+
+@dataclass(kw_only=True)
+class Typed(DataFrame, UninterruptibleFrame):
+    """Words the user typed and sent, queued into the pipeline for Whisper to take as a hold of their own, already heard.
+
+    The user's own, as Words are, so no interruption drops it: the page was told they were taken, and a turn's cut can
+    land while they are still on their way to Whisper, or while Whisper is opening their hold.
+    """
+
+    text: str
 
 
 @dataclass(kw_only=True)

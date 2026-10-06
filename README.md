@@ -384,6 +384,7 @@ uv run hands restart                    # start the running hands again on what 
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up
+                                        # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
 uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; needs the model to be up

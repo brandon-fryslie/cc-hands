@@ -16,7 +16,7 @@ from conftest import events
 from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
 from hands.voice import transcription
 from hands.voice.turnstop import Hold, TurnResolved
-from hands.voice.whisper import Whisper
+from hands.voice.whisper import Whisper, _Recorded  # pyright: ignore[reportPrivateUsage]  (what a release queues)
 
 
 @dataclass
@@ -69,7 +69,7 @@ LEVELS = Levels(captured_dbfs=-12.5, heard_dbfs=-40.0)
 
 
 async def transcribe(whisper: Whisper, hold: int, audio: bytes) -> list[Frame]:
-    whisper._transcribing.append((Hold(hold, "held key"), LEVELS))  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
+    whisper._transcribing.append(_Recorded(Hold(hold, "held key"), LEVELS))  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
     return [frame async for frame in whisper.run_stt(audio)]
 
 

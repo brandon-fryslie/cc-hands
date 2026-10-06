@@ -64,13 +64,13 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame, self._turn:
             case TurnOpened(hold=hold), None:
-                start = turn_start(hold.edge)
+                start = turn_start(hold.opener)
                 self._turn = _Open(start, self._now())
                 await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._cut_where(start, self._turn)
             case TurnOpened(hold=hold), _Open() as turn:
                 # A hold pressed while Whisper is still on the last joins its turn, and cuts as its own edge says.
-                await self._cut_where(turn_start(hold.edge), turn)
+                await self._cut_where(turn_start(hold.opener), turn)
             case Words(), _Open() as turn:
                 # Words, in whichever hold, are someone speaking.
                 await self._cut(turn)

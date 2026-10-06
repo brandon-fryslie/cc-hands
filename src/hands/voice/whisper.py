@@ -1,6 +1,6 @@
 """Whisper, cutting holds where the key cut them: it says where the user started and stopped speaking, numbering each
 hold, transcribes a hold the key sent (hands.voice.transcription), throws away one the key dropped, and says when it is
-done with each."""
+done with each. Words the user typed are a hold of their own, numbered with the key's and heard as they came."""
 
 import asyncio
 import io
@@ -9,6 +9,7 @@ import threading
 import wave
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass
 
 import numpy as np
 from pipecat.frames.frames import (
@@ -31,7 +32,7 @@ from hands.core.place import Place
 from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved, Words
+from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved, Typed, Words
 
 # What every hold is said in, as Pipecat names it.
 LANGUAGE = Language(transcription.LANGUAGE)
@@ -50,6 +51,26 @@ _GUESSED = -1.5
 # longest hold the key keeps open (TURN_LIMIT_SECONDS) is a few seconds' work, so a minute is a transcription that is
 # not coming back.
 TRANSCRIBING_SECONDS = 60.0
+
+# What a typed hold puts in Pipecat's queue of segments, which skips an empty one: the hold's words are its own, so all it
+# needs there is its place in line.
+_IN_LINE = b"typed"
+
+
+@dataclass(frozen=True)
+class _Recorded:
+    """A hold of the key's, its audio in Pipecat's queue, and how loud it was."""
+
+    hold: Hold
+    levels: Levels
+
+
+@dataclass(frozen=True)
+class _Written:
+    """A typed hold, and its words."""
+
+    hold: Hold
+    text: str
 
 
 class Whisper(SegmentedSTTService):
@@ -79,11 +100,12 @@ class Whisper(SegmentedSTTService):
         self._heard_at: Place = "desk"
         self._sent = 0
         self._dropped = 0
-        # The last hold the key opened; numbered from 1, so none has opened while this is hold 0.
+        # How many holds have opened, the key's and those typed; and the last the key opened, hold 0 until one has.
+        self._holds = 0
         self._opened = Hold(0, "held key")
-        # The holds whose audio is queued for transcription, oldest first, each with how loud it was. Pipecat transcribes
-        # its queue one segment at a time, in order, so each transcription is of the oldest.
-        self._transcribing: deque[tuple[Hold, Levels]] = deque()
+        # The holds queued to be heard, oldest first, the key's and those typed. Pipecat takes its queue one segment at a
+        # time, in order, so each it takes is the oldest, and a hold typed is heard after every hold queued ahead of it.
+        self._transcribing: deque[_Recorded | _Written] = deque()
         # [LAW:nothing-unseen] the microphone's audio before the echo canceller, for the very frames Pipecat's
         # `_audio_buffer` holds, so a hold is measured on both sides of the canceller over the audio it is transcribed from.
         self._uncancelled = bytearray()
@@ -94,6 +116,24 @@ class Whisper(SegmentedSTTService):
 
     async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame) -> None:
         pass
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        match frame:
+            case Typed(text=text):
+                # Taken here, not passed on: the hold it is goes on in its place.
+                await self._typed(text)
+            case _:
+                await super().process_frame(frame, direction)
+
+    async def _typed(self, text: str) -> None:
+        """A hold that opens and ends at once, and is heard in line behind the holds queued ahead of it, as one the key
+        sent would be: it joins a turn a hold of the key's has open, and leaves the key's hold and its audio as they were."""
+        self._holds += 1
+        hold = Hold(self._holds, "typed")
+        await self.push_frame(TurnOpened(hold=hold))
+        await self.push_frame(VADUserStoppedSpeakingFrame())
+        self._transcribing.append(_Written(hold, text))
+        await self._segment_queue.put(_IN_LINE)
 
     async def process_audio_frame(self, frame: InputAudioRawFrame, direction: FrameDirection) -> None:
         # [LAW:parse-dont-validate] the microphone makes every frame this sees, and it tags each one.
@@ -111,7 +151,7 @@ class Whisper(SegmentedSTTService):
                 # Sent: the hold's audio is queued, to be transcribed and sent.
                 stopped = VADUserStoppedSpeakingFrame()
                 # Measured as the hold is cut, before Pipecat pads it with silence for Whisper.
-                self._transcribing.append((self._opened, Levels(_dbfs(self._uncancelled), _dbfs(self._audio_buffer))))
+                self._transcribing.append(_Recorded(self._opened, Levels(_dbfs(self._uncancelled), _dbfs(self._audio_buffer))))
                 await super()._handle_user_stopped_speaking(stopped)
                 await self.push_frame(stopped)
                 self._captured = "up"
@@ -139,7 +179,8 @@ class Whisper(SegmentedSTTService):
                 # A start that was only a noise: the desk listens on, and its last second is kept as Pipecat keeps it.
                 self._user_speaking = False
             case "up" | "listening" | "arming", "down":
-                self._opened = Hold(self._opened.number + 1, frame.opened)
+                self._holds += 1
+                self._opened = Hold(self._holds, frame.opened)
                 opened = TurnOpened(hold=self._opened)
                 await super()._handle_user_started_speaking(opened)
                 await self.push_frame(opened)
@@ -166,7 +207,18 @@ class Whisper(SegmentedSTTService):
         """Pipecat's span for a transcription, which its tracing decorator opens around this."""
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        hold, levels = self._transcribing.popleft()
+        queued = self._transcribing.popleft()
+        match queued:
+            case _Written(text=text):
+                yield Words(text, self._user_id, time_now_iso8601(), LANGUAGE)
+            case _Recorded(hold=hold, levels=levels):
+                async for frame in self._transcribed(hold, levels, audio):
+                    yield frame
+        # [LAW:dataflow-not-control-flow] typed, heard, heard nothing, or failed, Whisper is done with the hold.
+        yield TurnResolved(hold=queued.hold)
+
+    async def _transcribed(self, hold: Hold, levels: Levels, audio: bytes) -> AsyncGenerator[Frame, None]:
+        """The words said in a hold of the key's, none, or why it could not be transcribed."""
         # [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing but
         # Whisper resolving its holds ends one: it fails instead. A model that is running cannot be stopped, so the next
         # hold's transcription waits behind it, on the one thread, inside its own bound.
@@ -187,8 +239,6 @@ class Whisper(SegmentedSTTService):
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
-        # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
-        yield TurnResolved(hold=hold)
 
     async def _heard(self, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
         """What was said in a hold's WAV, primed with the vocabulary as it is now.

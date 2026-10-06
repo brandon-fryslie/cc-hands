@@ -20,6 +20,9 @@ Trigger = Literal["held key", "engaged conversation", "wake word"]
 # [LAW:domain-language] an edge is what moves the gate (docs/architecture.md, "The gate has one owner and several
 # edges"): the desk's is the trigger in use, and the phone's is its page's talk button, there for every call.
 Edge = Trigger | Literal["phone button"]
+# What opens a hold: an edge of the gate, or words the user typed into the conversation page
+# (`hands.voice.conversationpage`), which move no gate and are heard nowhere, so they are a hold of their own.
+Opener = Edge | Literal["typed"]
 
 
 def place_of(edge: Edge) -> Place:
@@ -31,18 +34,19 @@ def place_of(edge: Edge) -> Place:
             return "phone"
 
 
-def turn_start(edge: Edge) -> TurnStart:
-    """When a turn `edge` opens cuts off what hands is saying.
+def turn_start(opener: Opener) -> TurnStart:
+    """When a turn `opener` opens cuts off what hands is saying.
 
     Sound the desk heard can be nobody: hands' own reply left over from the echo canceller, a cough, a door. So a turn the
     voice opens cuts only once Whisper hears words in it. One the user's hand opens cuts at once, since holding a key or a
     button and letting go with nothing said is how the user stops hands; and so does one the wake word opens, said on
-    purpose, whose detector hears nothing while hands speaks.
+    purpose, whose detector hears nothing while hands speaks. Words typed and sent are as deliberate as a press, and are
+    words already.
     """
-    match edge:
+    match opener:
         case "engaged conversation":
             return "on words"
-        case "held key" | "phone button" | "wake word":
+        case "held key" | "phone button" | "wake word" | "typed":
             return "on the hold"
 
 
