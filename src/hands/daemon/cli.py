@@ -275,7 +275,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
         case "check":
             from hands.voice import talkkey
 
-            # In place of loguru's DEBUG default, so the tmux and process reads a check makes do not print over its findings.
+            # In place of loguru's DEBUG default, so the debug lines of the tmux and process reads a check makes do not print
+            # over its findings; a read that broke still prints, as an error.
             logger.remove()
             to_terminal(sys.stderr)
             return check(home, talkkey.granted())

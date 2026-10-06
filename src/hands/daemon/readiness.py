@@ -392,15 +392,13 @@ def sessions_found(
         *unjoined,
         *unread,
     ]
-    unreached = [line.said for line in lines if isinstance(line, Missing)]
-    unseen = [line.said for line in lines if isinstance(line, Unknown)]
-    known = f"running sessions hands knows of: {len(running)}{beside}"
-    # [LAW:no-silent-failure] sessions that could not be looked for are said, never taken for none.
-    if unreached:
-        return Missing(f"{known}, and hands cannot reach these:" + "".join(f"\n    {line}" for line in [*unreached, *unseen]))
-    if unseen:
-        return Unknown(f"{known}, and whether hands can reach these is unknown:" + "".join(f"\n    {line}" for line in unseen))
-    return Ready(f"{known}, and each can be typed into")
+    # [LAW:nothing-unseen] each session is said under what it is to hands, one that is typed into with the way it is.
+    headed = ((Missing, "hands cannot reach these"), (Unknown, "whether hands can reach these is unknown"), (Ready, "these are typed into"))
+    grouped = [(kind, heading, [line.said for line in lines if type(line) is kind]) for kind, heading in headed]
+    said = "".join(f"\n  {heading}:" + "".join(f"\n    {line}" for line in group) for _, heading, group in grouped if group)
+    # [LAW:no-silent-failure] the step is the worst any session is to hands: one that could not be looked for is never taken for none.
+    verdict = next((kind for kind, _, group in grouped if group), Ready)
+    return verdict(f"running sessions hands knows of: {len(running)}{beside}{said}")
 
 
 def _unjoined(session: Unjoined, pane: Keyboard) -> Missing:

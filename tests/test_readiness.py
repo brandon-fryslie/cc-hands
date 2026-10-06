@@ -288,7 +288,7 @@ def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
+    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -309,10 +309,10 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and hands cannot reach these:")
+    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:")
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter and runs in no tmux pane, so it cannot be typed into: restart it" in found.said
-    assert "/code/wrapped" not in found.said
+    assert found.said.endswith(f"\n  these are typed into:\n    /code/wrapped (pid {sleepers[0].pid}) is typed into through its fritter")
 
 
 def test_a_session_started_outside_fritter_in_front_of_its_tmux_pane_is_typed_into_through_it(root: Path) -> None:
@@ -331,7 +331,7 @@ def test_a_session_started_outside_fritter_in_front_of_its_tmux_pane_is_typed_in
         sleeper.kill()
         sleeper.wait()
     assert asked == [[sleeper.pid]]
-    assert found == Ready("running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
+    assert found == Ready(f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {sleeper.pid}) is typed into through its tmux pane %12")
 
 
 def unwrapped(pane: Keyboard) -> readiness.Finding:
@@ -341,7 +341,7 @@ def unwrapped(pane: Keyboard) -> readiness.Finding:
 
 def test_a_session_started_outside_fritter_behind_another_program_in_its_pane_is_missing_with_the_way_back() -> None:
     assert unwrapped(Behind(PANE)) == Missing(
-        "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and hands cannot reach these:\n"
+        "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:\n"
         "    /code/bare (pid 7) was started outside fritter, and another program has the keyboard of the tmux pane it runs in, %12 (window 3 of work), "
         "so it cannot be typed into: bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim"
     )
@@ -349,9 +349,23 @@ def test_a_session_started_outside_fritter_behind_another_program_in_its_pane_is
 
 def test_a_session_started_outside_fritter_whose_pane_could_not_be_read_is_unknown_and_says_why() -> None:
     assert unwrapped(PaneUnread("tmux at /tmp/tmux-501/default did not answer list-panes in 5 seconds")) == Unknown(
-        "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and whether hands can reach these is unknown:\n"
+        "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: "
         "tmux at /tmp/tmux-501/default did not answer list-panes in 5 seconds"
+    )
+
+
+def test_a_session_whose_reach_is_unknown_is_not_said_among_those_hands_cannot_reach() -> None:
+    lost = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000008"), 8, Path("/code/lost"), Path("/nowhere/t.jsonl"), Path("/gone.sock"))
+    bare = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000007"), 7, Path("/code/bare"), Path("/nowhere/t.jsonl"))
+    found = readiness.sessions_found([lost, bare], set(), [], readiness.Unrecorded([], Counter(), []), {7: PaneUnread("tmux broke"), 8: NotInTmux()})
+    assert found == Missing(
+        "running sessions hands knows of: 2, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n"
+        "  hands cannot reach these:\n"
+        "    /code/lost (pid 8) has lost its fritter, whose socket /gone.sock is gone, so it cannot be typed into: "
+        "restart it from a PATH whose `claude` is hands' shim\n"
+        "  whether hands can reach these is unknown:\n"
+        "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: tmux broke"
     )
 
 
@@ -360,7 +374,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
+    assert readiness.sessions(home, installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -391,7 +405,7 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     # The shell waits on its sleep, so it is still the process its -p was given to.
     with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
         found = readiness.sessions(home, path, untmuxed)
-    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1, and each can be typed into")
+    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
 
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,7 +472,7 @@ def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() 
 def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_session() -> None:
     unread = [Undescribed(29648, 1, "kern.procargs2", errno.EIO), Undescribed(29649, 1, "proc_pidfdinfo of fd 0", errno.EIO)]
     assert readiness.sessions_found([], set(), [], readiness.Unrecorded([], Counter(), unread), {}) == Unknown(
-        "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and whether hands can reach these is unknown:\n"
+        "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: "
         "pid 29648 (kern.procargs2: Input/output error), pid 29649 (proc_pidfdinfo of fd 0: Input/output error)"
     )
@@ -531,7 +545,7 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
             found = readiness.sessions(home, path, untmuxed)
     finally:
         listening.close()
-    assert found == Ready("running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0, and each can be typed into")
+    assert found == Ready(f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/known (pid {pid}) is typed into through its fritter")
 
 
 CONFIG = Path("/home/.claude")
