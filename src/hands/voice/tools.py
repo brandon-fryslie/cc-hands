@@ -36,7 +36,7 @@ from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
-from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, pane_of
+from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered, pane_of
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
@@ -226,6 +226,7 @@ def intermediary_tools(
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
+        read_screen_tool(sessions, environment),
         set_overlay_tool(sessions, overlays),
     ]
     acts = [
@@ -377,6 +378,38 @@ async def _panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[In
         logger.opt(exception=error).error("reading which tmux pane each session runs in broke")
         return [PaneUnread(f"{type(error).__name__}: {error}")] * len(pids)
     return [pane_of(ancestor_terminals(pid, processes), servers) for pid in pids]
+
+
+def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool:
+    async def read_screen(session: str) -> Result:
+        """What a session's terminal shows now, as text, read off the tmux pane it runs in.
+
+        Call this before you send keys to a session at a dialog hands let go of, to see the dialog and its options, and
+        when the user asks what such a dialog asks: say what it asks and its options in a sentence or two, never the
+        screen whole. `screen` is the pane's text, down to its last line drawn on; `tmux` is the pane it was read
+        from, as list_sessions names it. A session in no tmux pane has no screen hands can read, and the error says so.
+
+        Args:
+            session: The session's id, from list_sessions.
+        """
+        id = SessionId(session)
+        live = sessions.live_session(id)
+        if live is None:
+            return {"error": f"no session {session} is running: list_sessions names the ones that are"}
+        [pane] = await _panes([live.membership.pid], environment)
+        match pane:
+            case Pane(socket=socket, id=pane_id):
+                match await tmux.shown(environment, socket, pane_id):
+                    case str(screen):
+                        return {"screen": screen, "tmux": _in_pane(pane)}
+                    case Unanswered(reason=reason):
+                        return {"error": f"the screen of {spoken_name(sessions, id)} could not be read: {reason}", "tmux": _in_pane(pane)}
+            case NotInTmux():
+                return {"error": f"{spoken_name(sessions, id)} runs in no tmux pane, and hands reads a screen only off one"}
+            case PaneUnread(reason=reason):
+                return {"error": f"which tmux pane {spoken_name(sessions, id)} runs in could not be read: {reason}"}
+
+    return tool(read_screen)
 
 
 def _in_pane(pane: InPane) -> str | Mapping[str, str | int]:
