@@ -2074,8 +2074,8 @@ thing that failed `[LAW:no-silent-failure]`:
    later process took, after a crash or a reboot, reads as down rather than as not
    responding. `hands tmux-status` draws the same title for a tmux status line, styled by the
    light (`indicator.segment`): green up, yellow not responding or degraded, red down, refused,
-   or unreadable, grey off. tmux runs it every `status-interval`, so the line is never
-   staler than that, and it exits 0 whatever the verdict, since tmux shows what is printed.
+   or unreadable, grey off. tmux runs it every `status-interval`, and it exits 0 whatever the
+   verdict, since tmux shows what is printed.
 3. **Log.** Every effect and every failure is one line in the segmented log
    `~/.hands/audit/`, written by the daemon and by each `hands` command, under one lock
    (`hands.sessions.audit`). Each
@@ -2190,8 +2190,9 @@ taken all of (`otlp.failing`); from the third on, every heartbeat hands beats wh
 starting included, carries it as a degradation naming the signal and since when (why each
 batch was not taken is its own line, so a failure worded anew is not news again), until a
 batch is taken or the collector is unset. The `hands.start` event names the collector. Only
-`hands run` sends to it. Every other command is one `hands.command` event, written by the
-dispatcher every command passes through (`hands.daemon.cli.commanded`), carrying the command,
+`hands run` sends to it. Every other command but `hands tmux-status`, a look at the heartbeat
+that tmux repeats every `status-interval` and that would bury the log in copies of it, is one
+`hands.command` event, written by the dispatcher those commands pass through (`hands.daemon.cli.commanded`), carrying the command,
 the home it ran on, its arguments as parsed, its exit code, and how long it took; it ends failed where the command
 exits nonzero, and the unit of work the command ran, such as `plugin.render`, is in its trace.
 Those events are in the log alone: Claude Code waits on `hands plugin` before a session starts,

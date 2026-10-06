@@ -440,11 +440,14 @@ notification when the daemon stops being up, and once the daemon is gone it post
 and goes away too.
 
 Inside tmux, the same title shows in the status line: green while up, yellow when stuck
-or degraded, red when down, refused, or unreadable, and grey when off. Add this line to
-`~/.tmux.conf`; tmux redraws it every `status-interval` (15 s unless set):
+or degraded, red when down, refused, or unreadable, and grey when off. Add these lines to
+`~/.tmux.conf`: tmux's own `status-right` with the segment first, since tmux cuts the end
+off at `status-right-length`, and a red warning in its place when tmux cannot run `hands`
+(not on the tmux server's PATH, say). tmux redraws it every `status-interval` (15 s unless set):
 
 ```
-set -ag status-right ' #(hands tmux-status)'
+set -g status-right-length 80
+set -g status-right '#(hands tmux-status || echo "#[fg=red,bold]⚠︎ hands tmux-status failed#[default]") "#{=21:pane_title}" %H:%M %d-%b-%y'
 ```
 
 Every heartbeat rewrites `~/.hands/status.json`, every effect and failure is a line

@@ -149,8 +149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
-    indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
-    indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
+    showing = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
+    showing.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
     logging_in = commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
@@ -175,6 +175,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     match arguments.command:
         case "run":
             return run_daemon(home, arguments.restarted, arguments.model)
+        case "tmux-status":
+            return show_segment(home)
         case _:
             return commanded(home, arguments)
 
@@ -189,7 +191,7 @@ def model_id(text: str) -> str:
 def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
-    [LAW:nothing-unseen] it is the one command not inside a hands.command event: held open over the run, that event would
+    [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
     run_start = Start(restarted=restarted is not None)
@@ -233,7 +235,7 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
 def commanded(home: Home, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
-    [LAW:nothing-unseen] the one layer every command but `run` passes through, so each invocation is one hands.command
+    [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
     event: the command, its arguments as parsed, its exit code, and how long it took. It ends failed where the command
     exits nonzero, as the exit code says it did, and the unit of work a command runs inside it is in its trace. Written
     to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
@@ -273,8 +275,6 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
     match arguments.command:
         case "status":
             return report(home)
-        case "tmux-status":
-            return show_segment(home)
         case "check":
             from hands.voice import talkkey
 
@@ -603,10 +603,13 @@ def report(home: Home) -> int:
 
 
 def show_segment(home: Home) -> int:
-    verdict = heartbeat.look(home.status, datetime.now(UTC))
-    # [LAW:nothing-unseen] what the segment was drawn from.
-    wide.annotate(verdict=verdict)
-    print(indicator.segment(verdict))
+    """`hands tmux-status`: one look at the heartbeat, drawn as a tmux status-line segment.
+
+    [LAW:nothing-unseen] it is a command not inside a hands.command event, as the menu bar's looks are not: tmux runs
+    one per client every status-interval, so an event for each would repeat the heartbeat into the audit log at that
+    rate and push the daemon's own history out of its two segments.
+    """
+    print(indicator.segment(heartbeat.look(home.status, datetime.now(UTC))))
     # A status line shows the segment whatever the exit, so the segment carries the verdict and the exit nothing.
     return 0
 
