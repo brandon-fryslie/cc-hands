@@ -205,8 +205,8 @@ class _Turn:
     acknowledging: asyncio.Task[None] = field(init=False)
     # Set at the turn's first call: its tool work has begun, and the wait to acknowledge it with it.
     working: asyncio.Event = field(default_factory=asyncio.Event)
-    # What hands acknowledged the turn with, and when the user had heard it to its end, by the stage's clock; None while
-    # they have not.
+    # What hands acknowledged the turn with, and when it was handed to the speaker, by the stage's clock, as the turn's own
+    # words are told: None while it has not been.
     acknowledged: tuple[str, Seconds] | None = None
 
     def empty(self) -> bool:
@@ -519,8 +519,10 @@ class BrainStage(FrameProcessor):
                     turn.spoken.append(words)
                     await self.push_frame(LLMTextFrame(words))
                 case Asked(permission=permission) as asked if asked.open:
-                    # Answerable once the user has heard it to its end.
-                    await self._aside(turn, TTSSpeakFrame(brain_asks(permission)), partial(turn.hear, asked))
+                    await self._aside(turn, TTSSpeakFrame(brain_asks(permission)))
+                    # [LAW:no-ambient-temporal-coupling] answerable once the speaker has played it to its end, which the
+                    # mark is told of, and never if a barge-in cut it off.
+                    await self.push_frame(Mark(partial(turn.hear, asked)))
                     # One question at a time, so what the user answers is the question they heard last.
                     await asyncio.wait({asked.decision})
                     await self._reply(turn, True)
@@ -528,20 +530,18 @@ class BrainStage(FrameProcessor):
                     # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.
                     pass
                 case _Acknowledgement(line=line):
+                    turn.acknowledged = (line, self._now())
                     # Kept out of the context: the brain never said it.
-                    await self._aside(turn, TTSSpeakFrame(line, append_to_context=False), partial(self._acknowledged, turn, line))
+                    await self._aside(turn, TTSSpeakFrame(line, append_to_context=False))
                     await self._reply(turn, True)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self._reply(turn, False)
 
-    async def _aside(self, turn: _Turn, line: TTSSpeakFrame, played: Callable[[], None]) -> None:
+    async def _aside(self, turn: _Turn, line: TTSSpeakFrame) -> None:
         """Says a line of hands' own in the turn, as a sentence of its own once the brain's words before it are: the response
         so far ends first, so what TTS holds of it is said ahead of the line."""
         await self._reply(turn, False)
         await self.push_frame(line)
-        # [LAW:no-ambient-temporal-coupling] `played` once the speaker has played the line to its end, which the mark is
-        # told of, and never if a barge-in cut it off.
-        await self.push_frame(Mark(played))
 
     def _news(self, context: LLMContext) -> str:
         """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""
@@ -615,8 +615,6 @@ class BrainStage(FrameProcessor):
         if turn.unheard():
             turn.said.put_nowait(_Acknowledgement(next(self._acknowledgements)))
 
-    def _acknowledged(self, turn: _Turn, line: str) -> None:
-        turn.acknowledged = (line, self._now())
 
     def _completes(self, name: str) -> bool:
         """Whether a barge-in lets the call finish, as hands' tools say: a call to a tool not hands' never does."""

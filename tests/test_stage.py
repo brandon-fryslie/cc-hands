@@ -1461,15 +1461,17 @@ async def test_tool_work_of_short_calls_that_runs_on_with_nothing_said_is_acknow
     rig.brain.end()
 
 
-async def test_an_acknowledgement_the_user_spoke_over_before_its_end_was_not_heard(rig: Rig) -> None:
+async def test_a_turn_that_ends_while_its_acknowledgement_still_plays_tells_it(rig: Rig) -> None:
+    rig.now[0] = 1000.0
     rig.out.holding = True
     await rig.say({"role": "user", "content": "find out why the build broke"})
     first, _ = rig.request()
     rig.calls(first, ("t1", "Bash"))
+    rig.now[0] = 1002.0
     await rig.elapse()
-    await rig.until(lambda: acknowledgements(rig) == ["One moment."])
-    await rig.interrupt()
+    second, _ = rig.request(answering("Bash", {"output": "error"}))
+    rig.stream(second, "A missing import.")
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
-    assert (turn.facts["acknowledged"], turn.facts["acknowledged_ms"]) == (None, None)
+    assert (turn.facts["acknowledged"], turn.facts["acknowledged_ms"]) == ("One moment.", 2000.0)

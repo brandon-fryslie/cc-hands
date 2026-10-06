@@ -1067,8 +1067,8 @@ their own barge-in. hands says a short line of its own ("One moment.", "On it.",
 a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
 question does, and is kept out of the context, since the brain never said it. A call that comes straight back, a turn
 that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says the
-line (`acknowledged`) and how long after the turn left its lane the user had heard it to its end (`acknowledged_ms`);
-both are empty when a barge-in cut it off.
+line (`acknowledged`) and how long after the turn left its lane it was handed to the speaker (`acknowledged_ms`), as
+the turn's own words are told: a line the user spoke over before it came to be said is not told.
 
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), or with what
