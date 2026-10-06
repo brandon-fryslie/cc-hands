@@ -1,5 +1,6 @@
 """What hands is about to name its sessions: the turns waiting to be judged for a name, and each name waiting for its
-session's next prompt, which is the one moment a hook can hand Claude Code a title.
+session's next prompt, which is the one moment a hook can hand Claude Code a title. Until then hands lists the session
+by the name it decided, so a session that went idle on the turn that moved its work on is not listed by its old name.
 
 Claude Code holds a session's name, and the latest one set wins, whoever set it: hands keeps no copy of it
 [LAW:one-source-of-truth], only a name it has decided and Claude Code has not yet been given, and the name Claude Code
@@ -74,10 +75,11 @@ class Names:
         self._due[session] = Due(name, against)
 
     def current(self, session: SessionId, held: str | None) -> str | None:
-        """The session's name as it will stand at its next prompt: one hands has decided, or else `held`, the one
-        Claude Code holds."""
+        """The session's name as it stands, given `held`, the one Claude Code holds: one hands has decided while Claude
+        Code still holds the name it was decided against, for a session idle since its last turn gives it at no prompt;
+        else `held`, which a /rename set since outranks the older decision."""
         due = self._due.get(session)
-        return held if due is None else due.name
+        return due.name if due is not None and due.against == held else held
 
     def due(self, session: SessionId) -> Due | None:
         """The name to give the session at this prompt, handed over once; None when hands has none waiting for it."""

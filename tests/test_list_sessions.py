@@ -10,6 +10,7 @@ from hands.core.session import Membership, Permission, PromptId, RequestId, Sess
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
 from hands.sessions.focus import set_focus
 from hands.sessions.home import Home
+from hands.sessions.names import Names
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import session_name
@@ -92,6 +93,23 @@ async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed
         await sessions.apply(event)
     listed = {"id": "cleared", "name": "cleared", "state": "idle, with a shell command it started in the background still running", "mode": "not reported yet", "overlay": "normal"}
     assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
+
+
+async def test_a_session_idle_since_the_turn_that_renamed_it_is_listed_by_its_new_name(tmp_path: Path) -> None:
+    """As seen live: a session whose last turn moved its work on was named for it after its Stop, and had no prompt since
+    to hand Claude Code the name, so it stayed listed by the name of the work before."""
+    idle, renamed = membership(tmp_path, "idle"), membership(tmp_path, "renamed")
+    named(idle.transcript, "pr 231 review")
+    named(renamed.transcript, "auth refactor")
+    names = Names()
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, names=names)
+    for event in (Joined(idle, "startup"), Joined(renamed, "startup")):
+        await sessions.apply(event)
+    names.rename(idle.id, "monetization review", "pr 231 review")
+    names.rename(renamed.id, "naming fix", "auth refactor")
+    # The user's /rename since the decision outranks it.
+    named(renamed.transcript, "auth refactor", "my own name")
+    assert [listing.name for listing in sessions.live()] == ["monetization review", "my own name"]
 
 
 def test_a_name_record_still_being_written_is_not_read(tmp_path: Path) -> None:

@@ -485,8 +485,9 @@ session's name still fits, showing it the name and the turn's closing reply
 (`hands.voice.naming`). A new name, three words at most, waits in `Names` for that
 session's next prompt. Each judging is one `name.judged` event: the name before, the reply, the
 name decided, and what came of it (`judged`: renamed or kept, or, failing the event, unread, failed, or
-refused). A hook can set a title only at a start or a prompt, so a session
-shows its new name from its next prompt on. Spoken, a session is its project and then its
+refused). A hook can set a title only at a start or a prompt, so Claude Code's tab
+shows its new name from its next prompt on; hands lists the session by it at once, unless a
+`/rename` has set another since it was decided (`Names.current`). Spoken, a session is its project and then its
 name, as one identifier: "cc-hands, naming fix".
 
 | Event | Payload fields |

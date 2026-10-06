@@ -24,6 +24,7 @@ from hands.sessions.wide import Begun, annotate, begun, continuing, count, here,
 from hands.sessions.clock import stamp_now
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
+from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
 from hands.sessions.typing import Untyped, type_into
@@ -51,7 +52,7 @@ class Performed:
 @dataclass(frozen=True)
 class Listing[S: Known]:
     session: S
-    name: str | None  # the session's name as Claude Code holds it, absent until it has one
+    name: str | None  # the session's name as it stands (Names.current), absent until it has one
 
 
 class Sessions:
@@ -66,6 +67,7 @@ class Sessions:
         typist: Callable[[Type[Input]], None] = type_into,
         stamp: Callable[[], Stamp] = stamp_now,
         stop_hold: float = STOP_HOLD_SECONDS,
+        names: Names | None = None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
@@ -81,6 +83,9 @@ class Sessions:
         self._changes = changes or NoChanges()
         # What types a Type into its session, or raises Untyped.
         self._typist = typist
+        # The names hands decided and has not yet given, which every listing names its session by. A daemon given none
+        # has decided none.
+        self._names = names or Names()
         # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
@@ -324,7 +329,7 @@ class Sessions:
                 return live
 
     def live(self) -> list[Listing[Session]]:
-        return [_listing(session) for session in self._registry.live()]
+        return [self._listing(session) for session in self._registry.live()]
 
     def membership(self, session: SessionId) -> Membership | None:
         """Where any session the registry has heard of works, ended or not: a session's last turn is told after it ends."""
@@ -334,7 +339,17 @@ class Sessions:
     def listing(self, session: SessionId) -> Listing[Known] | None:
         """Any session the registry has heard of, ended or not; None for one it never has."""
         known = self._registry.sessions.get(session)
-        return None if known is None else _listing(known)
+        return None if known is None else self._listing(known)
+
+    def _listing[S: Known](self, session: S) -> Listing[S]:
+        try:
+            held = session_name(session.membership.transcript)
+        except (Rejected, OSError) as error:
+            # [LAW:no-silent-failure] a transcript hands cannot read names no session; the session is still
+            # listed, spoken, and answered under its project, and the log says why it has no name.
+            logger.error(f"cannot read the name of session {session.membership.id} from {session.membership.transcript}: {error}")
+            return Listing(session, None)
+        return Listing(session, self._names.current(session.membership.id, held))
 
     async def _perform_all(self, performed: list[Performed], indices: list[int]) -> None:
         """Perform the effects at `indices` in order, each written back into `performed` as it ends; the first to fail
@@ -426,17 +441,6 @@ def _ordered_by(effect: Effect) -> SessionId | None:
             return session
         case Audit() | Speak() | Narrate() | Note() | Progress() | Tell():
             return None
-
-
-def _listing[S: Known](session: S) -> Listing[S]:
-    try:
-        name = session_name(session.membership.transcript)
-    except (Rejected, OSError) as error:
-        # [LAW:no-silent-failure] a transcript hands cannot read names no session; the session is still
-        # listed, spoken, and answered under its project, and the log says why it has no name.
-        logger.error(f"cannot read the name of session {session.membership.id} from {session.membership.transcript}: {error}")
-        name = None
-    return Listing(session, name)
 
 
 def _audited(record: AuditRecord) -> tuple[str, str]:
