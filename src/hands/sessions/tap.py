@@ -136,10 +136,13 @@ class Tap:
     async def close(self) -> None:
         """Take no more copies, and stop reading those still coming: each ends its exchange while what hears it listens."""
         self.server.close()
-        for task in self.reading:
-            task.cancel()
-        # Each one's failure was logged as it was taken, and a cancelled one has told its exchange's end: nothing is lost.
-        await asyncio.gather(*self.reading, return_exceptions=True)
+        # [LAW:no-ambient-temporal-coupling] the server holds every connection it accepted, one whose copy is not yet being
+        # read among them: until it holds none, each copy being read is stopped, and ends its exchange as it stops.
+        closed = asyncio.ensure_future(self.server.wait_closed())
+        while not closed.done():
+            for task in self.reading:
+                task.cancel()
+            await asyncio.wait({closed, *self.reading}, return_when=asyncio.FIRST_COMPLETED)
 
 
 async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> Tap:
@@ -147,11 +150,7 @@ async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Rec
     tell = shielded(observe)
     reading: set[asyncio.Task[None]] = set()
 
-    async def take(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        task = asyncio.current_task()
-        if task is None:
-            raise RuntimeError("a copy was taken outside a task, so closing the tap could not stop its reading")
-        reading.add(task)
+    async def read(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             await _copy(reader, tell, record, clock)
         except Exception:
@@ -160,7 +159,12 @@ async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Rec
             logger.exception("hands could not read a session's copy of an exchange")
         finally:
             writer.close()
-            reading.discard(task)
+
+    def take(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Held from the moment its connection is made, so no copy's reading starts where closing the tap cannot reach it.
+        task = asyncio.create_task(read(reader, writer))
+        reading.add(task)
+        task.add_done_callback(reading.discard)
 
     claim_socket(path)
     server = await asyncio.start_unix_server(take, path=str(path), limit=LINE_LIMIT)
