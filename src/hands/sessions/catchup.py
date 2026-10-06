@@ -41,10 +41,12 @@ class Announcement:
 
 @dataclass(frozen=True)
 class Happened:
-    """Something a session's hook said happened in the window, as the log holds it (hands.core.occurrences)."""
+    """What a session's hooks said happened in the window, one kind of it (hands.core.occurrences): how many times, and
+    the newest, as the log holds it. Counted, so a morning of subagents is one line a session, not hundreds."""
 
     session: SessionId
-    occurrence: Mapping[str, object]
+    times: int
+    newest: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,7 @@ def missed(directory: Path, opening: datetime | LastSpoke) -> Missed:
 def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None, unreadable: int) -> Missed:
     closings: dict[SessionId, list[str | None]] = {}
     ended: dict[SessionId, None] = {}
-    occurred: list[Happened] = []
+    occurred: dict[tuple[SessionId, object], Happened] = {}
     announced: dict[str, int] = {}
     for entry in entries:
         match entry:
@@ -105,7 +107,9 @@ def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None, unrea
                         case {"outcome": "ok" | "failed", "effect": {"type": "SessionGone", "session": str(session)}}:
                             ended[SessionId(session)] = None
                         case {"outcome": "ok" | "failed", "effect": {"type": "Tell", "session": str(session), "occurrence": object() as occurrence}}:
-                            occurred.append(Happened(SessionId(session), cast(Mapping[str, object], occurrence)))
+                            newest = cast(Mapping[str, object], occurrence)
+                            key = (SessionId(session), newest.get("type"))
+                            occurred[key] = Happened(key[0], occurred[key].times + 1 if key in occurred else 1, newest)
                         case _:
                             pass
             case {"type": "Announced", "text": str(text)}:
@@ -113,4 +117,4 @@ def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None, unrea
             case _:
                 pass
     finished = tuple(Finished(session, len(said), next((words for words in reversed(said) if words), None)) for session, said in closings.items())
-    return Missed(since, finished, tuple(ended), tuple(occurred), tuple(Announcement(text, times) for text, times in announced.items()), unreadable)
+    return Missed(since, finished, tuple(ended), tuple(occurred.values()), tuple(Announcement(text, times) for text, times in announced.items()), unreadable)

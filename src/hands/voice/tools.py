@@ -793,8 +793,9 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
         while. Sum it up the way a colleague would after a break: each session that finished in a sentence, by name, then
         any that ended. Leave nothing out of `finished`: the user is asking because they heard none of it. `turns` is
         how many turns a session finished; read_session reads what each did, when they want more of one. `occurred` is
-        what sessions' hooks said happened, each by its type: AutoDenied, auto mode refusing a call; SubagentStarted
-        and SubagentStopped; TaskCompleted; ConfigChanged, its settings or skills changing; Compacting; Cleared, a /clear.
+        what sessions' hooks said happened, each kind once a session with how many `times` and the newest one's
+        fields, by its type: AutoDenied, auto mode refusing a call; SubagentStarted and SubagentStopped; TaskCompleted;
+        ConfigChanged, its settings or skills changing; Compacting; Cleared, a /clear.
 
         Args:
             minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since they last spoke to you before this.
@@ -818,7 +819,10 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
                 for done in missed.finished
             ],
             "ended": [spoken_name(sessions, session) for session in missed.ended],
-            "occurred": [{"session": spoken_name(sessions, happened.session), **{key: _shown(value) for key, value in happened.occurrence.items()}} for happened in missed.occurred],
+            "occurred": [
+                {"session": spoken_name(sessions, happened.session), "times": happened.times, **{key: _shown(value) for key, value in happened.newest.items()}}
+                for happened in missed.occurred
+            ],
             "announced": [{"text": said.text, "times": said.times} for said in missed.announced],
         }
 

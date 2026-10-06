@@ -110,6 +110,7 @@ async def test_what_a_hook_said_happened_is_caught_up_on_whether_or_not_it_was_s
         [
             (LEFT, Transcribed("back in a bit")),
             (LEFT + timedelta(minutes=1), applied(Tell(SessionId("docs"), AutoDenied("Bash", "[Data Exfiltration]", {"command": long})))),
+            (LEFT + timedelta(minutes=2), applied(Tell(SessionId("docs"), SubagentStopped("Plan", "first")))),
             (LEFT + timedelta(minutes=2), applied(Tell(SessionId("docs"), SubagentStopped("Explore", long)))),
             (LEFT + timedelta(minutes=3), applied(Tell(SessionId("docs"), Cleared()))),
             (BACK, Transcribed("what did I miss")),
@@ -117,9 +118,10 @@ async def test_what_a_hook_said_happened_is_caught_up_on_whether_or_not_it_was_s
     )
     result = cast(dict[str, object], await catch_up(await sessions_of("docs"), home))
     assert result["occurred"] == [
-        {"session": "docs", "type": "AutoDenied", "tool": "Bash", "reason": "[Data Exfiltration]", "input": cut(json.dumps({"command": long}), CATCH_UP_LEAST)},
-        {"session": "docs", "type": "SubagentStopped", "agent_type": "Explore", "closing": cut(long, CATCH_UP_LEAST)},
-        {"session": "docs", "type": "Cleared"},
+        {"session": "docs", "times": 1, "type": "AutoDenied", "tool": "Bash", "reason": "[Data Exfiltration]", "input": cut(json.dumps({"command": long}), CATCH_UP_LEAST)},
+        # Counted by kind, with the newest said.
+        {"session": "docs", "times": 2, "type": "SubagentStopped", "agent_type": "Explore", "closing": cut(long, CATCH_UP_LEAST)},
+        {"session": "docs", "times": 1, "type": "Cleared"},
     ]
 
 
