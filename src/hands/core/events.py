@@ -98,6 +98,18 @@ class Interrupted:
 
 
 @dataclass(frozen=True)
+class CarriedOut:
+    """A slash command Claude Code carries out itself, such as /model, printed what it had to say, and its turn is over.
+    Read from the transcript, since nothing else says so: no Stop fires for it, and while a subagent works in the
+    background Claude Code sets no idle either."""
+
+    session: SessionId
+    # The turn the command opened, by the id its own records carry.
+    prompt: PromptId
+    at: Instant  # when the record was read
+
+
+@dataclass(frozen=True)
 class Taken:
     """Claude Code took the prompt: the transcript holds a record of its turn, which it writes only once the prompt's
     hooks are done and it was not cancelled.
@@ -246,11 +258,11 @@ class Tick:
 
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
-Moving = Prompted | Stopped | Closed | Interrupted | Taken | Continued | Launched | ReportedBack | Read | StatusReported | PermissionRequested | ToolFinished
+Moving = Prompted | Stopped | Closed | Interrupted | CarriedOut | Taken | Continued | Launched | ReportedBack | Read | StatusReported | PermissionRequested | ToolFinished
 SessionEvent = Moving | Progressed | Displayed | Occurred | Ended
 # What a session's transcript says that none of its hooks do: of its turn, of its subagents in the background, and how
 # far it has been read.
-Transcribed = Taken | Interrupted | Continued | Launched | ReportedBack | Progressed | Read
+Transcribed = Taken | Interrupted | CarriedOut | Continued | Launched | ReportedBack | Progressed | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Observed | SessionEvent | Abandoned | Tick

@@ -48,6 +48,7 @@ from hands.core.events import (
     Occurred,
     Event,
     Interrupted,
+    CarriedOut,
     Continued,
     Closed,
     Taken,
@@ -392,9 +393,10 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             return replace(opened, others=opened.others | {prompt}, queued=False), []
         case (Taken(prompt=prompt, written=written), Untold() | Told()) if _opens(was, prompt, written):
             # A turn no hook opened: a message queued behind a turn, a `!` command, a command such as /compact
-            # (2.1.282). Named, so its Stop ends it. Not marked here, where a mark could land after Claude has begun
-            # changing the repository: a queued message was marked while the Stop hook before it held Claude Code
-            # (see _following), and one nothing was queued for, as a `!` command's answer, is told by its steps.
+            # (2.1.282). Named, so its Stop ends it, or what it printed for a command Claude Code carries out itself (see
+            # CarriedOut). Not marked here, where a mark could land after Claude has begun changing the repository: a
+            # queued message was marked while the Stop hook before it held Claude Code (see _following), and one nothing
+            # was queued for, as a `!` command's answer, is told by its steps.
             return Opened(prompt), _told(id, turn, None)[1]
         case (Continued(was=going, now=now), Opened() | Untold() as going_on) if _names(going_on, going):
             # Still working, now on the queued message: the turn goes by its id, so the Stop that ends it names it, and
@@ -416,6 +418,14 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # interrupt record in this machine's transcripts): over, whether or not the idle it set was read, and told
             # as it stands. An interrupt that flushes a queued message names that message's id instead (see Taken).
             return _over(id, opened)
+        case (CarriedOut(prompt=prompt), Opened(turn=running) as opened) if prompt == running:
+            # The command's turn is over, though a subagent working in the background keeps Claude Code from setting the
+            # idle that would say so: told as it stands. Only the turn it opened: a command run while another turn runs
+            # is filed under that turn's ids (see Taken), and ends nothing of it.
+            return _over(id, opened)
+        case (CarriedOut(prompt=prompt), Untold(turn=waiting)) if prompt == waiting:
+            # Its idle was read first: what it printed is the record of how it ended.
+            return _told(id, turn, None)
         case (Read(through=through), Untold(by=by)) if through >= by:
             # Read through the point where the record of how it ended would be, and it was not there: told with what was read.
             return _told(id, turn, None)
@@ -480,7 +490,7 @@ def _reported(event: Moving) -> Mode | None:
     match event:
         case Prompted(mode=mode) | Stopped(mode=mode) | PermissionRequested(mode=mode) | ToolFinished(mode=mode):
             return mode
-        case Closed() | Taken() | Interrupted() | Continued() | Launched() | ReportedBack() | Read() | StatusReported():
+        case Closed() | Taken() | Interrupted() | CarriedOut() | Continued() | Launched() | ReportedBack() | Read() | StatusReported():
             return None
 
 
@@ -562,7 +572,7 @@ def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> lis
 def _unheard(event: SessionEvent, record: AuditRecord) -> list[Effect]:
     """What an event for a session the registry does not hold live calls for."""
     match event:
-        case Taken() | Interrupted() | Continued() | Launched() | ReportedBack() | Progressed() | Read() | Displayed():
+        case Taken() | Interrupted() | CarriedOut() | Continued() | Launched() | ReportedBack() | Progressed() | Read() | Displayed():
             # Read from a transcript the tail goes on reading a moment after its session ends, or displayed after it:
             # behind, not wrong.
             return []

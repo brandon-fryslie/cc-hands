@@ -31,7 +31,7 @@ from hands.core.effects import (
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
+from hands.core.events import Abandoned, Attached, CarriedOut, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
 from hands.core import progress
 from hands.core.reducer import EXPIRED_MESSAGE, UNTOLD, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
@@ -1356,6 +1356,31 @@ def test_a_late_record_of_a_turn_told_opens_nothing_though_no_idle_came_between(
     before = registry(replace(live(holding(DELEGATING, Told(NEXT), earlier=frozenset({TURN}))), background=frozenset({AGENT})))
     state, tellings = told([taken(TURN, Stamp(1200))], before)
     assert (state, tellings) == (before, [])
+
+
+COMMAND = PromptId("command")
+
+
+def test_a_command_run_while_a_subagent_works_in_the_background_returns_the_session_to_its_prompt_once_it_printed() -> None:
+    """hands-session-mgmt-a7t.9tp: no Stop fires for a command Claude Code carries out itself, and the subagent keeps
+    Claude Code from setting idle, so only what the command printed says its turn is over."""
+    state, _ = told([taken(COMMAND, Stamp(1600))], out(DELEGATING, Told(TURN), AGENT))
+    assert (live(state).turn, delegating(live(state))) == (Opened(COMMAND), False)
+    state, tellings = told([CarriedOut(ONE.id, COMMAND, at=12.1)], state)
+    assert (live(state).turn, delegating(live(state)), tellings) == (Told(COMMAND), True, [Compare(ONE.id, again=False), Summarise(ONE.id, COMMAND, None)])
+
+
+def test_a_command_whose_idle_was_read_first_is_told_once_it_printed() -> None:
+    state, _ = told([taken(COMMAND, Stamp(1600)), said(status.Idle(), 2000)], holding(RUNNING, Told(TURN)))
+    assert live(state).turn == Untold(COMMAND, frozenset(), WINDOW)
+    state, tellings = told([CarriedOut(ONE.id, COMMAND, at=12.1)], state)
+    assert (live(state).turn, tellings) == (Told(COMMAND), [Compare(ONE.id, again=False), Summarise(ONE.id, COMMAND, None)])
+
+
+@pytest.mark.parametrize("before", [in_turn(RUNNING), registry(replace(live(in_turn(RUNNING)), turn=Opened(TURN, frozenset({COMMAND})))), holding(IDLE, Told(COMMAND))])
+def test_a_command_ends_no_turn_but_the_one_it_opened(before: Registry) -> None:
+    """Run while another turn runs, a command is filed under that turn's ids (see Taken): what it printed ends none of it."""
+    assert reduce(before, CarriedOut(ONE.id, COMMAND, at=12.1)) == (before, [])
 
 
 def test_a_compacted_session_keeps_the_subagents_it_has_out() -> None:

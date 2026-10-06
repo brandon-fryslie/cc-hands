@@ -14,7 +14,7 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
+from hands.core.events import CarriedOut, Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
 from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
@@ -22,7 +22,7 @@ from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Continuing
 from hands.core.steps import Call
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.subagents import started_from, subagents_of, transcript_of
-from hands.sessions.transcript import launched_of, notified_of, prompt_of, turn_record, written_of
+from hands.sessions.transcript import Printed, launched_of, notified_of, prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
 
 
@@ -375,14 +375,18 @@ class Tails:
         following.offset = read.offset
         # What each record says that no hook does, by the turn it was read into.
         heard: list[tuple[int, Transcribed]] = []
-        went_on = False
+        went_on = carried = False
         for record in _records(read.lines, f"session {session}"):
             # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
             # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
             prompted = following.prompted(session, record, self._known.now())
             interrupted = None if following.consume(record) is None else self._interrupted(session, record)
-            went_on = went_on or not following.reading.turn.ended
+            went_on = went_on or following.reading.turn.ended is None
+            # Of the last record read only: anything after what a command printed says its turn went on.
+            carried = isinstance(following.reading.turn.ended, Printed)
             heard += [(following.reading.number, event) for event in (prompted, interrupted, *_backgrounded(session, record)) if event is not None]
+        if carried:
+            heard += [(following.reading.number, event) for event in self._carried_out(session, following.reading)]
         # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
         # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
         # hands followed the session, and says nothing to anyone. So was that turn once its last record says it ended:
@@ -393,7 +397,7 @@ class Tails:
         if made and not history:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
-        current, ended = following.current(), following.reading.turn.ended
+        current, ended = following.current(), following.reading.turn.ended is not None
         if went_on and following.held:
             # [LAW:nothing-unseen] the turn held back as ended is running after all, unless a turn after it opened.
             resumed = [(number, event) for number, event in following.held if number >= current]
@@ -448,6 +452,21 @@ class Tails:
                 # next is heard, and its parent's own work is heard whatever became of this.
                 logger.error(f"what subagent {delegate.id} of session {session} set out to do cannot be told: {type(error).__name__}: {error}")
         return progressed
+
+    def _carried_out(self, session: SessionId, reading: Reading) -> list[CarriedOut]:
+        """The command Claude Code carried out itself whose output the reading ended on, as over, by its turn's one id."""
+        match sorted(reading.ids):
+            case [prompt]:
+                # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
+                return [CarriedOut(session, prompt, self._known.now())]
+            case []:
+                # Written as system records, which carry no prompt id: no record of it was taken, so it opened no turn to end.
+                return []
+            case ids:
+                # [LAW:no-silent-failure] which of them the command opened, nothing read says, and ending another ends
+                # the wrong turn: it waits for Claude Code's idle, as it did before this was read.
+                logger.warning(f"what a command of session {session} printed ended a turn that goes by {ids}, so which turn it ends is not known, and it is not ended")
+                return []
 
     def _interrupted(self, session: SessionId, record: Payload) -> Interrupted | None:
         prompt = prompt_of(record)

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.events import Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
+from hands.core.events import CarriedOut, Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SENTENCE_BUDGET
@@ -1081,8 +1081,11 @@ async def test_a_command_claude_code_writes_as_a_system_record_opens_its_turn_li
 async def test_what_a_local_command_printed_is_no_answer_of_claudes_under_the_commands_prompt(tmp_path: Path) -> None:
     """The bug this closes: a local_command output record, read as Claude answering, carried p1's turn on under /model's p2."""
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, WRITING, MODEL, MODEL_SET))
-    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+    transcript.write_text(lines(ASKED, WRITING))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(MODEL, MODEL_SET))
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0), CarriedOut(SID, PromptId("p2"), at=7.0)]
 
 
 async def test_compact_typed_as_words_and_its_command_record_open_one_turn(tmp_path: Path) -> None:
@@ -1241,3 +1244,65 @@ async def test_a_session_attached_while_its_background_subagent_works_is_delegat
     assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p3"), "Done.")
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p3"))
+
+
+# What 2.1.289 writes for a command it carries out itself, its output a user record under the command's prompt id; and
+# for /goal, which hands Claude a prompt of its own in the same append as what it printed.
+MODEL_PRINTED = '{"uuid":"c1o","parentUuid":"c1","type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>Set model to `Sonnet 5.5` for this session only</local-command-stdout>"}}'
+GOAL = '{"uuid":"c8","type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/goal</command-name>\\n            <command-message>goal</command-message>\\n            <command-args>ship it</command-args>"}}'
+GOAL_SET = '{"uuid":"c8o","parentUuid":"c8","type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>Goal set: ship it</local-command-stdout>"}}'
+GOAL_PROMPT = '{"type":"user","isMeta":true,"promptId":"p2","message":{"role":"user","content":"A session-scoped Stop hook is now active with condition: \\"ship it\\""}}'
+
+
+async def test_a_command_claude_code_carries_out_is_over_once_it_printed_and_said_so_once(tmp_path: Path) -> None:
+    """hands-session-mgmt-a7t.9tp: no Stop fires for /model, so what it printed is the only record its turn is over."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(MODEL))
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+    with transcript.open("a") as more:
+        more.write(lines(MODEL_PRINTED))
+    assert heard(await tails.catch_up()) == [CarriedOut(SID, PromptId("p2"), at=7.0)]
+    assert heard(await tails.catch_up()) == []
+
+
+@pytest.mark.parametrize("going_on", [(GOAL, GOAL_SET, GOAL_PROMPT), (SHELL, SHELL_OUT)], ids=["goal", "shell"])
+async def test_a_command_claude_answers_is_not_over_once_it_printed(tmp_path: Path, going_on: tuple[str, ...]) -> None:
+    """/goal hands Claude a prompt, and Claude answers a `!` command: their Stop ends the turn, not what they printed."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE))
+    tails = await following(transcript)
+    with transcript.open("a") as more:
+        more.write(lines(*going_on))
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+
+
+@pytest.mark.parametrize("printed", [MODEL_PRINTED, MODEL_SET], ids=["user", "system"])
+async def test_a_file_read_from_its_start_whose_last_turn_is_a_command_that_printed_opens_no_turn(tmp_path: Path, printed: str) -> None:
+    """hands-session-mgmt-a7t.9tp, from PR #265's review: attached after a command ran while a subagent works, the command's
+    turn is over, so nothing of it opens one."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION, MODEL, printed))
+    assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Launched(SID, AGENT, Stamp(1200))]
+
+
+async def test_a_command_run_while_a_subagent_works_in_the_background_returns_the_session_to_its_prompt(tmp_path: Path) -> None:
+    """hands-session-mgmt-a7t.9tp: Claude Code sets no idle while the subagent works, so before this the command's turn
+    stayed open until the subagent reported back, and the session read as working."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Attached(member(transcript)))
+    await sessions.apply(said_busy(3.0))
+    tails = Tails(sessions)
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    with transcript.open("a") as more:
+        more.write(lines(MODEL, MODEL_PRINTED))
+    for transcribed in await tails.catch_up():
+        await sessions.apply(transcribed)
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p2"), None)
+    live = sessions.live_session(SID)
+    assert live is not None and live.turn == Told(PromptId("p2")) and delegating(live)
