@@ -14,7 +14,7 @@ from aiohttp import web
 
 from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
-from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Streamed, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
+from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Written, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
 from hands.sessions.audit import CopiesLost, Entry
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.wide import root
@@ -105,7 +105,7 @@ async def test_a_copied_exchange_is_the_wire_s_values_with_the_session_s_id(tap:
     assert (exchanged.exchange, exchanged.session, exchanged.kind, exchanged.path, exchanged.changes) == (sent.exchange, SessionId("s1"), MainTurn(None), "/v1/messages?beta=true", ())
     assert (exchanged.requested_at, exchanged.sent_at, exchanged.request_bytes) == (100.0, 100.0, len(REQUEST))
     match exchanged.reply:
-        case Reached(status=200, first_byte_at=101.0, last_byte_at=107.0, reply_bytes=size, body=Streamed(message=message)):
+        case Reached(status=200, first_byte_at=101.0, last_byte_at=107.0, reply_bytes=size, body=Written(message=message)):
             assert size == sum(len(chunk) for chunk in STREAM)
             assert message.content == (Text("hello from the wire"),) and message.stop_reason == "end_turn"
         case other:
@@ -173,7 +173,7 @@ async def test_a_line_hands_cannot_read_ends_the_copy_as_garbled_and_the_next_co
     tap.observed.clear()
     await copy(socket_path, [request_line(), HEAD, *CHUNKS, END])
     await asyncio.wait_for(tap.done.wait(), 5)
-    assert isinstance(reply := tap.exchanged().reply, Reached) and isinstance(reply.body, Streamed)
+    assert isinstance(reply := tap.exchanged().reply, Reached) and isinstance(reply.body, Written)
 
 
 async def test_a_line_out_of_its_order_ends_the_copy_as_broken_and_the_exchange_is_still_told(tap: Heard_, socket_path: Path) -> None:
@@ -235,7 +235,7 @@ async def test_a_session_under_a_real_fritter_is_answered_by_the_api_and_heard_o
     assert b"".join(STREAM).decode() in printed.decode().replace("\r\n", "\n")
     exchanged = tap.exchanged()
     assert (exchanged.session, exchanged.kind) == (SessionId("s1"), MainTurn(None))
-    assert isinstance(exchanged.reply, Reached) and isinstance(exchanged.reply.body, Streamed)
+    assert isinstance(exchanged.reply, Reached) and isinstance(exchanged.reply.body, Written)
 
 
 def _read(fd: int) -> bytes:
@@ -252,7 +252,7 @@ TURN = PromptId("p1")
 
 def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
     message = Message("m1", "claude-opus-5-5", content, stop_reason, {})
-    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Streamed(message)), False, root())
+    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Written(message, True)), False, root())
 
 
 def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:

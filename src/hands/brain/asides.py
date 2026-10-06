@@ -32,7 +32,7 @@ from hands.sessions.pseudoterminal import ClaudeCode
 from hands.core.effects import Command
 from hands.core.session import CommandName, SessionId, pasted
 from hands.core.trace import Span
-from hands.core.wire import Exchanged, Fork, Observed, Reached, Route, Sent, Streamed
+from hands.core.wire import Exchanged, Fork, Observed, Reached, Route, Sent, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, here, since, unit, within
@@ -194,7 +194,7 @@ class Asides:
         match observed:
             case Exchanged(session=session, kind=Fork(), reply=reply) if asked is not None and session == asked.session and not asked.answer.done():
                 match reply:
-                    case Reached(status=200, body=Streamed(message=message)):
+                    case Reached(status=200, body=Written(message=message)):
                         said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
                         # Read from the wire, not from what Claude Code shows: for a reply that did not end in words it
                         # shows words of its own.

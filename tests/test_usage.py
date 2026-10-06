@@ -4,7 +4,7 @@ from typing import cast
 
 from hands.brain.usage import Spent, Tally, Usage
 from hands.core.session import SessionId
-from hands.core.wire import Compaction, Exchanged, Heard, Kind, MainTurn, MessageDelta, MessageStarted, Message, Reached, Sent, Streamed
+from hands.core.wire import Compaction, Exchanged, Heard, Kind, MainTurn, MessageDelta, MessageStarted, Message, Reached, Sent, Written
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.tools import Called, audited, usage_tool
@@ -27,7 +27,7 @@ def delta(exchange: str, output: int) -> Heard:
 
 def whole(exchange: str, kind: Kind = MainTurn(None)) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (), "end_turn", {})
-    return Exchanged(exchange, BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Streamed(message)), False, root())
+    return Exchanged(exchange, BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root())
 
 
 def heard(usage: Usage, *observed: Sent | Heard | Exchanged) -> Usage:

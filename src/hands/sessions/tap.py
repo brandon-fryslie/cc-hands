@@ -19,7 +19,7 @@ from loguru import logger
 
 from hands.core.events import Closed
 from hands.core.session import SessionId
-from hands.core.wire import Exchanged, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Seconds, Sent, Streamed, Text, Uncopied, Unreached, WireEvent
+from hands.core.wire import Exchanged, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Seconds, Sent, Written, Text, Uncopied, Unreached, WireEvent
 from hands.sessions.audit import CopiesLost, Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.replies import Reader, reply_reader, sent_of, shielded
@@ -115,7 +115,7 @@ def _headers(pairs: list[object]) -> Mapping[str, str]:
 def moves(observed: Observed) -> tuple[Closed, ...]:
     """What a session's exchange says of its turn: the reply that closed it came back."""
     match observed:
-        case Exchanged(session=str() as session, kind=MainTurn(prompt=str() as prompt), reply=Reached(body=Streamed(message=Message(stop_reason="end_turn") as message))):
+        case Exchanged(session=str() as session, kind=MainTurn(prompt=str() as prompt), reply=Reached(body=Written(message=Message(stop_reason="end_turn") as message))):
             # The last text block, as the Stop hook's last_assistant_message and the transcript's last step hold it:
             # Claude Code records each block of a reply on its own.
             texts = [block.text for block in message.content if isinstance(block, Text)]

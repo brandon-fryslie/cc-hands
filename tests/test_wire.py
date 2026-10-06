@@ -23,22 +23,24 @@ from hands.core.wire import (
     MainTurn,
     Subagent,
     Message,
+    MessageStarted,
     Ping,
     RedactedThinking,
-    Streamed,
+    Written,
     Text,
     TextDelta,
     Thinking,
     ToolUse,
     Unknown,
     Unparsed,
+    WireEvent,
     Tail,
     SIDE_QUESTION_OPENING,
     Stub,
     Steer,
     tool_calls,
     turns,
-    answered,
+    unstreamed,
     edited,
     assemble,
     classify,
@@ -271,11 +273,11 @@ def test_crlf_line_endings_and_comment_lines_read_as_plain_ones() -> None:
 def test_a_block_of_comments_alone_is_no_frame_and_the_stream_still_assembles() -> None:
     body = STREAM.replace(b"event: ping", b": keepalive\n\nevent: ping")
     assert frames(body)[0] == frames(STREAM)[0]
-    assert assemble([parse(frame) for frame in frames(body)[0]]) == Streamed(MESSAGE)
+    assert assemble([parse(frame) for frame in frames(body)[0]], streamed=True) == Written(MESSAGE, True)
 
 
 def test_a_whole_stream_assembles_into_the_message_it_carried() -> None:
-    assert assemble([parse(frame) for frame in frames(STREAM)[0]]) == Streamed(MESSAGE)
+    assert assemble([parse(frame) for frame in frames(STREAM)[0]], streamed=True) == Written(MESSAGE, True)
 
 
 def test_text_arrives_as_its_own_event_for_whatever_speaks_it() -> None:
@@ -288,19 +290,19 @@ def test_text_arrives_as_its_own_event_for_whatever_speaks_it() -> None:
 def test_an_error_mid_stream_garbles_the_reply() -> None:
     cut = STREAM.split(b"event: content_block_start", 1)[0]
     error = sse("error", {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
-    assert assemble([parse(frame) for frame in frames(cut + error)[0]]) == Garbled(
+    assert assemble([parse(frame) for frame in frames(cut + error)[0]], streamed=True) == Garbled(
         'the API sent an error mid-stream: {"type": "overloaded_error", "message": "Overloaded"}'
     )
 
 
 def test_a_stream_cut_short_is_garbled_not_a_shorter_message() -> None:
     cut = STREAM.split(b"event: message_stop", 1)[0]
-    assert assemble([parse(frame) for frame in frames(cut)[0]]) == Garbled("the stream ended before message_stop")
+    assert assemble([parse(frame) for frame in frames(cut)[0]], streamed=True) == Garbled("the stream ended before message_stop")
 
 
 def test_a_stream_out_of_order_is_garbled_not_a_message_missing_a_part() -> None:
     def garbled(body: bytes) -> str:
-        reply = assemble([parse(frame) for frame in frames(body)[0]])
+        reply = assemble([parse(frame) for frame in frames(body)[0]], streamed=True)
         assert isinstance(reply, Garbled)
         return reply.reason
 
@@ -323,14 +325,14 @@ def test_a_frame_that_cannot_be_read_is_kept_and_garbles_the_reply() -> None:
     broken = Frame("message_start", "{not json")
     assert isinstance(parse(broken), Unparsed)
     body = STREAM.replace(b"event: ping", b"event: nothing_known")
-    assert assemble([parse(frame) for frame in frames(body)[0]]) == Garbled(
+    assert assemble([parse(frame) for frame in frames(body)[0]], streamed=True) == Garbled(
         "a 'nothing_known' frame was not read: no event is named 'nothing_known' with this data"
     )
 
 
 def test_a_block_hands_does_not_read_garbles_the_reply() -> None:
     body = STREAM.replace(b'"type": "redacted_thinking", "data": "opaque"', b'"type": "server_tool_use", "id": "s1", "name": "web_search"')
-    assert assemble([parse(frame) for frame in frames(body)[0]]) == Garbled("a content block of type 'server_tool_use', which hands does not read")
+    assert assemble([parse(frame) for frame in frames(body)[0]], streamed=True) == Garbled("a content block of type 'server_tool_use', which hands does not read")
 
 
 def test_a_block_start_is_parsed_whole() -> None:
@@ -338,9 +340,54 @@ def test_a_block_start_is_parsed_whole() -> None:
     assert start == BlockStarted(0, {"type": "text", "text": ""})
 
 
-def test_a_reply_that_is_not_a_stream_is_its_json_or_else_its_text() -> None:
-    assert answered(b'{"input_tokens": 5583}') == Answered({"input_tokens": 5583})
-    assert answered(b"<html>bad gateway</html>") == Answered("<html>bad gateway</html>")
+# MESSAGE as the API answers a request that asked for no stream: every block whole, its usage whole.
+WHOLE = {
+    "type": "message",
+    "id": "msg_1",
+    "model": "claude-opus-5-5",
+    "role": "assistant",
+    "content": [
+        {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+        {"type": "text", "text": "Reading é now."},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "/a"}},
+    ],
+    "stop_reason": "tool_use",
+    "usage": {"input_tokens": 3, "output_tokens": 42},
+}
+
+
+def whole_events(body: object) -> tuple[WireEvent, ...]:
+    events = unstreamed(json.dumps(body).encode())
+    assert isinstance(events, tuple)
+    return events
+
+
+def test_a_message_sent_whole_is_the_events_its_stream_would_carry_and_the_same_message() -> None:
+    events = whole_events(WHOLE)
+    assert assemble(events, streamed=False) == Written(MESSAGE, False)
+    # What hears the wire hears it as it hears a stream: its usage at its start, its text, its tool call opening.
+    assert events[0] == MessageStarted("msg_1", "claude-opus-5-5", {"input_tokens": 3, "output_tokens": 42})
+    assert [event.text for event in events if isinstance(event, TextDelta)] == ["Reading é now."]
+    assert BlockStarted(3, {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}}) in events
+
+
+def test_a_message_sent_whole_that_hands_cannot_read_garbles_the_reply_as_a_stream_of_it_would() -> None:
+    unread = {**WHOLE, "content": [{"type": "server_tool_use", "id": "s1", "name": "web_search"}]}
+    assert assemble(whole_events(unread), streamed=False) == Garbled("a content block of type 'server_tool_use', which hands does not read")
+    assert unstreamed(json.dumps({**WHOLE, "content": ["not a block"]}).encode()) == Garbled(
+        "a message sent whole lacks a field or has one of the wrong type: TypeError('expected an object, got str')"
+    )
+    assert unstreamed(json.dumps({k: v for k, v in WHOLE.items() if k != "id"}).encode()) == Garbled(
+        "a message sent whole lacks a field or has one of the wrong type: KeyError('id')"
+    )
+
+
+def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:
+    assert unstreamed(b'{"input_tokens": 5583}') == Answered({"input_tokens": 5583})
+    overloaded = {"type": "error", "error": {"type": "overloaded_error"}}
+    assert unstreamed(json.dumps(overloaded).encode()) == Answered(overloaded)
+    assert unstreamed(b"<html>bad gateway</html>") == Answered("<html>bad gateway</html>")
     assert is_stream("text/event-stream; charset=utf-8")
     assert not is_stream("application/json")
 

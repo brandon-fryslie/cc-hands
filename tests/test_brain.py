@@ -34,7 +34,7 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
-from hands.core.wire import Exchanged, Fork, Garbled, Heard, MainTurn, Message, MessageStarted, Reached, Send, Sent, Streamed
+from hands.core.wire import Exchanged, Fork, Garbled, Heard, MainTurn, Message, MessageStarted, Reached, Send, Sent, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
 from hands.daemon import run
@@ -220,7 +220,7 @@ def running(tmp: Path) -> list[str]:
 
 def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1") -> Exchanged:
     message = Message("m1", "claude-sonnet-5", (Said(words),) if words else (), stop, {})
-    return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Streamed(message)), False, root())
+    return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root())
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
