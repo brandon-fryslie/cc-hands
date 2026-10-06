@@ -1,7 +1,6 @@
 """The OTLP export edge: each wide event goes to the audit log, and to the collector where one is set, as a span and as a
 log record; each batch sent as each signal is said in the log, by span id, with why where the collector did not take it."""
 
-import io
 import json
 import os
 import socket
@@ -22,7 +21,7 @@ from hands.core.trace import Span
 from hands.core.wire import Answered, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unreached, Written
 from hands.daemon import indicator
 from hands.daemon.cli import main
-from hands.sessions import heartbeat, otlp
+from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions.home import Home
 from hands.sessions.otlp import BATCH_SPANS, ENCODINGS, FAILING_BATCHES, LOGS, STOPPED, TIMEOUT_SECONDS, TRACES, Exporter, Exports, Failing, answered, degradation, exporting, failing, logs, spans, traced
@@ -331,25 +330,68 @@ def test_a_fact_json_has_no_number_for_is_sent_as_proto3_json_spells_it() -> Non
     ]
 
 
+class _DarkCollector:
+    """The exporter's time, and a collector the network has gone dark to: each request to it waits out its whole timeout
+    and fails, and only those waits move the clock, so the time a stop takes is the exporter's own reckoning and no
+    loaded machine's. Each request waits from when its thread last read the clock, so waits on the two signals' threads
+    overlap, as they do on a real network. No request is answered until `answering` is set, which the test does, or the
+    stop does once it has read the clock."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.requests = 0
+        self.answering = threading.Event()
+        self._read = threading.local()
+        self._moving = threading.Lock()
+        self._stopper = threading.current_thread()
+
+    def clock(self) -> float:
+        with self._moving:
+            self._read.at = now = self.now
+        # [LAW:no-ambient-temporal-coupling] opened only after the stop's read, so no wait moves the clock it reads.
+        if threading.current_thread() is self._stopper:
+            self.answering.set()
+        return now
+
+    def post(self, request: Request, timeout: float) -> bytes:
+        with self._moving:
+            self.requests += 1
+        self.answering.wait()
+        with self._moving:
+            self.now = max(self.now, cast(float, self._read.at) + timeout)
+        raise TimeoutError("timed out")
+
+
 def test_a_stop_waits_on_a_collector_that_never_answers_for_one_timeout_and_says_every_batch_it_could_not_send() -> None:
-    # A collector that takes the connection and never answers: a host the network has gone dark to.
-    with socket.socket() as silent:
-        silent.bind(("127.0.0.1", 0))
-        silent.listen(16)
-        recorded: list[Exported] = []
-        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.5)
-        # Three batches' worth, each of which alone could wait out the timeout.
-        events = [_event(span_id=f"{n:016x}") for n in range(3 * BATCH_SPANS)]
-        for event in events:
-            exporter.send(event)
-        began = time.monotonic()
-        exporter.close()
-        stopped = time.monotonic() - began
-    assert stopped < 1.0
+    dark = _DarkCollector()
+    recorded: list[Exported] = []
+    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.5, clock=dark.clock, post=dark.post)
+    # Three batches' worth, each of which alone could wait out the timeout.
+    events = [_event(span_id=f"{n:016x}") for n in range(3 * BATCH_SPANS)]
+    for event in events:
+        exporter.send(event)
+    exporter.close()
+    assert dark.now == 0.5
     for signal in ("traces", "logs"):
         assert sorted(span for exported in recorded if exported.signal == signal for span in exported.spans) == sorted(event.span_id for event in events)
     assert all(exported.error is not None for exported in recorded)
     assert any(exported.error == STOPPED for exported in recorded)
+
+
+def test_a_send_to_a_real_collector_that_never_answers_gives_up_on_it_once_its_timeout_has_passed() -> None:
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(16)
+        recorded: list[Exported] = []
+        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.05)
+        exporter.send(_event())
+        deadline = time.monotonic() + TIMEOUT_SECONDS * 2
+        while len(recorded) < 2:
+            assert time.monotonic() < deadline, "a send to a collector that never answers is still waiting on it"
+            time.sleep(0.01)
+        exporter.close()
+    # Timed out on the socket: a send that ignored its timeout would have been said still waiting, or never said at all.
+    assert sorted((exported.signal, exported.error) for exported in recorded) == [(signal, "TimeoutError: timed out") for signal in ("logs", "traces")]
 
 
 def test_with_no_collector_the_log_alone_records_each_event(tmp_path: Path) -> None:
@@ -425,19 +467,18 @@ class _Stuck:
         self.sending = threading.Event()
         self.released = threading.Event()
 
-    def open(self, request: Request, timeout: float) -> object:
+    def post(self, request: Request, timeout: float) -> bytes:
         if not request.full_url.endswith(self.paths):
-            return io.BytesIO(b"{}")
+            return b"{}"
         self.sending.set()
         self.released.wait()
         raise TimeoutError("never answered")
 
 
-def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queued_behind_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queued_behind_it() -> None:
     stuck_on = _Stuck("/v1/traces", "/v1/logs")
-    monkeypatch.setattr(otlp, "_DIRECT", stuck_on)
     recorded: list[Exported] = []
-    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2)
+    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2, post=stuck_on.post)
     first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
     exporter.send(first)
     stuck_on.sending.wait()
@@ -448,11 +489,10 @@ def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queu
     assert sorted((exported.signal, exported.spans, exported.error) for exported in recorded) == [(signal, (first.span_id, behind.span_id), stuck) for signal in ("logs", "traces")]
 
 
-def test_a_send_stuck_on_the_log_records_holds_up_none_of_the_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_send_stuck_on_the_log_records_holds_up_none_of_the_spans() -> None:
     stuck_on = _Stuck("/v1/logs")
-    monkeypatch.setattr(otlp, "_DIRECT", stuck_on)
     recorded: list[Exported] = []
-    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2)
+    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2, post=stuck_on.post)
     first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
     exporter.send(first)
     stuck_on.sending.wait()
@@ -550,18 +590,19 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
 
 
 def test_a_batch_to_a_collector_that_never_answers_waits_one_timeout_for_both_signals() -> None:
-    with socket.socket() as silent:
-        silent.bind(("127.0.0.1", 0))
-        silent.listen(16)
-        recorded: list[Exported] = []
-        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.4)
-        began = time.monotonic()
-        exporter.send(_event())
-        deadline = time.monotonic() + TIMEOUT_SECONDS * 2
-        while len(recorded) < 2:
-            assert time.monotonic() < deadline, "no Exported line for each signal"
-            time.sleep(0.01)
-        waited = time.monotonic() - began
-        exporter.close()
+    dark = _DarkCollector()
+    recorded: list[Exported] = []
+    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.4, clock=dark.clock, post=dark.post)
+    exporter.send(_event())
+    deadline = time.monotonic() + TIMEOUT_SECONDS * 2
+    # The two signals' requests are both out before the network answers either.
+    while dark.requests < 2:
+        assert time.monotonic() < deadline, "a signal's request never went out while the other's waited"
+        time.sleep(0.01)
+    dark.answering.set()
+    while len(recorded) < 2:
+        assert time.monotonic() < deadline, "no Exported line for each signal"
+        time.sleep(0.01)
+    exporter.close()
     # The two signals wait on the collector side by side: one timeout, not one after the other's.
-    assert sorted(exported.signal for exported in recorded) == ["logs", "traces"] and waited < 0.7
+    assert sorted(exported.signal for exported in recorded) == ["logs", "traces"] and dark.now == 0.4

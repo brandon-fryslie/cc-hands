@@ -59,6 +59,12 @@ _SEVERITY: Mapping[Level, int] = {"info": 9, "error": 17}
 _DIRECT = build_opener(ProxyHandler({}))
 
 
+def _post(request: Request, timeout: float) -> bytes:
+    """The collector's answer to `request`, each socket operation of it allowed `timeout` seconds."""
+    with _DIRECT.open(request, timeout=timeout) as response:
+        return response.read()
+
+
 @contextmanager
 def exporting(collector: str | None, record: Record) -> Generator[Record]:
     """`record`, and where a collector is set, each wide event recorded through it also sent there; what is still to be
@@ -197,11 +203,23 @@ class Exporter:
     """Sends wide events to `collector` in batches, as each signal from a thread of its own, recording each batch and
     what became of it."""
 
-    def __init__(self, collector: str, record: Callable[[Exported], None], linger: float = LINGER_SECONDS, timeout: float = TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        collector: str,
+        record: Callable[[Exported], None],
+        linger: float = LINGER_SECONDS,
+        timeout: float = TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        post: Callable[[Request, float], bytes] = _post,
+    ) -> None:
         self._collector = collector
         self._record = record
         self._linger = linger
         self._timeout = timeout
+        # [LAW:effects-at-boundaries] the clock every deadline and duration is reckoned on, and the one network call. The
+        # waits on a lane's queue and on its thread are the threading module's, in real seconds of what this clock says.
+        self._clock = clock
+        self._post = post
         # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; each lane's thread reads it
         # as it sends each batch, and send to know the queues' end is marked.
         self._deadline = math.inf
@@ -229,11 +247,11 @@ class Exporter:
         # [LAW:no-ambient-temporal-coupling] set before the end of the queues is marked, so every batch sent from here on
         # reads it, whether or not its thread has reached the mark yet.
         with self._marking:
-            self._deadline = time.monotonic() + self._timeout
+            self._deadline = self._clock() + self._timeout
             for lane in self._lanes:
                 lane.queue.put(_CLOSED)
         for lane in self._lanes:
-            lane.thread.join(max(0.0, self._deadline + 1 - time.monotonic()))
+            lane.thread.join(max(0.0, self._deadline + 1 - self._clock()))
         for lane in self._lanes:
             if lane.thread.is_alive():
                 # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a
@@ -258,8 +276,8 @@ class Exporter:
         """A batch beginning with `first`: every event sent within the linger after it, up to BATCH_SPANS; and whether
         the exporter was closed while it gathered."""
         batch = [first]
-        deadline = time.monotonic() + self._linger
-        while len(batch) < BATCH_SPANS and (left := deadline - time.monotonic()) > 0:
+        deadline = self._clock() + self._linger
+        while len(batch) < BATCH_SPANS and (left := deadline - self._clock()) > 0:
             try:
                 taken = lane.queue.get(timeout=left)
             except queue.Empty:
@@ -270,11 +288,14 @@ class Exporter:
         return batch, False
 
     def _deliver(self, lane: _Lane, batch: Sequence[WideEvent]) -> None:
-        began = time.monotonic()
-        left = min(self._timeout, self._deadline - began)
+        # [LAW:no-ambient-temporal-coupling] read under the lock close sets the deadline under, so a batch begun once a
+        # stop has read the time is held to that stop's deadline.
+        with self._marking:
+            began = self._clock()
+            left = min(self._timeout, self._deadline - began)
         lane.sending = tuple(event.span_id for event in batch)
         refused, warning = self._sent(lane.encoding, batch, left) if left > 0 else (STOPPED, None)
-        self._record(Exported(self._collector, lane.encoding.signal, lane.sending, (time.monotonic() - began) * 1000, refused, warning))
+        self._record(Exported(self._collector, lane.encoding.signal, lane.sending, (self._clock() - began) * 1000, refused, warning))
 
     def _sent(self, encoding: "Encoding", batch: Sequence[WideEvent], timeout: float) -> tuple[str | None, str | None]:
         """Why the collector did not take `batch` as `encoding`'s signal, None where it took every event; and what it
@@ -282,8 +303,7 @@ class Exporter:
         try:
             body = json.dumps(encoding.request(batch), ensure_ascii=False, allow_nan=False).encode()
             request = Request(f"{self._collector}/v1/{encoding.signal}", data=body, headers={"Content-Type": "application/json"}, method="POST")
-            with _DIRECT.open(request, timeout=timeout) as response:
-                return answered(encoding, response.read(), len(batch))
+            return answered(encoding, self._post(request, timeout), len(batch))
         except Exception as error:
             # Unreachable, an HTTP error status, or an event that would not encode: the batch is lost to the collector
             # alike, and said alike.
