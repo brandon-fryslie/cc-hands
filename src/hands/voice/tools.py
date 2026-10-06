@@ -36,10 +36,11 @@ from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
+from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, pane_of
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
-from hands.sessions import catchup, startsession
+from hands.sessions import catchup, startsession, tmux
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
 from hands.sessions.focus import Unreadable, focused
@@ -47,6 +48,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
+from hands.sessions.terminals import ancestor_terminals, process_table
 from hands.sessions import attention as settings
 from hands.core import playback
 from hands.core.place import Modality
@@ -206,10 +208,11 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, wake: Word, own: "OwnModel", catalogue: spotify.Catalogue, acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, wake: Word, own: "OwnModel", catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
-    but staying silent, whose call is the choice not to act.
+    but staying silent, whose call is the choice not to act. `environment` is the run's, which says where tmux keeps its
+    sockets and where tmux is.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.
@@ -226,7 +229,7 @@ def intermediary_tools(
         set_overlay_tool(sessions, overlays),
     ]
     acts = [
-        list_sessions_tool(sessions, overlays, home),
+        list_sessions_tool(sessions, overlays, home, environment),
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
@@ -337,7 +340,7 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
     return tool(focus_session, completes=True)
 
 
-def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home) -> Tool:
+def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool:
     async def list_sessions() -> Result:
         """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
 
@@ -350,11 +353,38 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home) -> To
         while it sits at its prompt is seen when it is next prompted, and one changed
         in the middle of a turn at its next tool call. `overlay` says how the user hears the turns it finishes:
         watched, normal, or muted (set_overlay). `focus` is the id of the session the user is talking to when they name
-        none (focus_session), null when none is focused, or says why it cannot be read.
+        none (focus_session), null when none is focused, or says why it cannot be read. `tmux` is the tmux pane a
+        session runs in, as it is now: its server's `socket`, the `pane`, and the tmux `session` and `window` it is in,
+        so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
-        return {"sessions": [{**entry, "overlay": await _overlay(overlays, SessionId(entry["id"]))} for entry in standing(sessions)], "focus": await _focus(home)}
+        listings = sessions.live()
+        panes = await _panes([listing.session.membership.pid for listing in listings], environment)
+        return {
+            "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
+            "focus": await _focus(home),
+        }
 
     return tool(list_sessions)
+
+
+async def _panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
+    """The tmux pane each of `pids` runs in, from one read of the processes and of every tmux server."""
+    servers = await tmux.servers(environment)
+    try:
+        processes = process_table()
+    except OSError as error:
+        return [PaneUnread(f"the processes could not be read: {error}")] * len(pids)
+    return [pane_of(ancestor_terminals(pid, processes), servers) for pid in pids]
+
+
+def _in_pane(pane: InPane) -> str | Mapping[str, str | int]:
+    match pane:
+        case Pane(socket=socket, id=id, session=session, window=window):
+            return {"socket": str(socket), "pane": id, "session": session, "window": window}
+        case NotInTmux():
+            return "not in tmux"
+        case PaneUnread(reason=reason):
+            return {"cannot_read": reason}
 
 
 async def _focus(home: Home) -> SessionId | None | Mapping[str, str]:

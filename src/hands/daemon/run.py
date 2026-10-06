@@ -295,7 +295,7 @@ async def run(
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
         if config is not None:
-            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), lambda: quiet_cues.owe(WORKING))]
+            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
             # started once the registry holds it, so the brain can stage for it at once.
             brain_tools = [audited(cued(start_session_tool(home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record)]

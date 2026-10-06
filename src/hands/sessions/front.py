@@ -10,9 +10,8 @@ import asyncio
 import os
 import re
 import shutil
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 from Foundation import NSAppleScript
 from loguru import logger
@@ -20,7 +19,8 @@ from loguru import logger
 from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
 from hands.core.session import SessionId
 from hands.sessions.child import run
-from hands.sessions.terminals import Process, process_table
+from hands.sessions import tmux
+from hands.sessions.terminals import Process, ancestor_terminals, process_table
 from hands.threads import SerialThread
 
 # Each app that says by AppleScript which terminal its front tab shows, by bundle id. Only the app in front is asked:
@@ -39,10 +39,6 @@ _scripts: dict[str, NSAppleScript] = {}
 _LSAPPINFO = "/usr/bin/lsappinfo"
 # lsappinfo info -only names one field a line: "pid"=93900, "CFBundleIdentifier"="com.google.Chrome".
 _FIELD = re.compile(r'^"(\w+)"=(?:"(.*)"|(\d+))$', re.MULTILINE)
-
-# What tmux says, on stderr, for a socket no server listens on any more: a server that exited leaves its socket behind.
-_NO_SERVER = (b"no server running on", b"error connecting to")
-
 
 class _Unread(Exception):
     pass
@@ -74,7 +70,7 @@ async def read_front(sessions: Mapping[SessionId, tuple[int, str]], environment:
         # screen is a fact the turn can go without, never one that ends the brain's turns.
         logger.opt(exception=error).error("reading what is in front broke")
         return FrontUnread(f"{type(error).__name__}: {error}")
-    candidates = [Candidate(session, name, frozenset(_terminals(pid, processes))) for session, (pid, name) in sessions.items()]
+    candidates = [Candidate(session, name, frozenset(ancestor_terminals(pid, processes))) for session, (pid, name) in sessions.items()]
     return in_front(screen, panes, candidates)
 
 
@@ -127,37 +123,20 @@ def _under(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
         stack.extend(children.get(process.pid, ()))
 
 
-def _terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
-    """Every terminal on pid's line of ancestors, its own first."""
-    process = processes.get(pid)
-    while process is not None:
-        if process.tty is not None:
-            yield process.tty
-        process = processes.get(process.parent)
-
-
 async def _panes(environment: Mapping[str, str]) -> list[tuple[int, int]]:
     """Each tmux client's terminal, and the terminal of the pane it shows, from every server of this user's."""
-    # Where tmux puts a server's socket unless -S names one: $TMUX_TMPDIR, else /tmp, in tmux-<uid>.
-    directory = Path(environment.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
-    sockets = [path for path in directory.glob("*") if path.is_socket()]
+    directory, sockets = tmux.sockets(environment)
     if not sockets:
         return []
-    tmux = shutil.which("tmux", path=environment.get("PATH"))
-    if tmux is None:
+    found = shutil.which("tmux", path=environment.get("PATH"))
+    if found is None:
         raise _Unread(f"tmux sockets are in {directory}, and no tmux is on the PATH to ask them which pane each client shows")
-    clients = await asyncio.gather(*(_clients(tmux, socket) for socket in sockets))
+    try:
+        clients = await asyncio.gather(*(tmux.asked(found, socket, "list-clients", "-F", "#{client_tty}\t#{pane_tty}") for socket in sockets))
+    except tmux.NotAnswered as error:
+        raise _Unread(str(error)) from error
     # A client with no terminal, as one in control mode over a pipe, is on no screen.
     return [(_device(client), _device(pane)) for lines in clients for client, pane in (line.split("\t") for line in lines) if client]
-
-
-async def _clients(tmux: str, socket: Path) -> Sequence[str]:
-    asked = await run(tmux, "-S", str(socket), "list-clients", "-F", "#{client_tty}\t#{pane_tty}", timeout=2)
-    if asked.returncode != 0:
-        if asked.err.startswith(_NO_SERVER):
-            return ()
-        raise _Unread(f"tmux at {socket} did not list its clients: {asked.err.decode(errors='replace').strip()}")
-    return asked.out.decode().splitlines()
 
 
 def _device(path: str) -> int:

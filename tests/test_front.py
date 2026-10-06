@@ -10,8 +10,8 @@ import pytest
 
 from hands.core.front import Candidate, FrontUnread, NoSessionInFront, Screen, SessionInFront, in_front, told
 from hands.core.session import SessionId
-from hands.sessions.front import _terminals, _under  # pyright: ignore[reportPrivateUsage]
-from hands.sessions.terminals import process_table
+from hands.sessions.front import _under  # pyright: ignore[reportPrivateUsage]
+from hands.sessions.terminals import ancestor_terminals, process_table
 
 # Terminals by device number: two tabs, a tmux client in a third, and the panes behind it.
 TAB, OTHER_TAB, CLIENT, PANE, OTHER_PANE, FRITTER = 1, 2, 3, 10, 11, 20
@@ -85,8 +85,8 @@ def test_the_kernel_says_each_process_terminal_and_the_terminals_a_session_runs_
     [grandchild] = [child for child in processes.values() if child.parent == process.pid]
     assert processes[process.pid].tty == device
     # The child inherits the terminal; the test itself, started by pytest, sits above it with whatever it has.
-    assert next(_terminals(grandchild.pid, processes)) == device
-    assert device not in set(_terminals(os.getpid(), processes))
+    assert next(ancestor_terminals(grandchild.pid, processes)) == device
+    assert device not in set(ancestor_terminals(os.getpid(), processes))
     assert [found.pid for found in _under(process.pid, processes)] == [grandchild.pid]
 
 

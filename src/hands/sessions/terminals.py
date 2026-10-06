@@ -9,7 +9,7 @@ import ctypes.util
 import errno
 import os
 import struct
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -103,6 +103,15 @@ def process_table() -> dict[int, Process]:
     processes = (_process(flag, pid, uid, parent, tty) for flag, pid, uid, parent, tty in _KINFO_PROC.iter_unpack(table.raw[: size.value]))
     # Not kernel_task, pid 0, which is its own parent: without it every line of parents ends, at launchd.
     return {process.pid: process for process in processes if process.pid != 0}
+
+
+def ancestor_terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
+    """Every terminal on pid's line of ancestors in `processes`, its own first."""
+    process = processes.get(pid)
+    while process is not None:
+        if process.tty is not None:
+            yield process.tty
+        process = processes.get(process.parent)
 
 
 def _process(flag: int, pid: int, uid: int, parent: int, tty: int) -> Process:

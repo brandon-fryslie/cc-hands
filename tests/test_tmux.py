@@ -1,0 +1,113 @@
+"""Which tmux pane a session runs in: read over a process table and every tmux server's panes, never kept."""
+
+import asyncio
+import os
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Generator
+from pathlib import Path
+
+import pytest
+
+from hands.core.tmux import Listed, NotInTmux, Pane, PaneUnread, Unanswered, pane_of
+from hands.sessions import tmux
+from hands.sessions.terminals import Process, ancestor_terminals, process_table
+
+TMUX = shutil.which("tmux")
+needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to run panes in")
+
+# Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
+PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
+WORK, PLAY = Path("/tmp/tmux-501/default"), Path("/tmp/tmux-501/play")
+HANDS = Pane(WORK, "%3", "cc-hands", 2)
+LAWS = Pane(PLAY, "%0", "laws", 0)
+# A session under fritter in a pane of the first server: claude on fritter's pseudoterminal, fritter on the pane's.
+# Another, in a pane of the second server; and one in a plain tab.
+TABLE = {
+    process.pid: process
+    for process in (
+        Process(100, 1, 501, PANE),
+        Process(101, 100, 501, PANE),
+        Process(102, 101, 501, FRITTER),
+        Process(200, 1, 501, OTHER_PANE),
+        Process(300, 1, 501, TAB),
+    )
+}
+SERVERS = [Listed({PANE: HANDS}), Listed({OTHER_PANE: LAWS})]
+
+
+def test_a_session_under_fritter_in_a_pane_is_in_that_pane_and_one_in_another_server_names_that_servers_socket() -> None:
+    assert pane_of(ancestor_terminals(102, TABLE), SERVERS) == HANDS
+    assert pane_of(ancestor_terminals(200, TABLE), SERVERS) == LAWS
+
+
+def test_a_session_in_a_plain_tab_is_not_in_tmux_and_with_no_server_running_none_is() -> None:
+    assert pane_of(ancestor_terminals(300, TABLE), SERVERS) == NotInTmux()
+    assert pane_of(ancestor_terminals(102, TABLE), []) == NotInTmux()
+
+
+def test_a_server_that_did_not_answer_leaves_unread_only_the_sessions_no_other_server_holds() -> None:
+    servers = [Listed({PANE: HANDS}), Unanswered("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")]
+    assert pane_of(ancestor_terminals(102, TABLE), servers) == HANDS
+    assert pane_of(ancestor_terminals(300, TABLE), servers) == PaneUnread("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")
+
+
+@pytest.fixture
+def sockets(monkeypatch: pytest.MonkeyPatch) -> Generator[Path]:
+    """A socket directory of the test's own, for servers that read no tmux.conf of the user's; its tmux-<uid>."""
+    # A tmux socket's path has to fit a sockaddr_un, which a pytest tmp_path on macOS does not.
+    directory = Path(tempfile.mkdtemp(prefix="hands-tmux-", dir="/tmp"))
+    monkeypatch.setenv("TMUX_TMPDIR", str(directory))
+    monkeypatch.delenv("TMUX", raising=False)
+    try:
+        yield directory / f"tmux-{os.getuid()}"
+    finally:
+        for socket in (directory / f"tmux-{os.getuid()}").glob("*"):
+            subprocess.run([str(TMUX), "-S", str(socket), "kill-server"], capture_output=True, check=False)
+        shutil.rmtree(directory)
+
+
+def run_in(socket: str, session: str) -> tuple[str, int]:
+    """A new tmux session of the server at `socket` running a process; its pane and the process's pid."""
+    started = subprocess.run([str(TMUX), "-f", "/dev/null", "-L", socket, "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", session, "sleep", "120"], capture_output=True, text=True, check=True)
+    pane, pid = started.stdout.split()
+    return pane, int(pid)
+
+
+def in_pane(pid: int) -> object:
+    return pane_of(ancestor_terminals(pid, process_table()), asyncio.run(tmux.servers(os.environ)))
+
+
+@needs_tmux
+def test_a_process_in_a_pane_of_each_of_two_servers_is_read_in_its_own_and_follows_it_across_break_pane(sockets: Path) -> None:
+    work, worker = run_in("default", "work")
+    play, player = run_in("play", "play")
+    assert in_pane(worker) == Pane(sockets / "default", work, "work", 0)
+    assert in_pane(player) == Pane(sockets / "play", play, "play", 0)
+    assert in_pane(os.getpid()) == NotInTmux()
+
+    # The pane split beside another, then broken out into a window of its own: the same pane, in its new window.
+    subprocess.run([str(TMUX), "-L", "default", "split-window", "-d", "-t", work, "sleep", "120"], check=True)
+    subprocess.run([str(TMUX), "-L", "default", "break-pane", "-d", "-s", work], check=True)
+    assert in_pane(worker) == Pane(sockets / "default", work, "work", 1)
+
+
+@needs_tmux
+def test_a_socket_no_server_listens_on_holds_no_pane_and_sockets_with_no_tmux_to_ask_are_unread(sockets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, worker = run_in("default", "work")
+    # A server killed leaves its socket behind.
+    server = int(subprocess.run([str(TMUX), "-L", "default", "display-message", "-p", "#{pid}"], capture_output=True, text=True, check=True).stdout)
+    os.kill(server, 9)
+    while subprocess.run([str(TMUX), "-L", "default", "has-session"], capture_output=True, check=False).returncode == 0:
+        pass
+    assert (sockets / "default").is_socket()
+    assert in_pane(worker) == NotInTmux()
+
+    run_in("default", "work")
+    monkeypatch.setenv("PATH", "/nonexistent")
+    match in_pane(worker):
+        case PaneUnread(reason=reason):
+            assert reason == f"tmux sockets are in {sockets}, and no tmux is on the PATH to ask them which panes they hold"
+        case other:
+            pytest.fail(f"read as {other}")
