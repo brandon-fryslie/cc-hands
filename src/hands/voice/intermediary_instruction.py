@@ -10,7 +10,7 @@ the daemon runs. Two rules keep it and the tools from giving the model two order
   prompt that asks for `resume` before there is one gets a model that paraphrases a resume from memory, which is
   exactly the failure the tool exists to end.
 
-The brain is given more sections, on reading hands' log, on typing into a session's terminal, on working a backlog, on
+The brain is given more sections, on reading hands' log, on starting a session, on typing into a session's terminal, on working a backlog, on
 where its own setup is, and on the skill it talks with, because it alone is given Bash and a setup of its own to use them with.
 """
 
@@ -228,9 +228,16 @@ RIGHT: you load hands:chat, then search for the repository."""
 
 def brain_instruction(log: Path, setup: Path, recall: str, personality: str | None) -> str:
     """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it with the
-    shell command `recall`, how to type into a session's terminal, how to work a backlog, where its own setup is, and the
+    shell command `recall`, how to start a session, how to type into a session's terminal, how to work a backlog, where its own setup is, and the
     skill it talks with, before the personality's section and its closing words."""
-    return "\n\n".join((_BODY, _reading(log), _recalling(recall), _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
+    return "\n\n".join((_BODY, _reading(log), _recalling(recall), _STARTING, _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
+
+
+_STARTING = """\
+# Starting a session
+
+When the user asks you to start a new Claude Code session, in a project or on a model, load hands:start and start it \
+yourself."""
 
 
 def _recalling(recall: str) -> str:

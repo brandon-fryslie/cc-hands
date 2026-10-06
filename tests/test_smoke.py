@@ -20,7 +20,9 @@ from hands.core.effects import Summarise, Text, Type
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
-from hands.daemon.smoke import FOLDER, QUIET_SECS, SESSION_GIVEN, WORDS, Caller, Ear, Line, NotReached, as_from_a_terminal, joined, parsed, proof
+from hands.sessions.startsession import joined
+from hands.sessions.terminals import process_table
+from hands.daemon.smoke import members, FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
@@ -128,18 +130,6 @@ def test_a_torn_line_is_no_evidence_and_breaks_none_of_the_rest() -> None:
     assert parsed(['{"type": "HoldHe', json.dumps({"type": "HoldHeard", "said": "hi"}), "[1]"]) == [{"type": "HoldHeard", "said": "hi"}]
 
 
-def test_the_session_is_started_as_from_a_terminal_outside_any_session(tmp_path: Path) -> None:
-    inside = {
-        **{name: "given" for name in SESSION_GIVEN},
-        # fritter's tap of the session the test was run in, and the proxy it replaced.
-        "FRITTER_TAP": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "FRITTER_OUTER_HTTPS_PROXY": "http://proxy.lan:3128",
-        # The user's own: kept.
-        "CLAUDE_CODE_USE_BEDROCK": "1", "PATH": "/Users/me/.hands/bin:/usr/bin", "HANDS_HOME": "/elsewhere",
-    }
-    started = as_from_a_terminal(inside, Home(tmp_path))
-    assert started == {"HTTPS_PROXY": "http://proxy.lan:3128", "CLAUDE_CODE_USE_BEDROCK": "1", "PATH": "/Users/me/.hands/bin:/usr/bin", "HANDS_HOME": str(tmp_path)}
-
-
 def frame(level: int) -> bytes:
     return np.full(320, level, dtype=np.int16).tobytes()
 
@@ -175,23 +165,22 @@ async def test_a_call_that_drops_stops_the_stage_being_said_and_says_why() -> No
         await peer.close()
 
 
-def test_the_smoke_session_is_the_one_that_joined_from_its_folder_since_the_test_began(tmp_path: Path) -> None:
+def test_the_smoke_session_is_the_one_that_joined_under_its_process(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
-    folder = tmp_path / "smoke"
     home.memberships.mkdir(parents=True)
+    # The test's own process stands for the `claude` the smoke run started.
+    started = os.getpid()
 
-    def member(session: SessionId, cwd: Path) -> None:
-        record = {"pid": 7, "cwd": str(cwd), "transcript_path": f"/t/{session}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
+    def member(session: SessionId, pid: int) -> None:
+        record = {"pid": pid, "cwd": str(tmp_path), "transcript_path": f"/t/{session}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
         home.membership(session).write_text(json.dumps(record))
 
-    member(OTHER, folder)
-    before = frozenset({OTHER})
-    assert joined(home, folder, before) is None
-    member(SessionId("0844f3f7-d8fe-5134-a45d-fa50e00dc5ec"), tmp_path / "elsewhere")
+    # A session of another process's in the same folder, and one being written.
+    member(OTHER, 1)
     home.membership(SessionId("0998fa11-3723-4c9a-bb7a-b454ae05dfca")).write_text('{"pid": ')
-    assert joined(home, folder, before) is None
-    member(SESSION, folder)
-    found = joined(home, folder, before)
+    assert joined(members(home), started, process_table()) is None
+    member(SESSION, started)
+    found = joined(members(home), started, process_table())
     assert found is not None and (found.id, found.fritter) == (SESSION, Path("/tmp/f/session.sock"))
 
 
