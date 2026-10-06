@@ -216,7 +216,8 @@ class Exporter:
         self._record = record
         self._linger = linger
         self._timeout = timeout
-        # [LAW:effects-at-boundaries] the exporter's time and its one network call, each read only through these.
+        # [LAW:effects-at-boundaries] the clock every deadline and duration is reckoned on, and the one network call. The
+        # waits on a lane's queue and on its thread are the threading module's, in real seconds of what this clock says.
         self._clock = clock
         self._post = post
         # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; each lane's thread reads it
