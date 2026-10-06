@@ -33,6 +33,8 @@ from hands.threads import off_loop
 if TYPE_CHECKING:
     from loguru import Message, Record
 
+    from hands.brain.process import Method
+
 # Every C0 and C1 control, DEL, the line and paragraph separators, and bidi embedding, override, and isolate, written as
 # its JSON escape: a line's text
 # comes from transcripts, replies, and session names, and a raw ESC, BEL, or BS in it would move the cursor, ring the
@@ -148,7 +150,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("check", help="say of each step of the README's install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the backend's key or login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     indicator = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     indicator.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
-    commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, on the Claude subscription at this terminal; exits 0 only when it is on the subscription after")
+    logging_in = commands.add_parser("login", help="set the brain (the claude backend of the home's config.toml) up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it is logged in after")
+    logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log a brain already set up in with an Anthropic Console key, billed to the API, rather than a Claude plan; a home's first run offers both on its own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
@@ -279,7 +282,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
         case "phone":
             return show_phone(home)
         case "login":
-            return login(home, record)
+            return login(home, arguments.method, record)
         case "install-fritter":
             return install_fritter(home, record)
         case "plugin":
@@ -638,7 +641,7 @@ def audit_log_of(home: Home) -> audit.AuditLog:
     return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
 
 
-def login(home: Home, record: audit.Record) -> int:
+def login(home: Home, method: "Method", record: audit.Record) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
@@ -650,7 +653,7 @@ def login(home: Home, record: audit.Record) -> int:
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(home.brain, UPSTREAM, os.environ)
+            signed = brain_login(home.brain, UPSTREAM, os.environ, method)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             print(f"hands login: {error}", file=sys.stderr)

@@ -218,7 +218,7 @@ def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "sync
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding and the trust of the directory it ran in) it recorded, made by AUTH_METHOD (claude.ai unless named), and as the brain is Claude Code at a keyboard: it
+    """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding and the trust of the directory it ran in) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
@@ -243,7 +243,10 @@ if sys.argv[1:3] == ["auth", "login"] or first_run:
             json.dump({{"hasCompletedOnboarding": True, "projects": {{os.getcwd(): {{"hasTrustDialogAccepted": True}}}}}}, state)
     sys.exit(0)
 if sys.argv[1:3] == ["auth", "status"]:
-    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": os.environ.get("AUTH_METHOD", "claude.ai"), "email": "brain@example.com"}}))
+    console = os.path.exists(login) and "--console" in json.load(open(login))["argv"]
+    method = "api_key" if console else os.environ.get("AUTH_METHOD", "claude.ai")
+    holder = {{"email": "brain@example.com"}} if method == "claude.ai" else {{"apiKeySource": "/login managed key"}}
+    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": method, "apiProvider": os.environ.get("API_PROVIDER", "firstParty"), **holder}}))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
 session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
