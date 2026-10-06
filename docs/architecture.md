@@ -1423,7 +1423,7 @@ that go whole because no sentence had been said of them by then (`whole`), each 
 session keeps rather than what a coding session does. A restart does not start the conversation over: each brain holds its
 session in `conversation` in its config directory, and the next one resumes it while Claude Code still has its
 transcript, so a restart, an upgrade, or a change of model goes on from what was said, its length kept by that same
-compaction. It runs with `--system-prompt-snapshot off`, so a resumed conversation is sent the instruction this hands
+compaction. A start that fails lets the conversation go, so the next begins anew rather than failing the same way. It runs with `--system-prompt-snapshot off`, so a resumed conversation is sent the instruction this hands
 writes, not the one it began with. This is the single decision that avoids
 most of Happy's trouble: it pushed history in and could not pull, so it needed a
 bootstrap dump, an eviction policy it never wrote, and a window that only grew.

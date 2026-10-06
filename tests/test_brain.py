@@ -1198,6 +1198,21 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     await until(lambda: not running(tmp_path))
 
 
+async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_start_begins_anew(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
+    # As Claude Code 2.1.289 does with a transcript it cannot read.
+    fake_claude.write_text("#!/bin/sh\necho No conversation found with session ID: c1\n")
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    (brain / "conversation").write_text("c1\n")
+    transcript(brain, "c1")
+    with pytest.raises(Unstartable, match="No conversation found"):
+        await start(replace(launch(tmp_path), conversation=conversation(brain, SessionId("n1"))), lambda _entry: None)
+    assert conversation(brain, SessionId("n2")) == Fresh(SessionId("n2"), None)
+
+
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == "brain@example.com"
     monkeypatch.setenv("LOGGED_IN", "0")

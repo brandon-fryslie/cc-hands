@@ -197,6 +197,11 @@ def hold(config_dir: Path, session: SessionId) -> None:
     written.replace(path)
 
 
+def let_go(config_dir: Path) -> None:
+    """Forget the brain's conversation, so the next brain on `config_dir` begins a new one."""
+    held(config_dir).unlink(missing_ok=True)
+
+
 def slim(claude: Path, model: str, conversation: Conversation) -> list[str]:
     """A slim Claude Code's command line: the real claude, interactive, reading no settings but its config directory's."""
     return [
@@ -918,9 +923,15 @@ async def start(launch: Launch, record: Record) -> Brain:
         sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
         running: ClaudeCode | None = None
         try:
-            running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
-            annotate(pid=running.pid)
-            typist = await _typist(running, sockets, launch.session)
+            try:
+                running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
+                annotate(pid=running.pid)
+                typist = await _typist(running, sockets, launch.session)
+            except Unstartable:
+                # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
+                # Claude Code keeps its transcript (2.1.289 exits "No conversation found" on one it cannot read).
+                let_go(station.config_dir)
+                raise
             # Held once the brain is up in it, so the next start resumes what this one says.
             hold(station.config_dir, launch.session)
         except BaseException:
