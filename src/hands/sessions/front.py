@@ -6,10 +6,8 @@ hands is tied to no one terminal. An app that can say which of its tabs is in fr
 shows every terminal running under it, which names the session in front whenever it holds only one.
 """
 
-import asyncio
 import os
 import re
-import shutil
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
@@ -18,6 +16,7 @@ from loguru import logger
 
 from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
 from hands.core.session import SessionId
+from hands.core.tmux import Unanswered
 from hands.sessions.child import run
 from hands.sessions import tmux
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
@@ -125,18 +124,11 @@ def _under(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
 
 async def _panes(environment: Mapping[str, str]) -> list[tuple[int, int]]:
     """Each tmux client's terminal, and the terminal of the pane it shows, from every server of this user's."""
-    directory, sockets = tmux.sockets(environment)
-    if not sockets:
-        return []
-    found = shutil.which("tmux", path=environment.get("PATH"))
-    if found is None:
-        raise _Unread(f"tmux sockets are in {directory}, and no tmux is on the PATH to ask them which pane each client shows")
-    try:
-        clients = await asyncio.gather(*(tmux.asked(found, socket, "list-clients", "-F", "#{client_tty}\t#{pane_tty}") for socket in sockets))
-    except tmux.NotAnswered as error:
-        raise _Unread(str(error)) from error
+    answers = await tmux.asked(environment, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
+    if unanswered := [answer.reason for answer in answers if isinstance(answer, Unanswered)]:
+        raise _Unread("; ".join(unanswered))
     # A client with no terminal, as one in control mode over a pipe, is on no screen.
-    return [(_device(client), _device(pane)) for lines in clients for client, pane in (line.split("\t") for line in lines) if client]
+    return [(_device(client), _device(pane)) for answer in answers if isinstance(answer, tmux.Answered) for client, pane in (line.split("\t") for line in answer.lines) if client]
 
 
 def _device(path: str) -> int:

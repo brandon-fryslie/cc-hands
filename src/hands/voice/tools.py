@@ -358,10 +358,10 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes = await _panes([listing.session.membership.pid for listing in listings], environment)
+        panes, focus = await asyncio.gather(_panes([listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
             "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
-            "focus": await _focus(home),
+            "focus": focus,
         }
 
     return tool(list_sessions)
@@ -371,7 +371,7 @@ async def _panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[In
     """The tmux pane each of `pids` runs in, from one read of the processes and of every tmux server."""
     servers = await tmux.servers(environment)
     try:
-        processes = process_table()
+        processes = await asyncio.to_thread(process_table)
     except OSError as error:
         return [PaneUnread(f"the processes could not be read: {error}")] * len(pids)
     return [pane_of(ancestor_terminals(pid, processes), servers) for pid in pids]
@@ -668,7 +668,7 @@ def _ticket_line(backlog: Backlog, said: Mapping[str, str], id: str) -> dict[str
 
 
 def standing(sessions: Sessions) -> list[dict[str, str]]:
-    """Every live session as list_sessions describes it."""
+    """Every live session by its id, name, state and mode, as list_sessions describes each before what it adds."""
     return [describe_listing(listing) for listing in sessions.live()]
 
 

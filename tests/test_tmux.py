@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Generator
 from pathlib import Path
 
@@ -99,8 +100,10 @@ def test_a_socket_no_server_listens_on_holds_no_pane_and_sockets_with_no_tmux_to
     # A server killed leaves its socket behind.
     server = int(subprocess.run([str(TMUX), "-L", "default", "display-message", "-p", "#{pid}"], capture_output=True, text=True, check=True).stdout)
     os.kill(server, 9)
+    deadline = time.monotonic() + 5
     while subprocess.run([str(TMUX), "-L", "default", "has-session"], capture_output=True, check=False).returncode == 0:
-        pass
+        assert time.monotonic() < deadline, "the killed tmux server still answers"
+        time.sleep(0.05)
     assert (sockets / "default").is_socket()
     assert in_pane(worker) == NotInTmux()
 
@@ -108,6 +111,17 @@ def test_a_socket_no_server_listens_on_holds_no_pane_and_sockets_with_no_tmux_to
     monkeypatch.setenv("PATH", "/nonexistent")
     match in_pane(worker):
         case PaneUnread(reason=reason):
-            assert reason == f"tmux sockets are in {sockets}, and no tmux is on the PATH to ask them which panes they hold"
+            assert reason == f"tmux sockets are in {sockets}, and no tmux is on the PATH to ask them"
         case other:
             pytest.fail(f"read as {other}")
+
+
+@needs_tmux
+def test_a_dead_pane_kept_by_remain_on_exit_leaves_the_live_panes_of_its_server_read(sockets: Path) -> None:
+    pane, worker = run_in("default", "work")
+    subprocess.run([str(TMUX), "-L", "default", "set", "-g", "remain-on-exit", "on", ";", "new-window", "-t", "work", "true"], check=True)
+    deadline = time.monotonic() + 5
+    while subprocess.run([str(TMUX), "-L", "default", "list-panes", "-a", "-f", "#{pane_dead}", "-F", "#{pane_id}"], capture_output=True, text=True, check=True).stdout == "":
+        assert time.monotonic() < deadline, "the window's command never exited"
+        time.sleep(0.05)
+    assert in_pane(worker) == Pane(sockets / "default", pane, "work", 0)
