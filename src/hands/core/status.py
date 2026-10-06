@@ -1,7 +1,8 @@
 """What Claude Code itself says a session is doing, as it publishes it in the session's own file.
 
 Claude Code 2.1.280 to 2.1.282 keep ~/.claude/sessions/<pid>.json for every interactive session and rewrite its
-`status` as the session moves: busy while a turn or a `!` command runs, waiting at a dialog, idle at the prompt. It is the session's own word on whether a turn is running, which no hook and no transcript record says
+`status` as the session moves: busy while a turn, a `!` command or a background subagent runs, waiting at a dialog,
+idle at the prompt. It is the session's own word on whether it is at work, which no hook and no transcript record says
 for every way a turn can stop.
 """
 
@@ -61,7 +62,8 @@ class Unknown:
 Status = Idle | Busy | Waiting | Shell | Unknown
 # At its prompt, where a typed prompt runs at once: no turn runs, whatever its background shells do.
 AtPrompt = Idle | Shell
-# Every other status: whatever the session is doing, it is not at its prompt.
+# Every other status: whatever the session is doing, it is not known to be at its prompt; busy can be, while a background
+# subagent works.
 Going = Busy | Waiting | Unknown
 
 
