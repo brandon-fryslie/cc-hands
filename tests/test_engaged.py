@@ -235,7 +235,7 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
     async with loaded(16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
-    assert [(event.event, event.outcome, event.facts) for event in events] == [("trigger.loaded", "ok", {"stop_secs": STOP_SECS})]
+    assert [(event.event, event.outcome, event.facts) for event in events] == [("trigger.loaded", "ok", {"vad_stop_secs": STOP_SECS})]
 
 
 def quiet(seconds: float) -> bytes:

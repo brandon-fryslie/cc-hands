@@ -234,7 +234,7 @@ class Models:
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
 
     @property
-    def stop_secs(self) -> float:
+    def vad_stop_secs(self) -> float:
         return self._vad.params.stop_secs
 
     async def detect(self, audio: bytes) -> VADState:
@@ -270,7 +270,7 @@ async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGe
     try:
         with unit("trigger.loaded", emit):
             # [LAW:nothing-unseen] the pause the detector ends speech at, as it was loaded with it.
-            annotate(stop_secs=(await asyncio.shield(loading)).stop_secs)
+            annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
         yield loading.result()
     finally:
         # A switch away while they load waits the load out, so what it built is let go of too.
