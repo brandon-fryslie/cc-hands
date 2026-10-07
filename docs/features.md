@@ -196,7 +196,7 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   the mode meant, and a plan sent back stayed in plan mode with the feedback
   reaching the agent.
 - **Mode readback.** `permission_mode` from every hook payload lands in
-  `Session.mode`; `list_sessions` speaks it; a mode change is a `Note`. Done when
+  `Session.mode`; `list_sessions` speaks it; the brain's request tail says it. Done when
   shift-tab in a session is reflected in the next `list_sessions`.
 - **One turn summary.** Every finished turn is summarised once, and that summary is
   what the user hears of it: as the turn finishes for every session with finished

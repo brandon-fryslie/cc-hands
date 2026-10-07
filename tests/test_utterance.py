@@ -17,7 +17,6 @@ from hands.core.effects import Expired, SessionGone, Speak
 from hands.core.session import Permission, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.voice.speech import Known, sent
 from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering, uttering
 
 from conftest import running
@@ -102,13 +101,6 @@ async def test_what_of_an_utterance_was_heard_is_read_off_the_output_transport(r
     pushed: dict[Step, Frame] = {"lead": lead, "audio": AUDIO, "barge-in": InterruptionFrame(), "resume": Resumed((utterance,)), "close": close}
     await rig.played([pushed[step] for step in steps])
     assert (await rig.event()).facts["fate"] == fate
-
-
-async def test_what_the_model_knows_unsaid_sends_nothing_and_is_silent_as_it_is_sent(rig: Rig) -> None:
-    """Never said, so never read off the speaker, where a brain turn speaking beside it would lend it its audio."""
-    utterance = rig.utterances.heard(API, EXPIRED)
-    assert tuple(sent(Known(), (utterance,))) == ()
-    assert (await rig.event()).facts["fate"] == "silent"
 
 
 async def test_audio_that_played_after_a_barge_in_cut_an_utterance_is_not_its_first(rig: Rig) -> None:

@@ -9,7 +9,7 @@ from pathlib import PurePath
 from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak, Tell
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
 from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
@@ -99,18 +99,12 @@ class InOwnWords:
     session: SessionId
 
 
-@dataclass(frozen=True)
-class Known:
-    """What the model knows without being told: the tail of its next request says it, so nothing is said or sent."""
-
-
 # How something hands tells is said. [LAW:one-type-per-behavior] `sent` is the one place that decides the frames each makes.
-Saying = AsWritten | InOwnWords | Known
+Saying = AsWritten | InOwnWords
 
 
 def sent(saying: Saying, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
-    """The frames that say `saying`, sent with what tells which of `utterances` was heard; what is never said settles
-    them `silent` here."""
+    """The frames that say `saying`, sent with what tells which of `utterances` was heard."""
     match saying:
         case AsWritten(spoken=spoken):
             # In hands' lane, in order with what it hands the brain: the brain's stage sends it with what tells it was heard.
@@ -118,11 +112,6 @@ def sent(saying: Saying, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
         case InOwnWords(text=text, unsaid=unsaid, session=session):
             # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
             return (Narrated(text, unsaid, session, utterances),)
-        case Known():
-            # Never said, so never read off the speaker: a brain turn speaking beside it would lend it its audio.
-            for utterance in utterances:
-                utterance.settle("silent")
-            return ()
 
 
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
@@ -157,13 +146,13 @@ async def relay(
                 # [LAW:nothing-unseen] whether it was said, how much of it, and what was set that decided it.
                 utterance.annotate(attention=attention, overlay=overlay, route=route)
                 await _mentioned(route, Tell(session, occurrence), utterance, queue_frame)
-            case Speak() | Narrate() | Note():
+            case Speak() | Narrate():
                 await queue_frame(Unprompted(heard, (utterance,)))
 
 
 def _teller(heard: Heard) -> SessionId:
     match heard:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Note(fact=ModeChanged(session=session)) | Progress(session=session) | Tell(session=session):
+        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
             return session
 
 
@@ -182,8 +171,8 @@ def _routed(route: Route, progress: Progress, utterance: Utterance, play: Callab
             working()
             play(progress, route, utterance)
         case "note":
-            # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for either
-            # model to read when asked, so nothing is added to a context that keeps every message it is given.
+            # [LAW:one-source-of-truth] the session listing says what a working session last set out to do, for the brain
+            # to read when asked.
             utterance.settle("noted")
 
 
@@ -195,9 +184,6 @@ def frames(pending: Pending, names: Names) -> Saying:
             return AsWritten(TTSSpeakFrame(announcement_text(announcement, names)))
         case Narrate(moment=moment):
             return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session)
-        case Note():
-            # [LAW:one-source-of-truth] the tail of the brain's next request says how the session stands now.
-            return Known()
         case Finished(session=session, news=news, amount=amount):
             name = names(session)
             return InOwnWords(told(session, name, news, amount), f"{name} finished {_turns(news)}, and I could not tell it.", session)

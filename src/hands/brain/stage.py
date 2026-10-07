@@ -472,7 +472,7 @@ class BrainStage(FrameProcessor):
             await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failed
         elif failure is not None:
-            # [LAW:no-silent-failure] said as the API services' failures are: an error from the model's stage. No category:
+            # [LAW:no-silent-failure] said as an error from the model's stage, which the system channel words. No category:
             # Pipecat takes an invalid request or a refused login as permanent and stops the stage, and the brain goes on.
             self._broken_off = failure.note
             fail(failure.error)
@@ -645,7 +645,7 @@ class BrainStage(FrameProcessor):
             if not streams(sent.body):
                 turn.broken.append(Broken(sent.exchange, turn.reply))
             turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, _UNNAMED, ""
-            # Refused once is the turn's failure, said at once as the API variants say theirs, who ask once. The proxy's
+            # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((Tail(self._tail()),), refusal="final", span=within(turn.span))
         turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.completes and (said := _owed(text, result)) is not None)
@@ -701,8 +701,7 @@ class BrainStage(FrameProcessor):
                 ran = turn.tools[call] = _Call(name, now, datetime.now(UTC), within(turn.span))
                 self._spans.opened(call, ran.span)
                 turn.working.set()
-            # [LAW:one-source-of-truth] why a turn failed is the wire's, as the API variants read it off their own calls: the
-            # head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
+            # [LAW:one-source-of-truth] why a turn failed is the wire's: the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after
             # refreshing its login: the latest request's is the turn's.
             case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:

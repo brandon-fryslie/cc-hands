@@ -136,8 +136,8 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     """What `prepare` makes, while the loop beats "starting"; None when told to stop first.
 
     [LAW:single-enforcer] one beater says "starting" for each step of the start. Its slow steps run off the loop:
-    importing Pipecat takes seconds, saying what hands is missing asks `claude`, reading the configuration can wait on
-    the user at a keychain prompt, and loading the models takes seconds. A start that waits reads as starting, and only
+    importing Pipecat takes seconds, saying what hands is missing asks `claude`, reading the configuration checks the
+    brain's login, and loading the models takes seconds. A start that waits reads as starting, and only
     a stuck loop as not responding.
     """
     preparing = asyncio.create_task(prepare())
@@ -146,7 +146,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        # A stop does not wait for the models or the keychain: their threads are daemons, which the process exits without.
+        # A stop does not wait for the models or the login check: their threads are daemons, which the process exits without.
         for task in (preparing, starting, quitting):
             if not task.done():
                 task.cancel()

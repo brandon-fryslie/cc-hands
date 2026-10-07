@@ -166,7 +166,7 @@ Input = Text | Command | Key
 Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "up", "down", "tab", "shift_tab"]
 
 # The reducer's whole vocabulary of effects. Adapters perform these and nothing else.
-Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | Audit
+Effect = Reply | Type | Speak | Narrate | Play | Summarise | Snapshot | Audit
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
@@ -174,9 +174,7 @@ class Type:     session: SessionId; writer: Fritter | Pane; input: Input  # thro
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
-class Narrate:  event: Narration; priority: Priority         # LLM, run_llm on
-@dataclass(frozen=True)
-class Note:     event: Narration                             # LLM context, silent
+class Narrate:  event: Narration; priority: Priority         # the brain, a turn of its own
 @dataclass(frozen=True)
 class Play:     narration: NarrationId; segment: SegmentId   # straight to TTS, bookmarked
 @dataclass(frozen=True)
@@ -227,7 +225,7 @@ The block above is the target. `hands.core.effects` defines less today:
 `Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
 permission announcements and requests and `Story = Summarise | SessionGone` carries
 finished turns and sessions gone. Today's `Summarise` holds a session, the prompt id of
-the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, and `Snapshot`,
+the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Play`, and `Snapshot`,
 and the segment, narration, and playback types, are planned.
 
 Two things are deliberately absent. There is no `Session.last_seen` timestamp,
@@ -254,16 +252,15 @@ to the reducer.
 
 The adapters live in `sessions` and `voice` and each performs one effect kind: `Reply`
 writes to the blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`,
-`Narrate` and `Note` become
-`LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
+`Narrate` becomes a `Narrated` frame the brain's stage takes as a turn of its own, `Play` sends a segment to TTS
 through the player, `Summarise` hands the turn to the intermediary, `Snapshot` records or diffs the
 target's git state, `Audit` appends one JSONL line. An
 adapter that fails raises; the supervisor logs it and the failure is spoken through
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has eight of those nine today -
-`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus
+That block is the design, not the code. `core/effects.py` has seven of those eight today -
+`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Summarise`, `Snapshot` - plus
 `SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt. `Input` is
 `Text` alone so far; `Command` and `Key` are `hands-keyboard-gxr.i5n`. `Type` is emitted by
 `core.drafts.decide` for a send rather than by `reduce`, and `Sessions.draft` performs it:
@@ -352,7 +349,7 @@ would under their own paste.
 
 ## Four ways to reach the ear
 
-Every event that reaches the pipeline takes one of four routes, and the route is
+Every event that reaches the pipeline takes one of three routes, and the route is
 chosen by a table, not by code that looks at the event `[LAW:dataflow-not-control-flow]`.
 
 - **Speak.** Text goes straight to TTS as a `TTSSpeakFrame`. No model call, no
@@ -366,17 +363,17 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
   so an interruption leaves a bookmark, and each played segment is appended to the
   intermediary's context as a note so it can answer about what you heard. Used for
   a turn's results, progress while a session works, and a subagent's report.
-- **Narrate.** The event is appended to the intermediary's context with `run_llm`
-  on. The model interprets and speaks. Used when the content is a conversation
-  turn: a permission request, a question from `AskUserQuestion`, a plan.
-- **Note.** Appended with `run_llm` off. The model knows, and says nothing until
-  asked. Used for context that changes what a later answer should say: a focus
-  change, a subagent finishing, a session going idle.
+- **Narrate.** The event is handed to the brain as a turn of its own. The model
+  interprets and speaks. Used when the content is a conversation turn: a permission
+  request, a question from `AskUserQuestion`, a plan.
+
+What the brain is to know and not say needs no route: the tail of its next request
+says how the sessions stand.
 
 Today no table chooses; two queues stand in for it. `Heard` carries permission
 announcements as `Speak` and permission requests as `Narrate`,
 relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
-unprompted of the sessions, under either telling, reaches the floor (`voice/floor.py`) ahead
+unprompted of the sessions reaches the floor (`voice/floor.py`) ahead
 of the user aggregator as a value, a `Pending` (`core/pending.py`), not yet a frame. From the
 press that opens the user's turn until that turn is sent it waits there and follows the user's
 words; what arrives with no turn open is let go at once, the same way. Either way the floor
@@ -387,8 +384,8 @@ Each thing a session gives hands to say unasked is one `utterance` wide event
 (`voice/utterance.py`), opened as the relay or the narrator hears it and emitted at its fate:
 `noted` (the route, the delivery, or a turn or burst with nothing new kept it from being said),
 `dropped` (no longer so by the time it was to be told: out of date as the floor let it go, or
-progress of a turn that ended before its summary), `silent` (a note to the model's context,
-settled as it is sent), `played`, or `cut`. Its facts are what was
+progress of a turn that ended before its summary), `silent` (handed on and nothing of it
+played), `played`, or `cut`. Its facts are what was
 heard and from which session, what decided its route, how long the floor held it (`held_ms`),
 what it was told as and how many things heard were folded into that telling, and
 `first_audio_ms`, from heard to the first audio the speaker wrote of it. The last three fates
@@ -410,8 +407,7 @@ watched (`Spoken`); otherwise it is held (`Withheld`, saying why) and `tell_turn
 to the model when the user asks. Each session's last summary is held in `Recounts` either
 way, as its `News`, and its utterance names its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
-`Heard` also carries a mode change as a `Note`, which is never said: the tail of the
-brain's next request says the mode. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
+A mode change is never said: the tail of the brain's next request says the mode. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
 session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
 every finished turn. What hands says unprompted is one control, `Attention`
 (`hands/core/attention.py`), kept in `~/.hands/attention.json` as only the kinds the user set,
@@ -474,8 +470,8 @@ input carries `session_id`, `transcript_path`, `cwd`, and `hook_event_name`. Of 
 events hands subscribes to, `UserPromptSubmit`, `Stop`, `PermissionRequest`,
 `PostToolUse`, and `PostToolUseFailure` carry `permission_mode` as well, and `SessionStart`, `Notification`, and
 `SessionEnd` do not (verified live on 2.1.281). That mode is the session's mode: each
-hook that carries one sets it, `list_sessions` says it, and a change reaches the
-intermediary as a `Note`. A hook fired inside a subagent carries the subagent's mode
+hook that carries one sets it, `list_sessions` says it, and the tail of the brain's
+next request says it. A hook fired inside a subagent carries the subagent's mode
 and an `agent_id`, and sets nothing. Shift-tab fires no hook, and the transcript writes its
 `permission-mode` record only as a prompt is sent, so a mode changed at an idle
 prompt is heard at the session's next prompt, and one changed mid-turn at its next

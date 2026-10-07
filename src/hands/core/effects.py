@@ -8,7 +8,7 @@ from typing import Literal
 from hands.core.events import SessionEvent
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Blocker, CommandName, Keystroke, Mode, PromptId, PromptText, RequestId, SessionId
+from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, RequestId, SessionId
 from hands.core.tmux import Pane
 from hands.core.turn import AgentId, AgentTask
 
@@ -188,21 +188,6 @@ class Narrate:
 
 
 @dataclass(frozen=True)
-class ModeChanged:
-    """A session reported a permission mode other than the one it reported before."""
-
-    session: SessionId
-    mode: Mode
-
-
-@dataclass(frozen=True)
-class Note:
-    """Known and not spoken: the tail of the brain's next request says it, and it says nothing of it until asked."""
-
-    fact: ModeChanged
-
-
-@dataclass(frozen=True)
 class Progress:
     """A running turn's calls and text, gathered until they settled: how the user hears of them is decided where the focus and the
     session's overlay are read, not here."""
@@ -225,7 +210,7 @@ class Tell:
     occurrence: Occurrence
 
 
-Heard = Speak | Narrate | Note | Progress | Tell
+Heard = Speak | Narrate | Progress | Tell
 
 
 @dataclass(frozen=True)

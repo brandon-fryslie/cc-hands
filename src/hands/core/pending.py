@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.core.attention import Amount
-from hands.core.effects import DeadlineNear, Expired, Narrate, Note, SessionGone, Speak
+from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Speak
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
@@ -76,20 +76,17 @@ class Mentioned:
     amount: Amount
 
 
-Pending = Speak | Narrate | Note | Finished | Unread | SessionGone | Working | Mentioned
+Pending = Speak | Narrate | Finished | Unread | SessionGone | Working | Mentioned
 
-# How soon a pending thing is told, soonest first. "known" goes into the model's context and is never spoken, so it
-# costs the user nothing to have it first, and what is spoken after it is said knowing it. "blocking" is something a
-# session waits on the user for. "result" is what a session did. "fyi" is the rest.
-Priority = Literal["known", "blocking", "result", "fyi"]
-_SOONEST: Sequence[Priority] = ("known", "blocking", "result", "fyi")
+# How soon a pending thing is told, soonest first. "blocking" is something a session waits on the user for. "result" is
+# what a session did. "fyi" is the rest.
+Priority = Literal["blocking", "result", "fyi"]
+_SOONEST: Sequence[Priority] = ("blocking", "result", "fyi")
 
 
 def priority(pending: Pending) -> Priority:
     # [LAW:one-source-of-truth] read off the variant, never stored beside it.
     match pending:
-        case Note():
-            return "known"
         case Narrate() | Speak():
             return "blocking"
         case Finished() | Unread():
@@ -113,17 +110,16 @@ def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> t
     each thing whose place no telling names.
 
     A session's story is told in the order it happened: what it said before something sooner is told with that sooner
-    thing, never after it, so its next turn's request is not heard ahead of the turn that came before it. What is only
-    known is apart from any story: it is never spoken, so it goes first without telling anything out of order.
+    thing, never after it, so its next turn's request is not heard ahead of the turn that came before it.
 
     `live` is each session that has not ended, read as the floor lets go: a request answered at the keyboard while the
     user talked is no longer one, and neither is a deadline counted down on it; and progress of a turn that ended
     meanwhile is out of date, however the ending was told, or whether it was told at all.
     """
     told = _folded(_current([Coalesced(each, (at,)) for at, each in enumerate(pending) if _waits(each, live)]))
-    stories = [_story(each.pending, at) for at, each in enumerate(told)]
+    stories = [_story(each.pending) for each in told]
     # Walked from the last: each thing is told as soon as the soonest thing its story tells after it.
-    soonest: dict[SessionId | int, int] = {}
+    soonest: dict[SessionId, int] = {}
     ranks = [0] * len(told)
     for at in reversed(range(len(told))):
         ranks[at] = soonest[stories[at]] = min(_SOONEST.index(priority(told[at].pending)), soonest.get(stories[at], len(_SOONEST)))
@@ -165,8 +161,8 @@ def current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> boo
             return False
 
 
-def _story(pending: Pending, at: int) -> SessionId | int:
-    """Whose story `pending` is told in: its session's, or, for what is only known, its own, by where it stands."""
+def _story(pending: Pending) -> SessionId:
+    """Whose story `pending` is told in: its session's."""
     match pending:
         case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)):
             return session
@@ -174,8 +170,6 @@ def _story(pending: Pending, at: int) -> SessionId | int:
             return moment.session
         case Finished(session=session) | Unread(session=session) | SessionGone(session=session) | Working(session=session) | Mentioned(session=session):
             return session
-        case Note():
-            return at
 
 
 def _current(pending: Sequence[Coalesced]) -> list[Coalesced]:
@@ -213,9 +207,9 @@ def _folded(pending: Sequence[Coalesced]) -> list[Coalesced]:
     # A dict keeps a key where it was first put, so a fold's slot stays where its first thing stood as later ones join it.
     slots: dict[tuple[object, ...], Coalesced] = {}
     # How many things that do not fold each story has told so far: a fold is what came between two of them.
-    between: dict[SessionId | int, int] = {}
+    between: dict[SessionId, int] = {}
     for at, each in enumerate(pending):
-        story = _story(each.pending, at)
+        story = _story(each.pending)
         match each.pending:
             case Finished() | Working() as folding:
                 # A subagent's work folds only with its own: each is said as the work of the call that started it.

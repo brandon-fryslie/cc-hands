@@ -114,7 +114,7 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
             if settings != running.config:
-                # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
+                # reachable blocks, on the brain's login check, on a thread a stop does not wait for.
                 await off_loop(partial(reachable, settings), "weighing a settings edit")
                 if _held(home) == now:
                     return SettingsEdited(path=str(home.config), refused=None)

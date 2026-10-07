@@ -12,7 +12,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, Note, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Tell, Type, Typed, Holding, Overtaken, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Tell, Type, Typed, Holding, Overtaken, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -402,7 +402,7 @@ class Sessions:
                 logger.log(*_audited(record))
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
-            case Speak() | Narrate() | Note() | Progress() | Tell():
+            case Speak() | Narrate() | Progress() | Tell():
                 self._heard.put_nowait(effect)
             case Summarise() | SessionGone():
                 self._story.put_nowait(effect)
@@ -466,7 +466,7 @@ def _ordered_by(effect: Effect) -> SessionId | None:
     match effect:
         case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session):
             return session
-        case Audit() | Speak() | Narrate() | Note() | Progress() | Tell():
+        case Audit() | Speak() | Narrate() | Progress() | Tell():
             return None
 
 

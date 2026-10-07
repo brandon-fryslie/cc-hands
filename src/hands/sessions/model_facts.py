@@ -1,5 +1,5 @@
-"""Why a call to the language model failed, as a fact a listener can act on: read off an API variant's exception or off
-the brain's wire, and said by the system channel."""
+"""Why a call to the language model failed, as a fact a listener can act on: read off the brain's wire, and said by the
+system channel."""
 
 from dataclasses import dataclass
 

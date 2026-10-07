@@ -342,10 +342,10 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
-        "backend": "ClaudeCodeBackend", "base_url": UPSTREAM, "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voices.DEFAULT,
+        "backend": "ClaudeCodeBackend", "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voices.DEFAULT,
         "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
     }
 

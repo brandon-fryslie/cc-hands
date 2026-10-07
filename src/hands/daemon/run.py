@@ -317,14 +317,14 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     config = read.voice
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the collector they name, the
-    # server and model the run reaches and the brain's account, the voice it
+    # model the run reaches and the brain's account, the voice it
     # starts speaking in, the one the user kept or the default, the personality it comes across in, None for hands' own,
     # and the wake word the wake word trigger listens for, with the model of the user's own it is heard with, None for
     # openWakeWord's own.
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
-        backend=type(config.llm).__name__, base_url=UPSTREAM, model=config.llm.model, account=config.llm.account, voice=config.voice,
+        backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=config.voice,
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
     )
     return config
