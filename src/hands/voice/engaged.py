@@ -2,9 +2,10 @@
 end-of-turn detection closes it, until another hold disengages it.
 
 Two models listen to the desk's microphone, heard through the echo canceller as every buffer is: Silero's voice
-activity detector says where speech starts and stops, a stop being `STOP_SECS` of silence, and Smart Turn says whether a stop is the end of the turn or a
-pause inside it, from how the speech ended rather than from how long the silence is. A pause it judges a thought still
-going holds the turn open; if the silence then runs on to Smart Turn's own `stop_secs`, the turn ends there.
+activity detector says where speech starts and stops, a stop being `STOP_SECS` of silence, and Smart Turn says whether
+a stop is the end of the turn or a pause inside it, from how the speech ended rather than from how long the silence is.
+A pause it judges a thought still going holds the turn open; if the silence then runs on to Smart Turn's own
+`stop_secs`, the turn ends there.
 
 The edge moves the gate with the held key's own moves, so the gate, Whisper, and the cues take an engaged turn as they
 take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was only a noise
