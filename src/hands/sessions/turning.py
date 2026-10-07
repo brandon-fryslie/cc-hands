@@ -31,10 +31,12 @@ class Turning:
     # How many steps from the start of the turn were let go of: told, and kept no longer. A slot's place counts from
     # there, so the steps held are always the turn's last ones.
     forgotten: int = 0
-    # Whether the last record read of the turn says it is over: Claude Code's record that it ended, or the user's
-    # interrupt. A record read after it, as when a Stop hook sends Claude on or an Escape flushes a queued message into
-    # the turn, says it is not.
-    ended: bool = False
+    # The last record read of the turn, where it says the turn is over: Claude Code's record that it ended, the user's
+    # interrupt, or what a slash command Claude Code carries out itself printed, the last it writes of that command's
+    # turn. A record read after it says it is not: a Stop hook sending Claude on, an Escape flushing a queued message
+    # into the turn, or the prompt a command such as /goal hands Claude, which Claude Code writes in the same append as
+    # what the command printed (2.1.289).
+    ended: Ended | Interruption | Printed | None = None
 
     def consume(self, record: Payload) -> Opening | Printed | Interruption | None:
         """Read one record in, and say where it opened a turn or cut one off rather than continuing one.
@@ -43,7 +45,7 @@ class Turning:
         of the turn it was following at an opening and ends the session's turn at an interruption, and a backfill
         reading a whole morning keeps every one of them.
         """
-        self.ended = False
+        self.ended = None
         reported = reported_of(record)
         if reported is not None:
             # A step of the turn it arrived in, written between that turn's records, and neither a call nor a result:
@@ -71,15 +73,18 @@ class Turning:
                     logger.warning(f"what a command printed names record {of}, which opened no turn being read, so it is told with none: {output[:80]!r}")
                 else:
                     self.opening = joined
+                if isinstance(joined, Commanded):
+                    # A `!` command's output is not: Claude answers it, and its Stop ends the turn.
+                    self.ended = edge
                 return edge
             case Interruption():
                 # The last step of the turn it cuts off, told in its place like any other.
                 self.slots.append(edge)
-                self.ended = True
+                self.ended = edge
                 return edge
             case Ended():
                 # No step: what the turn did is told from its other records.
-                self.ended = True
+                self.ended = edge
                 return None
             case None:
                 pass
