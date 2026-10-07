@@ -4,7 +4,7 @@
 
 The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
 installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
-the plugin that joins sessions to hands; a backend with its key or login; the Input
+the plugin that joins sessions to hands; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
@@ -66,7 +66,7 @@ INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
     """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, this terminal's grant;
-    `reached`, whether the settings' backend has its key or login; `running`, whether hands is up; `keyboards`, what
+    `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
     return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, grant(granted), running, sessions(home, path, keyboards)]
@@ -96,8 +96,8 @@ def installed(path: str) -> Finding:
     found = shutil.which("hands", path=path)
     if found is None:
         return Missing(
-            f"this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks: "
-            f"`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH"
+            "this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks: "
+            "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH"
         )
     try:
         said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)
@@ -113,7 +113,7 @@ def installed(path: str) -> Finding:
 
 
 def configured(home: Home, environment: Mapping[str, str]) -> Finding:
-    """Whether the backend the home's config.toml names has the key or the login it reaches its model with."""
+    """Whether the brain has the login it reaches its model with."""
     try:
         config = load(home).config
     except Rejected as error:
@@ -123,18 +123,14 @@ def configured(home: Home, environment: Mapping[str, str]) -> Finding:
     except Rejected as error:
         reached = Missing(f"hands has no model to talk with: {error}")
     except OSError as error:
-        # The keychain or the brain's claude could not be asked, which says nothing of whether they hold a key or a login.
+        # The brain's claude could not be asked, which says nothing of whether it holds a login.
         reached = Unknown(f"cannot tell whether the [llm] backend can reach its model: {error}")
     return reached
 
 
-def reaching(reached: backends.LLMBackend) -> Ready:
-    """What a backend that has its key or login reaches, never its key."""
-    match backends.account(reached):
-        case None:
-            return Ready(f"the [llm] backend reaches {reached.model} at {backends.server(reached)} with its key")
-        case account:
-            return Ready(f"the brain is logged in as {account}, and reaches {reached.model}")
+def reaching(reached: backends.ClaudeCodeBackend) -> Ready:
+    """What a brain that has its login reaches."""
+    return Ready(f"the brain is logged in as {reached.account}, and reaches {reached.model}")
 
 
 def daemon(home: Home, now: datetime) -> Finding:

@@ -166,7 +166,7 @@ Input = Text | Command | Key
 Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "up", "down", "tab", "shift_tab"]
 
 # The reducer's whole vocabulary of effects. Adapters perform these and nothing else.
-Effect = Reply | Type | Speak | Narrate | Note | Play | Summarise | Snapshot | Audit
+Effect = Reply | Type | Speak | Narrate | Play | Summarise | Snapshot | Audit
 @dataclass(frozen=True)
 class Reply:    request: RequestId; reply: HookReply
 @dataclass(frozen=True)
@@ -174,9 +174,7 @@ class Type:     session: SessionId; writer: Fritter | Pane; input: Input  # thro
 @dataclass(frozen=True)
 class Speak:    text: str; priority: Priority                # straight to TTS
 @dataclass(frozen=True)
-class Narrate:  event: Narration; priority: Priority         # LLM, run_llm on
-@dataclass(frozen=True)
-class Note:     event: Narration                             # LLM context, silent
+class Narrate:  event: Narration; priority: Priority         # the brain, a turn of its own
 @dataclass(frozen=True)
 class Play:     narration: NarrationId; segment: SegmentId   # straight to TTS, bookmarked
 @dataclass(frozen=True)
@@ -227,7 +225,7 @@ The block above is the target. `hands.core.effects` defines less today:
 `Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
 permission announcements and requests and `Story = Summarise | SessionGone` carries
 finished turns and sessions gone. Today's `Summarise` holds a session, the prompt id of
-the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Note`, `Play`, and `Snapshot`,
+the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Play`, and `Snapshot`,
 and the segment, narration, and playback types, are planned.
 
 Two things are deliberately absent. There is no `Session.last_seen` timestamp,
@@ -254,16 +252,15 @@ to the reducer.
 
 The adapters live in `sessions` and `voice` and each performs one effect kind: `Reply`
 writes to the blocked shim's socket connection, `Speak` becomes a Pipecat `TTSSpeakFrame`,
-`Narrate` and `Note` become
-`LLMMessagesAppendFrame` with `run_llm` on or off, `Play` sends a segment to TTS
+`Narrate` becomes a `Narrated` frame the brain's stage takes as a turn of its own, `Play` sends a segment to TTS
 through the player, `Summarise` hands the turn to the intermediary, `Snapshot` records or diffs the
 target's git state, `Audit` appends one JSONL line. An
 adapter that fails raises; the supervisor logs it and the failure is spoken through
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has eight of those nine today -
-`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Note`, `Summarise`, `Snapshot` - plus
+That block is the design, not the code. `core/effects.py` has seven of those eight today -
+`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Summarise`, `Snapshot` - plus
 `SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt. `Input` is
 `Text` alone so far; `Command` and `Key` are `hands-keyboard-gxr.i5n`. `Type` is emitted by
 `core.drafts.decide` for a send rather than by `reduce`, and `Sessions.draft` performs it:
@@ -350,9 +347,9 @@ would under their own paste.
 
 `fritter/README.md` holds the protocol and what was measured.
 
-## Four ways to reach the ear
+## Three ways to reach the ear
 
-Every event that reaches the pipeline takes one of four routes, and the route is
+Every event that reaches the pipeline takes one of three routes, and the route is
 chosen by a table, not by code that looks at the event `[LAW:dataflow-not-control-flow]`.
 
 - **Speak.** Text goes straight to TTS as a `TTSSpeakFrame`. No model call, no
@@ -363,20 +360,19 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 - **Play.** A narration's segments go to TTS one at a time through the player,
   already in spoken form. There is no model call at playback, because the
   summariser did that work first. The player knows which segment is on the speaker,
-  so an interruption leaves a bookmark, and each played segment is appended to the
-  intermediary's context as a note so it can answer about what you heard. Used for
+  so an interruption leaves a bookmark. Used for
   a turn's results, progress while a session works, and a subagent's report.
-- **Narrate.** The event is appended to the intermediary's context with `run_llm`
-  on. The model interprets and speaks. Used when the content is a conversation
-  turn: a permission request, a question from `AskUserQuestion`, a plan.
-- **Note.** Appended with `run_llm` off. The model knows, and says nothing until
-  asked. Used for context that changes what a later answer should say: a focus
-  change, a subagent finishing, a session going idle.
+- **Narrate.** The event is handed to the brain as a turn of its own. The model
+  interprets and speaks. Used when the content is a conversation turn: a permission
+  request, a question from `AskUserQuestion`, a plan.
+
+What the brain is to know and not say needs no route: the tail of its next request
+says how the sessions stand.
 
 Today no table chooses; two queues stand in for it. `Heard` carries permission
 announcements as `Speak` and permission requests as `Narrate`,
 relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
-unprompted of the sessions, under either telling, reaches the floor (`voice/floor.py`) ahead
+unprompted of the sessions reaches the floor (`voice/floor.py`) ahead
 of the user aggregator as a value, a `Pending` (`core/pending.py`), not yet a frame. From the
 press that opens the user's turn until that turn is sent it waits there and follows the user's
 words; what arrives with no turn open is let go at once, the same way. Either way the floor
@@ -387,8 +383,8 @@ Each thing a session gives hands to say unasked is one `utterance` wide event
 (`voice/utterance.py`), opened as the relay or the narrator hears it and emitted at its fate:
 `noted` (the route, the delivery, or a turn or burst with nothing new kept it from being said),
 `dropped` (no longer so by the time it was to be told: out of date as the floor let it go, or
-progress of a turn that ended before its summary), `silent` (a note to the model's context,
-settled as it is sent), `played`, or `cut`. Its facts are what was
+progress of a turn that ended before its summary), `silent` (handed on and nothing of it
+played), `played`, or `cut`. Its facts are what was
 heard and from which session, what decided its route, how long the floor held it (`held_ms`),
 what it was told as and how many things heard were folded into that telling, and
 `first_audio_ms`, from heard to the first audio the speaker wrote of it. The last three fates
@@ -404,15 +400,13 @@ queue, because an end spoken at once was heard before the last turn it ended. Ev
 finished turn is read once into a `News` (`voice/narrator.py`, `recount`): the session's last
 words, what its record adds, and what it is waiting on. `speech.told` is the one place it
 becomes what the model is handed, under the session's name as it is when told, for the model
-to say in its own words. How that one summary reaches the user is its `Delivery`: as a turn of the intermediary's own
-— an `LLMMessagesAppendFrame` with `run_llm` on for an API model, a `Narrated` frame for
-the brain — when finished turns are set to be told, briefly or in full, or when the session is
+to say in its own words. How that one summary reaches the user is its `Delivery`: as a turn of the brain's own,
+a `Narrated` frame, when finished turns are set to be told, briefly or in full, or when the session is
 watched (`Spoken`); otherwise it is held (`Withheld`, saying why) and `tell_turn` hands it
 to the model when the user asks. Each session's last summary is held in `Recounts` either
 way, as its `News`, and its utterance names its delivery. Nothing of a turn is said as
 written past the model, and nothing is said of a session that sits at its prompt.
-`Heard` also carries a mode change as a `Note`, which enters the intermediary's context
-with `run_llm` off. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
+A mode change is never said: the tail of the brain's next request says the mode. Each session has an overlay, `normal`, `watched`, or `muted`, one file per
 session under `~/.hands/overlays` (`hands/core/attention.py`), which the narrator reads at
 every finished turn. What hands says unprompted is one control, `Attention`
 (`hands/core/attention.py`), kept in `~/.hands/attention.json` as only the kinds the user set,
@@ -475,8 +469,8 @@ input carries `session_id`, `transcript_path`, `cwd`, and `hook_event_name`. Of 
 events hands subscribes to, `UserPromptSubmit`, `Stop`, `PermissionRequest`,
 `PostToolUse`, and `PostToolUseFailure` carry `permission_mode` as well, and `SessionStart`, `Notification`, and
 `SessionEnd` do not (verified live on 2.1.281). That mode is the session's mode: each
-hook that carries one sets it, `list_sessions` says it, and a change reaches the
-intermediary as a `Note`. A hook fired inside a subagent carries the subagent's mode
+hook that carries one sets it, `list_sessions` says it, and the tail of the brain's
+next request says it. A hook fired inside a subagent carries the subagent's mode
 and an `agent_id`, and sets nothing. Shift-tab fires no hook, and the transcript writes its
 `permission-mode` record only as a prompt is sent, so a mode changed at an idle
 prompt is heard at the session's next prompt, and one changed mid-turn at its next
@@ -1139,20 +1133,6 @@ screen (`core/place.py`'s `Modality`), read as their words reach the stage and r
 move to the phone `audio-only`, and the brain's `set_modality` tool switches it until the
 next move. It is a hint the brain chooses by, never a limit on what hands does.
 
-**The same notes on an API backend.** Built: `core/beside.py` composes both notes for
-either model. Under an API model `voice/beside.py`'s `Noting` stands between the floor
-and the user aggregator. As the key is let go on a hold it reads the same two readers,
-the screen as a task beside the pipeline while Whisper transcribes; as the hold's words
-arrive it passes them on and puts the notes into the context as a message behind them.
-No frame waits on the read: words that arrive before it is done are noted with where the
-user is alone. The hold is resolved behind its words, so the note is in the context ahead
-of the user's words, which the turn writes as it ends, and what hands tells of the
-sessions, which the floor holds until then, follows both and is followed by no note.
-Holds let go before the first one's words arrive are noted once, as the last was let go.
-Each hold let go is one `front.read` wide event: its `front` and `modality` facts are
-what was read, its duration is the read, and its outcome is `cancelled` where the words
-arrived first or a later hold's read took its place.
-
 The rest of this section is planned: step summaries built as steps arrive, and streaming.
 
 **Spoken form.** Built: `core/spoken.py` is a pure function from text to speakable
@@ -1340,10 +1320,9 @@ what it gathered unsaid, its result being told instead; its tick lets a burst go
 `LONGEST` `[LAW:no-ambient-temporal-coupling]`. The relay routes it by
 `attention.progress_route`, a table over the focus and the overlay, and records each choice
 and what decided it on the burst's utterance: the focused session's is `Working`, played as written at `fyi`
-("cc-hands: edit ten files, then run the test suite."), and kept out of a pushed context,
-which keeps every message it is given. Any other's, and a muted one's even when focused, is
-left to the session listing, which says what a working session last set out to do: the
-`list_sessions` tool for an API model, and the tail of the brain's every request. `coalesce`
+("cc-hands: edit ten files, then run the test suite."). Any other's, and a muted one's even
+when focused, is left to the session listing, which says what a working session last set out
+to do: the tail of the brain's every request. `coalesce`
 folds a session's progress into one telling and drops what a result of the same turn says
 better; progress carries its turn's ids for this, since a result reaches the floor only once
 it is summarised, after the next turn's calls may have.
@@ -1403,12 +1382,9 @@ barge-in drops them like any sentence not yet played; their reading holds all of
 the start, so none is lost to going back.
 
 A staged or amended draft is read back the same way, by hands as written: the tool hands
-back `{"says": ...}`, and the API path says it as the call returns while the brain's stage
-says it once the brain's own words are done, so a barge-in before then does not lose it.
-A reply is the whole of what is said only when every call in it was silent: one refused
-(`error`) or one that asks a reply puts the model back on. Pipecat lets each result decide
-and the last to finish wins, so `Replies` is told each reply's calls as the service starts
-them (`RunsReplies.run_function_calls`) and has only the last answer for them all.
+back `{"says": ...}`, and the brain's stage says it once the brain's own words are done, so
+a barge-in before then does not lose it. A reply is the whole of what is said only when every
+call in it was silent: one refused (`error`) or one that asks a reply puts the model back on.
 
 ## Push pointers, pull content
 
@@ -1543,13 +1519,10 @@ over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. A
 session whose turn or question hands tells becomes the focus too, so the reply that
 follows reaches it (`hands.voice.refocus`). It moves as the model takes the telling,
 after the user's words that came before it, so those still go to the session they
-were meant for: the brain's stage moves it before it asks, and behind an API model a
-`Told` frame follows the telling and is dropped with it by a barge-in that comes before
-the model has said it. A barge-in while it plays stops what is heard, not the move. A
-session that has ended is never focused. The
-brain is told the focus at the tail of every request, a Pipecat model in its startup
-note, and `list_sessions` gives it to either, so hands, not the prompt, answers
-"which one did you mean".
+were meant for: the brain's stage moves it before it asks. A barge-in while it plays stops
+what is heard, not the move. A session that has ended is never focused. The brain is told
+the focus at the tail of every request, and `list_sessions` gives it too, so hands, not the
+prompt, answers "which one did you mean".
 
 **Drafts** are per target: `NoDraft | Staged(text, resolutions)`. The readback is
 generated from the stored resolutions, never from the model repeating itself:
@@ -1643,17 +1616,13 @@ surface above is the whole surface `[LAW:no-mode-explosion]`.
 it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
 which opens the mic without a hand, does.
 
-**The prompt and its eval.** The intermediary's prompt is `voice/intermediary_instruction.py`,
-and `evals/intermediary.py` judges it over `evals/conversations`, one decision point a case,
-asked through the daemon's own service, adapter, tool schemas, and start-up note. The prompt
-says when to reach for a tool, and the tool's docstring says how to use what comes back; it
-names only tools the model is given, so each planned tool's ticket adds its own line. Two traps,
-both measured against Qwen on 2026-09-26: it copies a quoted wrong reply almost word for word
-("The docs site is idle, so it can take this" came back as "The auth refactor session is
-idle, so it can take this"), so a wrong reply is quoted only when no case could pass by
-copying it, and a plausible one is described as an action instead; and mlx_lm.server samples at temperature 0, so its runs are identical and an edit to
-one paragraph can flip a case that paragraph never mentions. Run the whole eval after every
-edit, not the cases the edit was for.
+**The prompt.** The brain's prompt is `voice/intermediary_instruction.py`. It says when to
+reach for a tool, and the tool's docstring says how to use what comes back; it names only
+tools the model is given, so each planned tool's ticket adds its own line. A quoted wrong
+reply is copied almost word for word (measured against Qwen on 2026-09-26: "The docs site is
+idle, so it can take this" came back as "The auth refactor session is idle, so it can take
+this"), so a wrong reply is quoted only when nothing could pass by copying it, and a
+plausible one is described as an action instead.
 
 `send_command` exists so that `/clear`, `/compact`, and `/model` reach the target as
 commands, with their sigil intact. `stage_draft` text always has a leading sigil escaped. The two never share a code path that inspects the first character; the
@@ -2161,7 +2130,7 @@ says why on its terminal too; one that anything else ends first is failed with w
 the door (the talk key's grant, `config.toml`), a run holds no heartbeat yet and writes
 none, so the one there, a running hands' or a crash's, stands; a restart's run holds the
 heartbeat from the outset, its predecessor having beat starting under the same pid.
-Refused once it holds the heartbeat (the backend's key, the voice, the brain), its last
+Refused once it holds the heartbeat (the brain's login, the voice, the brain's start), its last
 heartbeat says `refused` with the reason, which `hands status` and the indicator show,
 and which the next start reads as no crash.
 
@@ -2240,14 +2209,13 @@ its first heartbeat, and parsed into a frozen `Config` (`hands.daemon.config`). 
 everything else on disk is, by the run starting again on it: the watch weighs the
 file against the bytes the start read, and an edit that parses ends the run as the
 restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before the
-next `hands.start`, which says it was `restarted`. One that does not parse, or names a backend whose key or login the
-start's own `backend` check refuses, is said as a `SettingsEdited` that was refused,
+next `hands.start`, which says it was `restarted`. One that does not parse, or one the
+start's own `backend` check refuses for the brain's login, is said as a `SettingsEdited` that was refused,
 and the run keeps what it has. It is in the home, beside
 everything else one hands keeps, so a second home is a second hands with settings of
 its own. A file left out, or a key, is the default; a key misspelled, or one its
-variant has no use for, stops the start naming it. Secrets come from the environment
-and nothing else does: an API key, or the keychain's when the server is Anthropic's
-own. The spike's `HANDS_LLM*` and `HANDS_WHISPER_MODEL` variables are deleted, so there
+variant has no use for, stops the start naming it. hands holds no secret: the brain's
+login is in its own config directory. The spike's `HANDS_LLM*` and `HANDS_WHISPER_MODEL` variables are deleted, so there
 is one source `[LAW:one-source-of-truth]`. `HANDS_HOME` is not a setting: it says where
 the settings are, and it is the one thing a hook, run by Claude Code with no arguments
 of hands', can be told.
@@ -2258,9 +2226,8 @@ variant with a real alternative or it does not exist. The fields:
 
 | key | what it names |
 |---|---|
-| `[llm] backend` | `anthropic` (the default), `openai`, or `claude`, the brain |
-| `[llm] model` | the model, for any backend |
-| `[llm] url` | another server that speaks the API, for `anthropic` and `openai` |
+| `[llm] backend` | `claude`, the brain: the default, and the one harness hands drives so far; a model API called with a key is never one |
+| `[llm] model` | the model, one of the four hands offers |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 | `[talk] personality` | how hands comes across, in the user's words: a section of the conversational model's instruction, last before its closing words, so it sets tone and never what hands does |
 | `[talk] wake_word` | what the `wake word` trigger listens for: one of openWakeWord's own (Hey Jarvis, the default, Hey Mycroft, Hey Rhasspy, Alexa), or with `wake_word_model` the phrase the user's model was trained on |
@@ -2284,10 +2251,9 @@ config, which `hooks.json` is generated from.
 
 Pipecat ships every piece the pipeline needs: an in-process pocket-tts service, a
 local audio transport over PyAudio, a segmented STT service for upload APIs, the
-SmallWebRTC transport, the Silero VAD, an OpenAI-compatible LLM service and an
-Anthropic one, function registration from the `LLMContext`, `TTSSpeakFrame` for the
-system channel, and `LLMMessagesAppendFrame` with `run_llm` for the other two.
-Verified against the installed Pipecat 1.10 on 2026-09-12.
+SmallWebRTC transport, the Silero VAD, and `TTSSpeakFrame` for the system channel.
+Verified against the installed Pipecat 1.10 on 2026-09-12. The model's stage is hands' own,
+the brain's (`brain/stage.py`), not one of Pipecat's LLM services.
 
 pocket-tts is MIT, 100M parameters, CPU-only by design, reports no word timings, and
 streams: measured on this
@@ -2296,15 +2262,8 @@ large-v3-turbo on MLX, in hands' own process (`hands.voice.transcription`), load
 pipeline is built (the `whisper.loaded` event): the transcript lands about 0.3 s after the
 key's release. LowTalker (~/code/low-talker) serves the same weights from the Neural
 Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
-alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The default
-LLM is Claude Sonnet 5 through the Anthropic API, or any server that speaks it; OpenAI's
-chat completions API is the other backend variant. On the Anthropic API the intermediary's
-request asks for prompt caching, so a request within five minutes of the last reads its
-instruction and tools from the cache. Each request the intermediary makes, on either backend,
-is one `model.request` event carrying the usage the API reported, cache reads and writes
-included; Anthropic's is read off the stream itself because Pipecat 1.10.0 double counts
-its input. The summariser's requests, made on a client of their own, are `model.request`
-events too, each with the `kind` of side question it answers. Measured on 2026-09-12, full
+alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The
+model is the brain: Claude Code of hands' own, through hands' proxy. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.
 

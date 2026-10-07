@@ -20,8 +20,6 @@ from hands.core.effects import (
     DeadlineNear,
     Expired,
     Heard,
-    ModeChanged,
-    Note,
     Reply,
     SessionGone,
     Speak,
@@ -555,36 +553,28 @@ def moded(state: SessionState, mode: Mode | None, dialog: Dialog | None = None) 
 @pytest.mark.parametrize("before", LIVE)
 @pytest.mark.parametrize("event", REPORTING)
 def test_every_hook_that_reports_a_mode_sets_the_sessions_mode(before: SessionState, event: SessionEvent) -> None:
-    after, effects = reduce(moded(before, "default"), event)
+    after, _ = reduce(moded(before, "default"), event)
     assert live(after).mode == "plan"
-    assert Note(ModeChanged(ONE.id, "plan")) in effects
 
 
 def test_a_hook_that_reports_no_mode_keeps_the_one_last_reported() -> None:
-    after, effects = reduce(moded(BUSY, "acceptEdits"), Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
+    after, _ = reduce(moded(BUSY, "acceptEdits"), Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     assert live(after).mode == "acceptEdits"
-    assert not [effect for effect in effects if isinstance(effect, Note)]
 
 
-def test_a_mode_reported_again_unchanged_is_not_noted() -> None:
-    _, effects = reduce(moded(IDLE, "plan"), Prompted(ONE.id, at=5.0, mode="plan", prompt=TURN))
-    assert not [effect for effect in effects if isinstance(effect, Note)]
-
-
-def test_a_mode_reported_for_the_first_time_is_noted_because_a_resumed_session_may_be_in_another_mode() -> None:
-    after, effects = reduce(moded(IDLE, None), Prompted(ONE.id, at=5.0, mode="auto", prompt=TURN))
+def test_a_mode_reported_for_the_first_time_is_set() -> None:
+    after, _ = reduce(moded(IDLE, None), Prompted(ONE.id, at=5.0, mode="auto", prompt=TURN))
     assert live(after).mode == "auto"
-    assert Note(ModeChanged(ONE.id, "auto")) in effects
 
 
-def test_a_request_is_narrated_after_the_mode_it_was_asked_in_is_noted() -> None:
-    _, effects = reduce(moded(BUSY, "default"), PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="acceptEdits"))
-    assert effects == [Note(ModeChanged(ONE.id, "acceptEdits")), Narrate(Asking(ONE.id, RequestId("r1"), BASH))]
+def test_a_request_asked_in_a_new_mode_is_narrated_and_sets_the_mode() -> None:
+    after, effects = reduce(moded(BUSY, "default"), PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="acceptEdits"))
+    assert (live(after).mode, effects) == ("acceptEdits", [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
 
 
-def test_a_mode_hands_does_not_know_is_noted_like_any_other() -> None:
-    _, effects = reduce(moded(IDLE, "default"), Prompted(ONE.id, at=5.0, mode=UnknownMode("ultraplan"), prompt=TURN))
-    assert Note(ModeChanged(ONE.id, UnknownMode("ultraplan"))) in effects
+def test_a_mode_hands_does_not_know_is_set_like_any_other() -> None:
+    after, _ = reduce(moded(IDLE, "default"), Prompted(ONE.id, at=5.0, mode=UnknownMode("ultraplan"), prompt=TURN))
+    assert live(after).mode == UnknownMode("ultraplan")
 
 
 @pytest.mark.parametrize("before", LIVE)
@@ -641,7 +631,7 @@ def test_the_stop_of_a_turn_over_before_the_next_prompt_ends_nothing() -> None:
     late = Stopped(ONE.id, "Done.", mode="plan", prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     before, _ = reduce(in_turn(), Prompted(ONE.id, at=5.0, mode=None, prompt=NEXT))
     after, effects = reduce(before, late)
-    assert effects == [Note(ModeChanged(ONE.id, "plan")), Audit(Unmatched(ONE.id, late.prompt)), LET_STOP] and live(after).turn == Opened(NEXT)
+    assert effects == [Audit(Unmatched(ONE.id, late.prompt)), LET_STOP] and live(after).turn == Opened(NEXT)
 
 
 @pytest.mark.parametrize(

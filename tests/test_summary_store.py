@@ -21,6 +21,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
 from hands.voice.summarising import summarise_backlog
+from hands.voice.summary import SummaryFailed
 from hands.voice.sentences import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
 
@@ -323,14 +324,15 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
 
 async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pass(project: Path, tmp_path: Path) -> None:
     async def no_claude(_page: str) -> str:
-        raise FileNotFoundError("claude")
+        raise SummaryFailed("the side question had no answer: no Claude Code to ask: claude")
 
     records: list[Entry] = []
     await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), no_claude, records.append)
     [record] = records
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("failed", 0, 1, 1)
-    assert record.facts["errors"] == ("FileNotFoundError: claude",)
-    assert record.error == "the summariser failed on 3 things: FileNotFoundError: claude"
+    said = "SummaryFailed: the side question had no answer: no Claude Code to ask: claude"
+    assert record.facts["errors"] == (said,)
+    assert record.error == f"the summariser failed on 3 things: {said}"
 
 
 async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_pass_is_all_zeros(project: Path, tmp_path: Path) -> None:

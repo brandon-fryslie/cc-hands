@@ -1,21 +1,13 @@
 """The intermediary is told which sessions run and never their history, can decline to answer, and its eval judges the tools the daemon gives it."""
 
-import importlib.util
 import json
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
-from collections.abc import Awaitable, Callable
-from pipecat.frames.frames import FunctionCallResultProperties
-from pipecat.processors.filters.identity_filter import IdentityFilter
-from pipecat.services.llm_service import FunctionCallParams
 import pytest
 
 from hands.core.session import SessionId
@@ -25,9 +17,8 @@ from hands.sessions.audit import SEGMENT_GLOB, AuditLog, Transcribed, segment
 from hands.sessions.wide import annotate, fail, root, unit
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.voice.briefing import brief, briefing, tail
-from hands.voice.speech import Tailed
-from hands.voice.intermediary_instruction import INTERMEDIARY_INSTRUCTION, brain_instruction, intermediary_instruction
+from hands.voice.briefing import tail
+from hands.voice.intermediary_instruction import brain_instruction
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.narrator import Recounts
@@ -37,13 +28,7 @@ from hands.daemon.config import Config, OwnModel, Settings
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Triggers
 from hands.voice.wakeword import Pretrained
-from hands.voice.tools import Replies, intermediary_tools, pipecat_function, stay_silent_tool
-
-_SPEC = importlib.util.spec_from_file_location("intermediary_eval", Path(__file__).parents[1] / "evals" / "intermediary.py")
-assert _SPEC is not None and _SPEC.loader is not None
-evaluation = importlib.util.module_from_spec(_SPEC)
-sys.modules["intermediary_eval"] = evaluation
-_SPEC.loader.exec_module(evaluation)
+from hands.voice.tools import intermediary_tools
 
 AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "name": "cc-hands, auth refactor", "state": "idle", "mode": "manual mode"}
 FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "state": "working", "mode": "not reported yet"}
@@ -54,19 +39,7 @@ def names(sessions: Sessions) -> list[str]:
         return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(lambda _entry: None).switch, Triggers(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), lambda _config: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": home}, lambda: None)]
 
 
-def test_the_briefing_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools() -> None:
-    note = briefing([AUTH, FRESH], None)
-    assert note.startswith("[hands] ")
-    assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in note
-    assert f'"cc-hands" (id {FRESH["id"]}), working, permission mode: not reported yet' in note
-    assert "Say nothing about this unless the user asks." in note
-
-
-def test_the_briefing_with_nothing_running_says_so() -> None:
-    assert briefing([], None) == "[hands] hands has just started, and no Claude Code sessions are running. No session is focused. Say nothing about this unless the user asks."
-
-
-def test_the_tail_names_each_session_as_the_briefing_does_and_says_it_is_current() -> None:
+def test_the_tail_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools_and_says_it_is_current() -> None:
     told = tail([AUTH], None)
     assert told.startswith("[hands] ")
     assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in told
@@ -77,67 +50,38 @@ def test_the_tail_with_nothing_running_says_so() -> None:
     assert tail([], None) == "[hands] No Claude Code sessions are running now. No session is focused. Say nothing about this unless the user asks."
 
 
-async def test_a_brain_read_from_the_tail_is_given_no_briefing(tmp_path: Path) -> None:
-    queued: list[object] = []
-
-    async def queue(frame: object) -> None:
-        queued.append(frame)
-
-    await brief(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Home(tmp_path), Tailed(), queue)
-    assert queued == []
-
-
-async def test_stay_silent_ends_the_turn_without_running_the_model_again() -> None:
-    answered: list[tuple[object, FunctionCallResultProperties | None]] = []
-
-    async def capture(result: object, *, properties: FunctionCallResultProperties | None = None) -> None:
-        answered.append((result, properties))
-
-    replies = Replies()
-    replies.started(["c1"])
-    handler = cast(Callable[[FunctionCallParams], Awaitable[None]], pipecat_function(stay_silent_tool(), IdentityFilter(), replies)._handler)  # pyright: ignore[reportPrivateUsage]
-    await handler(cast(FunctionCallParams, SimpleNamespace(tool_call_id="c1", result_callback=capture, arguments={})))
-    [(result, properties)] = answered
-    assert result == {"silent": True}
-    assert properties is not None and properties.run_llm is False
-
-
 def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # The rule in intermediary_instruction: a prompt that asks for a tool before it exists gets that tool paraphrased.
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
     given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    for prompt in (INTERMEDIARY_INSTRUCTION, brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands recall", None)):
-        named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
-        assert named, "the prompt names no tool at all"
-        assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
+    prompt = brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands recall", None)
+    named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
+    assert named, "the prompt names no tool at all"
+    assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
-def test_only_the_brain_which_has_bash_is_told_of_the_log_and_of_lit_and_it_keeps_the_closing_words_last() -> None:
+def test_the_brain_is_told_of_the_log_of_lit_and_of_its_own_setup_and_it_keeps_the_closing_words_last() -> None:
     told = brain_instruction(Path("/my home/audit"), Path("/my home/brain"), "'/my python' -P -m hands.daemon recall", None)
-    assert ".jsonl" not in INTERMEDIARY_INSTRUCTION and "Bash" not in INTERMEDIARY_INSTRUCTION
-    # Working a tracker is done from a shell, so only the brain is told it works one with lit.
-    assert "lit quickstart" in told and not re.search(r"\blit\b", INTERMEDIARY_INSTRUCTION)
+    # Working a tracker is done from a shell, and the brain works one with lit.
+    assert "lit quickstart" in told
     # Asked to install a skill and told nothing of its setup, the brain made it in ~/.claude/skills, the user's own
     # (hands-brain-d8g.33b, 2.1.288): its skills are installed, listed, changed, and removed in its own config directory.
-    assert "/my home/brain/skills/haiku/SKILL.md" in told and "/my home/brain" not in INTERMEDIARY_INSTRUCTION
-    assert told.startswith(INTERMEDIARY_INSTRUCTION.split("\n\n# Above all")[0]) and told.endswith(INTERMEDIARY_INSTRUCTION.split("\n\n")[-1])
+    assert "/my home/brain/skills/haiku/SKILL.md" in told
+    assert told.rindex("\n\n# ") == told.index("\n\n# Above all")
     # A home with a space in it is one argument to every command the brain is shown.
     assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
-    # The brain recalls with the command line it is handed, as it is handed it, and only the brain has the shell to run it.
-    assert "The recall command is: '/my python' -P -m hands.daemon recall\n" in told and "recall" not in INTERMEDIARY_INSTRUCTION
+    # The brain recalls with the command line it is handed, as it is handed it.
+    assert "The recall command is: '/my python' -P -m hands.daemon recall\n" in told
 
 
-def test_a_personality_the_user_chose_is_told_to_each_model_last_before_the_closing_words() -> None:
-    for own, chosen in (
-        (INTERMEDIARY_INSTRUCTION, intermediary_instruction("Dry and wry.")),
-        (brain_instruction(Path("/a"), Path("/b"), "hands recall", None), brain_instruction(Path("/a"), Path("/b"), "hands recall", "Dry and wry.")),
-    ):
-        # In hands' own personality there is no section for one; a chosen one is its own section, and the rest is as it was.
-        assert "# How you come across" not in own
-        before, _, after = own.rpartition("\n\n# Above all")
-        assert chosen.startswith(before + "\n\n# How you come across\n") and chosen.endswith("\n\n# Above all" + after)
-        assert "\n\nDry and wry.\n\n" in chosen
+def test_a_personality_the_user_chose_is_told_last_before_the_closing_words() -> None:
+    own, chosen = brain_instruction(Path("/a"), Path("/b"), "hands recall", None), brain_instruction(Path("/a"), Path("/b"), "hands recall", "Dry and wry.")
+    # In hands' own personality there is no section for one; a chosen one is its own section, and the rest is as it was.
+    assert "# How you come across" not in own
+    before, _, after = own.rpartition("\n\n# Above all")
+    assert chosen.startswith(before + "\n\n# How you come across\n") and chosen.endswith("\n\n# Above all" + after)
+    assert "\n\nDry and wry.\n\n" in chosen
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="the brain's commands read the log with jq")
@@ -172,52 +116,3 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
         annotate(tool="list_sessions")
     assert found("the tools called lately") == ["tool.run", "tool.run"]
     assert found("the latest errors") == ["Exchanged", "summary.backlog"]
-
-
-def test_every_conversation_case_loads_with_exactly_one_expectation_and_names_only_tools_the_daemon_gives() -> None:
-    given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    loaded = evaluation.cases()
-    assert loaded, "evals/conversations holds no case"
-    for case in loaded:
-        for wanted in evaluation.wanted(case.expect):
-            assert wanted in given, f"{case.name} expects {wanted}, which the daemon does not give"
-
-
-def test_a_reply_that_names_an_id_or_a_code_name_fails_and_a_plain_one_holds() -> None:
-    [case] = [case for case in evaluation.cases() if case.name == "sessions-by-title"]
-    plain = evaluation.judge(case, "The auth refactor is idle, and the hands daemon is working.", ())
-    assert all(check.held for check in plain), plain
-    leaked = evaluation.judge(case, f"auth refactor is {AUTH['id']}, and hands daemon runs src/hands/daemon.py.", ())
-    assert {check.name for check in leaked if not check.held} >= {"no ids", "spoken"}
-
-
-def test_a_silent_case_holds_only_for_stay_silent_alone() -> None:
-    [case] = [case for case in evaluation.cases() if case.name == "not-for-me-door"]
-    silent = evaluation.Call("stay_silent", {})
-    assert all(check.held for check in evaluation.judge(case, "", (silent,)))
-    assert not all(check.held for check in evaluation.judge(case, "Sure!", (silent,)))
-    assert not all(check.held for check in evaluation.judge(case, "Sure!", ()))
-
-
-async def test_words_said_beside_a_look_are_judged_with_the_step_after_it() -> None:
-    [case] = [case for case in evaluation.cases() if case.name == "not-for-me-door"]
-    asked = iter([(f"Let me check session {AUTH['id']}.", (evaluation.Call("list_sessions", {}),)), ("", (evaluation.Call("stay_silent", {}),))])
-
-    async def ask(_messages: object) -> tuple[str, tuple[object, ...]]:
-        return next(asked)
-
-    said, calls, looks = await evaluation.answer(ask, case)
-    assert looks == 1 and said == f"Let me check session {AUTH['id']}."
-    assert not all(check.held for check in evaluation.judge(case, said, calls))
-
-
-def test_a_call_case_fails_on_the_wrong_arguments_and_on_a_stray_tool() -> None:
-    [case] = [case for case in evaluation.cases() if case.name == "dictation-is-staged"]
-    right = evaluation.Call("stage_draft", {"session": AUTH["id"], "text": "Use the new token helper in the login flow.", "resolutions": []})
-    assert all(check.held for check in evaluation.judge(case, "", (right,)))
-    wrong_session = evaluation.Call("stage_draft", {**right.arguments, "session": FRESH["id"]})
-    assert not all(check.held for check in evaluation.judge(case, "", (wrong_session,)))
-    sent_too = evaluation.Call("send_draft", {"session": AUTH["id"]})
-    assert not all(check.held for check in evaluation.judge(case, "", (right, sent_too)))
-    staged_twice = evaluation.Call("stage_draft", {**right.arguments, "text": "Use the old token helper."})
-    assert not all(check.held for check in evaluation.judge(case, "", (right, staged_twice)))

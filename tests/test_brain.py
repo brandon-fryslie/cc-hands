@@ -30,7 +30,6 @@ from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
 from conftest import events, onboard
-from pipecat.services.anthropic.llm import AnthropicLLMService
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
@@ -49,9 +48,7 @@ from hands.sessions.pseudoterminal import STOP_SECONDS
 from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
-from hands.voice.speech import Pushed, Tailed
-from hands.voice.backends import Account, AnthropicBackend, ClaudeCodeBackend
-from hands.voice.beside import Noting
+from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
 from hands.sessions.wide import Fact, WideEvent, begun, continuing, here, root, unit, within
@@ -1401,25 +1398,20 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
         await summarise("fail")
 
 
-async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_variant_alone(tmp_path: Path, fake_claude: Path) -> None:
+async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     wire = Wire(lambda _observed: None)
-    api = VoiceConfig(llm=AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m"), voice=voices.DEFAULT)
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    async with mind(api, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
-        assert isinstance(minded.llm, AnthropicLLMService) and minded.watches == () and minded.telling == Pushed()
-        # An API model's context is noted as the user's words arrive; the brain's stage notes its own.
-        assert [type(stage) for stage in minded.noting] == [Noting]
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
-        assert isinstance(minded.llm, BrainStage) and minded.telling == Tailed() and minded.noting == ()
+        assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
-        # The brain alone is behind the proxy, so it alone is given its usage read off the wire.
+        # The brain is behind the proxy, so it is given its usage read off the wire.
         assert list(minded.llm._tools) == ["mcp__hands__echo", "mcp__hands__context_usage"]  # pyright: ignore[reportPrivateUsage]
         [launched] = events(recorded, "brain.launch")
         assert (launched.facts["cwd"], launched.facts["account"]) == (tmp_path / "brain" / "cwd", Account("claude.ai", "brain@example.com"))
@@ -1443,7 +1435,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server_for_the_claude_v
     assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
 
 
-async def test_each_variants_model_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
@@ -1451,12 +1443,9 @@ async def test_each_variants_model_is_told_the_personality_the_run_was_configure
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    def minding(llm: AnthropicBackend | ClaudeCodeBackend):
+    def minding(llm: ClaudeCodeBackend):
         return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, os.environ)
 
-    async with minding(AnthropicBackend(base_url="https://api.anthropic.com", api_key="k", model="m")) as minded:
-        assert isinstance(minded.llm, AnthropicLLMService)
-        assert "\n\nDry and wry.\n\n" in str(minded.llm._settings.system_instruction)  # pyright: ignore[reportPrivateUsage]
     launched: list[Launch] = []
 
     async def starting(launch: Launch, _record: object) -> Brain:

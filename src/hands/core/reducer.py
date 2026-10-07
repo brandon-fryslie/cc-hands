@@ -15,9 +15,7 @@ from hands.core.effects import (
     Deny,
     Effect,
     HookReply,
-    ModeChanged,
     Narrate,
-    Note,
     Progress,
     Asking,
     DeadlineNear,
@@ -69,7 +67,7 @@ from hands.core.events import (
 )
 from hands.core.occurrences import Cleared
 from hands.core.progress import Doing, Gathering
-from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, UnknownMode, Unnamed, Unreported, Untold, status_stamp
+from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unnamed, Unreported, Untold, status_stamp
 from hands.core.status import AtPrompt, Going, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
 
@@ -227,7 +225,7 @@ def _said_at_end(session: SessionId, reason: EndReason) -> list[Effect]:
 
 def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, list[Effect]]:
     """The event moves a live session on each of its axes: what Claude Code says it is doing, the dialog, and the turn."""
-    membership, held = was.membership, was.mode
+    held = was.mode
     turn, told = _turned(event, was)
     reported = _reported(event)
     # [LAW:dataflow-not-control-flow] every hook that carries a mode sets it, so a mode changed at the keyboard
@@ -239,9 +237,8 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
     after = replace(after, earlier=was.earlier | (ids(was.turn) - ids(after.turn)))
-    # The mode is noted before the transition's effects, so a request it narrates is explained knowing the mode
-    # it was asked in; a turn left untold is told before what the event calls for, so before a prompt marks the next.
-    return registry.put(after), [*_remoded(membership.id, held, mode), *_transition(was, after), *told, *stopped, *settled, *overtaken]
+    # A turn left untold is told before what the event calls for, so before a prompt marks the next.
+    return registry.put(after), [*_transition(was, after), *told, *stopped, *settled, *overtaken]
 
 
 def _stopped(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
@@ -558,17 +555,6 @@ def _same_call(asked: Blocker, call: FinishedCall) -> bool:
             return True
         case _:
             return asked == call
-
-
-def _remoded(session: SessionId, before: Mode | None, after: Mode | None) -> list[Effect]:
-    match after:
-        case str() | UnknownMode() if after != before:
-            # Noted from no mode too: a session resumed in a new process may be in another mode than the model was
-            # last told. The model is told, and says nothing: a mode the user set at the keyboard is not news to
-            # them, and one an approved plan set was said in the approval's readback.
-            return [Note(ModeChanged(session, after))]
-        case _:
-            return []
 
 
 def _unheard(event: SessionEvent, record: AuditRecord) -> list[Effect]:

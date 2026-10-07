@@ -14,6 +14,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
+from hands.voice.summary import SummaryFailed
 from hands.voice.sentences import SummaryStore, Turns
 from hands.voice.summarising import summarise_turns
 from hands.voice.tool import Tool
@@ -439,13 +440,13 @@ async def test_a_turns_pass_says_what_its_replies_left_out_and_its_calls_raised(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise TimeoutError("no answer in 180s")
+            raise SummaryFailed("the side question had no answer: no answer within 180s")
         # Each reply names the second turn and one made up: asked for the third, it leaves it out.
         return f"{second}: What it did.\nz9: Not asked."
 
     recorded: list[Entry] = []
     await summarise_turns(wanted, store, summarise, recorded.append, batch=1)
     [pass_] = recorded
-    assert isinstance(pass_, WideEvent) and pass_.outcome == "failed" and pass_.error == "the summariser failed on 1 things: TimeoutError: no answer in 180s"
+    assert isinstance(pass_, WideEvent) and pass_.outcome == "failed" and pass_.error == "the summariser failed on 1 things: SummaryFailed: the side question had no answer: no answer within 180s"
     assert pass_.counts == {"known": 0, "asked": 3, "said": 1, "calls": 3, "failed_calls": 1, "stray": 3}
-    assert (pass_.facts["left_out"], pass_.facts["errors"]) == ((third,), ("TimeoutError: no answer in 180s",))
+    assert (pass_.facts["left_out"], pass_.facts["errors"]) == ((third,), ("SummaryFailed: the side question had no answer: no answer within 180s",))

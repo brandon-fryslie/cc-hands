@@ -19,7 +19,5 @@ say the tests pass and plan the next fix
 ask whether to keep the old config
 """
 
-# A phrase of a dozen words; this is room for it and nothing else.
-EXPLAIN_MAX_TOKENS = 40
 # Progress is worth hearing while the session is still doing it: a phrase later than this is not worth waiting for.
 EXPLAIN_TIMEOUT_SECONDS = 10.0

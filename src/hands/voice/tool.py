@@ -1,6 +1,6 @@
 """A tool the model can call: the schema it sees, read once from a plain async body's signature and docstring, and the
-body that answers a call. [LAW:decomposition] it knows nothing of who calls it: Pipecat's LLM stage is one adapter over
-tools, hands' MCP server another, and neither one's dependencies are this module's.
+body that answers a call. [LAW:decomposition] it knows nothing of who calls it: hands' MCP server is the adapter over
+tools, and none of its dependencies are this module's.
 """
 
 import functools

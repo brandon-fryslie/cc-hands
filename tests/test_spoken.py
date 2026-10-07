@@ -24,12 +24,9 @@ from conftest import unprimed
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
-from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
+from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.floor import Floor
-from hands.voice.refocus import Refocus, Refocusing
 from hands.voice.player import Player
-from hands.voice.speech import Pushed
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice import voices
 from hands.voice.ptt import PushToTalk
@@ -356,24 +353,21 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     monkeypatch.setattr(built, "LLMTextProcessor", Pieces)
     voice = built.build_voice(
         built.VoiceConfig(
-            llm=built.OpenAICompatibleBackend(base_url="http://example/v1", api_key="k", model="m"),
+            llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None)),
             voice=voices.Voice("cosette"),
         ),
-        tools=[],
         llm=FrameProcessor(),
-        noting=(),
         key=PushToTalk(lambda _: None),
         player=(player := Player(lambda _: None)),
-        floor=Floor(Pushed(), lambda id: id, dict),
-        refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), Home(tmp_path), lambda _: None),
+        floor=Floor(lambda id: id, dict),
         prompt=unprimed,
         record=lambda _: None,
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
     # And the model's reply reaches the filter in pieces a fenced block is never split across, past only where the
-    # player's lines enter, which lets it through, and the focus's move, which lets everything but a Told through.
-    assert isinstance(voice.llm.next, Refocusing) and isinstance(voice.llm.next.next, Pieces) and voice.llm.next.next.next is player.lines and player.lines.next is voice.tts
+    # player's lines enter, which lets it through.
+    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is player.lines and player.lines.next is voice.tts
     assert isinstance(pieced["text_aggregator"], FenceAggregator)
 
 

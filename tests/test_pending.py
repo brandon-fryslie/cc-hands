@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.effects import Asking, DeadlineNear, Expired, ModeChanged, Narrate, Note, SessionGone, Speak
+from hands.core.effects import Asking, DeadlineNear, Expired, Narrate, SessionGone, Speak
 from hands.core.narration import THE_TESTS, Segment
-from hands.core.pending import Briefing, Coalesced, Finished, News, Pending, Unread, coalesce
+from hands.core.pending import Coalesced, Finished, News, Pending, Unread, coalesce
 from hands.core.session import Held, Membership, Permission, PromptId, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 
@@ -35,7 +35,6 @@ def held(session: SessionId, request: str, on: Permission = BASH) -> Mapping[Ses
     return {session: Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=Held(on, RequestId(request), deadline=60.0, warned=False))}
 
 
-NOTE = Note(ModeChanged(API, "acceptEdits"))
 GONE = SessionGone(SessionId("old"))
 
 
@@ -44,10 +43,10 @@ GONE = SessionGone(SessionId("old"))
     [
         pytest.param((), {}, (), id="nothing pending"),
         pytest.param(
-            (finished(API, "one"), GONE, NOTE, asks(WEB, "w1")),
+            (finished(API, "one"), GONE, asks(WEB, "w1")),
             held(WEB, "w1"),
-            (NOTE, asks(WEB, "w1"), finished(API, "one"), GONE),
-            id="known, then blocking, then result, then fyi",
+            (asks(WEB, "w1"), finished(API, "one"), GONE),
+            id="blocking, then result, then fyi",
         ),
         pytest.param(
             (finished(API, "one"), finished(WEB, "two"), Unread(API)),
@@ -78,12 +77,6 @@ GONE = SessionGone(SessionId("old"))
             {},
             (finished(API, "one"), Unread(API), finished(API, "three")),
             id="a turn that could not be read stands between the turns it came between",
-        ),
-        pytest.param(
-            (finished(API, "one"), NOTE, finished(API, "two")),
-            {},
-            (NOTE, finished(API, "one", "two")),
-            id="what is only known neither breaks a fold nor waits behind it",
         ),
         pytest.param(
             (asks(API, "a1"), asks(API, "a2")),
@@ -120,12 +113,6 @@ GONE = SessionGone(SessionId("old"))
             held(API, "a2"),
             (),
             id="a deadline on a request asked again the same way is not told",
-        ),
-        pytest.param(
-            (asks(API, "a1"), Briefing("how the sessions stood")),
-            held(API, "a1"),
-            (Briefing("how the sessions stood"), asks(API, "a1")),
-            id="the briefing is known before anything is said",
         ),
     ],
 )

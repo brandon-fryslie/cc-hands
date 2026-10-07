@@ -82,7 +82,5 @@ so the fee does not need a usage component. A flat monthly price is enough. User
 pay Anthropic separately, and that cost decides whether hands is worth buying. It has
 two parts. The brain and the sessions hands drives run on the user's Claude plan, which
 is flat-rate, so what they cost is the share of the plan's usage limits a day of hands
-spends. The intermediary runs on whichever backend `config.toml`
-names: an Anthropic API key (from `ANTHROPIC_API_KEY` or the keychain item
-`HANDS_LLM_ANT_KEY`), an OpenAI-compatible key, or the brain's plan. Only the keyed
-backends cost per token. [cost-per-hour.md](cost-per-hour.md) measures both parts.
+spends. The intermediary is the brain, on a plan or an Anthropic Console login; hands has
+no keyed backend since hands-raw-api-swd. [cost-per-hour.md](cost-per-hour.md) measures both parts.

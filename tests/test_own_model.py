@@ -14,7 +14,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Running, running
 from hands.daemon import config
-from hands.daemon.config import Claude, Config, OpenAI
+from hands.daemon.config import Claude, Config
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -50,21 +50,22 @@ def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_pa
     home = Home(tmp_path)
     _own(home).weigh(" claude-opus-5-5 ")()
     assert home.config.read_text() == '[llm]\nmodel = "claude-opus-5-5"\n'
-    assert config.load(home).config == Config(llm=config.Anthropic(model="claude-opus-5-5"))
+    assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"))
 
 
 def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "openai"\n')
+    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
     own = _own(home)
-    home.config.write_text('[llm]\nbackend = "openai"\nmodel = "gpt-other"\n')
-    assert own.running() == OpenAI().model
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
+    assert own.running() == "claude-haiku-4-5-20251001"
 
 
 @pytest.mark.parametrize(
     ("model", "said"),
     [
-        ("claude opus", "has a space in it"),
+        # A model named as said aloud is no id hands offers.
+        ("claude opus", "hands runs Claude on .*, not claude opus$"),
         ("claude-sonnet-5-5", "hands runs on claude-sonnet-5-5 already"),
         ("", "should be a non-empty string"),
         ("claude-opus-9", "hands runs Claude on .*, not claude-opus-9$"),
@@ -76,10 +77,6 @@ def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_p
     with pytest.raises(Rejected, match=said):
         _own(home).weigh(model)
     assert home.config.read_text() == SPOKEN_FILE
-
-
-def test_a_model_named_by_hand_may_be_a_local_servers_path_with_a_space_in_it() -> None:
-    assert config.parse('[llm]\nbackend = "openai"\nmodel = "/models/ML Models/qwen3"\n').llm == OpenAI(model="/models/ML Models/qwen3")
 
 
 def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_ways_that_happens(tmp_path: Path) -> None:

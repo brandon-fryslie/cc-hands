@@ -760,23 +760,10 @@ def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
 # The backend
 
 
-def keyed(home: Home) -> None:
-    home.root.mkdir(parents=True, exist_ok=True)
-    home.config.write_text('[llm]\nbackend = "openai"\n')
-
-
-def test_a_backend_with_its_key_is_ready_and_never_says_the_key(root: Path) -> None:
-    home = Home(root / "home")
-    keyed(home)
-    found = readiness.configured(home, {"OPENAI_API_KEY": "sk-secret"})
-    assert isinstance(found, Ready) and "with its key" in found.said and "sk-secret" not in found.said
-
-
-def test_a_backend_without_its_key_is_missing_and_names_it(root: Path) -> None:
-    home = Home(root / "home")
-    keyed(home)
-    found = readiness.configured(home, {})
-    assert isinstance(found, Missing) and "OPENAI_API_KEY is not set" in found.said
+def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    found = readiness.configured(Home(root / "home"), os.environ)
+    assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
 def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> None:
@@ -788,15 +775,12 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
-    home = Home(root / "home")
-    keyed(home)
-    found = readiness.configured(home, {"OPENAI_API_KEY": "k", "HANDS_DEBUG": "1"})
+    found = readiness.configured(Home(root / "home"), {"HANDS_DEBUG": "1"})
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
-def test_a_backend_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
-    keyed(home)
 
     def unspawnable(*_: object) -> object:
         raise PermissionError("claude is not executable")
@@ -845,15 +829,19 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "backend", "grant", "running", "sessions"]
 
 
+def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
+    """The brain as its login check finds it logged in: that check is the start's, tested beside it."""
+    return ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
+
+
 def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object) -> Home:
     """A home on which every step of the README is done, with `plugins` listed by its claude."""
     home = Home(root / "home")
     home.bin.mkdir(parents=True)
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
-    keyed(home)
     beating(home)
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setattr(readiness, "resolve", logged_in)
     hands_printing(root, f"hands {version('hands')}")
     monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: True)
@@ -894,8 +882,11 @@ def no_plugin(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None
     claude_listing(root, [])
 
 
-def no_key(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY")
+def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(*_: object) -> object:
+        raise Rejected("the brain has no login: `hands login` gives it one")
+
+    monkeypatch.setattr(readiness, "resolve", refused)
 
 
 def ungranted(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -908,7 +899,7 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.parametrize(
     ("undo", "step"),
-    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (no_key, "backend"), (ungranted, "grant"), (not_running, "running")],
+    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
     ids=["hands", "shim", "plugin", "backend", "grant", "running"],
 )
 def test_a_home_missing_one_step_names_that_step_and_exits_1(

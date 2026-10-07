@@ -14,7 +14,7 @@ from typing import cast
 
 import pytest
 from loguru import logger
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.attention import Attention, Overlay
 from hands.core.effects import Allow, HookReply, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
@@ -28,7 +28,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.wide import WideEvent
-from hands.voice.speech import Aloud, Narrated, Pushed, Told, Tailed, Unprompted, relay
+from hands.voice.speech import Aloud, Narrated, Unprompted, frames, relay, sent
 from hands.voice.utterance import Utterances
 
 from test_shim import STARTED
@@ -222,7 +222,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
     assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
-    spoken = [said for heard in (warning, expiry) for said in rendered(cast(Speak, heard), Pushed(), names=lambda _: "quiz")]
+    spoken = [said for heard in (warning, expiry) for said in rendered(cast(Speak, heard), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
         "Nobody answered quiz about its question in time, so it is left waiting at its dialog.",
@@ -254,7 +254,7 @@ async def test_answers_that_do_not_parse_are_refused_out_loud(sessions: Sessions
 
 
 def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_users() -> None:
-    [narrated] = rendered(Narrate(Asking(SID, RequestId("r-1"), Permission("Bash", {"command": "ls"}))), Tailed(), names=lambda id: id)
+    [narrated] = rendered(Narrate(Asking(SID, RequestId("r-1"), Permission("Bash", {"command": "ls"}))), names=lambda id: id)
     assert isinstance(narrated, Narrated) and "is waiting for permission to use Bash" in narrated.text
     # Said as written if the brain cannot take it, so a session waiting on the user is still heard waiting.
     assert narrated.unsaid == f"{SID} is waiting on you about Bash."
@@ -263,7 +263,7 @@ def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_user
 
 
 def test_under_the_brain_an_announcement_waits_in_hands_lane_behind_the_question_it_counts_down() -> None:
-    [said] = rendered(Speak(DeadlineNear(SID, RequestId("r1"), Permission("Bash", {"command": "ls"}), 10.0)), Tailed(), names=lambda _: "quiz")
+    [said] = sent(frames(Speak(DeadlineNear(SID, RequestId("r1"), Permission("Bash", {"command": "ls"}), 10.0)), lambda _: "quiz"), ())
     assert isinstance(said, Aloud) and said.spoken.text.startswith("10 seconds left to answer quiz")
 
 
@@ -274,10 +274,9 @@ def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() ->
         AskedQuestion("Which fruits?", (Option("pear", long), Option("plum", long)), several=True),
         AskedQuestion("Name it?", (), several=False),
     )
-    [narrated, told] = rendered(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), Pushed(), names=lambda id: id)
-    assert isinstance(narrated, LLMMessagesAppendFrame) and isinstance(told, Told) and told.session == SID
-    [message] = narrated.messages
-    content = str(cast(dict[str, object], message)["content"])
+    [narrated] = rendered(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), names=lambda id: id)
+    assert isinstance(narrated, Narrated) and narrated.session == SID
+    content = narrated.text
     assert f"1. Which color? Options: red ({long}); green." in content
     assert f"2. Which fruits? Options: pear ({long}); plum ({long}). More than one may be chosen." in content
     assert "3. Name it? Answered in the user's own words." in content
@@ -487,7 +486,7 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
     relaying.cancel()
 
     # The request itself was taken off the queue by asked(); what follows it is spoken as written.
-    [spoken_warning, spoken_expiry] = [said for frame in queued for said in rendered(cast(Unprompted, frame).pending, Pushed(), names=lambda _: "cc-hands")]
+    [spoken_warning, spoken_expiry] = [said for frame in queued for said in rendered(cast(Unprompted, frame).pending, names=lambda _: "cc-hands")]
     assert isinstance(spoken_warning, TTSSpeakFrame) and isinstance(spoken_expiry, TTSSpeakFrame)
     assert spoken_warning.text == "10 seconds left to answer cc-hands about Bash."
     assert spoken_expiry.text == "Nobody answered cc-hands about Bash in time, so I told it no."
@@ -495,10 +494,9 @@ async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the
 
 def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> None:
     moment = Asking(SID, RequestId("r-42"), Permission("Bash", {"command": "rm -r build"}))
-    [narrated, _] = rendered(Narrate(moment), Pushed(), names=lambda id: id)
-    assert isinstance(narrated, LLMMessagesAppendFrame) and narrated.run_llm is True
-    [message] = narrated.messages
-    content = str(cast(dict[str, object], message)["content"])
+    [narrated] = rendered(Narrate(moment), names=lambda id: id)
+    assert isinstance(narrated, Narrated)
+    content = narrated.text
     assert "session 0f1e2d3c-aaaa-bbbb-cccc-000000000002 is waiting for permission to use Bash" in content
     assert '{"command": "rm -r build"}' in content and "Request id: r-42" in content
 
@@ -561,7 +559,7 @@ async def test_a_plan_nobody_answers_by_its_deadline_is_left_to_its_dialog(home:
     code, stdout, _ = await shim.finished()
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
-    assert [cast(TTSSpeakFrame, said).text for heard in (warning, expiry) for said in rendered(cast(Speak, heard), Pushed(), names=lambda _: "planner")] == [
+    assert [cast(TTSSpeakFrame, said).text for heard in (warning, expiry) for said in rendered(cast(Speak, heard), names=lambda _: "planner")] == [
         "10 seconds left to answer planner about its plan.",
         "Nobody answered planner about its plan in time, so it is left waiting at its dialog.",
     ]
@@ -583,8 +581,7 @@ async def test_plan_answers_that_do_not_parse_are_refused_out_loud(sessions: Ses
 
 def test_a_plan_reaches_the_model_whole_with_its_request_id() -> None:
     long = "\n".join(f"{step}. A step described at length so the plan runs past what a tool input is shown." for step in range(1, 30))
-    [narrated, _] = rendered(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), Pushed(), names=lambda id: id)
-    assert isinstance(narrated, LLMMessagesAppendFrame)
-    [message] = narrated.messages
-    content = str(cast(dict[str, object], message)["content"])
+    [narrated] = rendered(Narrate(Asking(SID, RequestId("p-3"), Plan(long))), names=lambda id: id)
+    assert isinstance(narrated, Narrated)
+    content = narrated.text
     assert long in content and "Request id: p-3" in content and "answer_plan" in content

@@ -72,7 +72,7 @@ class CopiesLost:
 
 @dataclass(frozen=True)
 class Transcribed:
-    """What the user said in one turn, as it went into the intermediary's context."""
+    """What the user said in one turn, as it went to the brain."""
 
     text: str
 

@@ -9,7 +9,7 @@ from typing import Literal, cast
 
 import numpy as np
 import pytest
-from pipecat.frames.frames import Frame, InterruptionFrame, LLMMessagesAppendFrame, OutputAudioRawFrame, TTSAudioRawFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, InterruptionFrame, OutputAudioRawFrame, TTSAudioRawFrame, TTSSpeakFrame
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -17,8 +17,7 @@ from hands.core.effects import Expired, SessionGone, Speak
 from hands.core.session import Permission, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.voice.speech import AsWritten, Known, Pushed, Tailed, sent
-from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering
+from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering, uttering
 
 from conftest import running
 from hands.voice.microphone import DefaultDevices, KeyedAudioTransport, Pull
@@ -69,8 +68,8 @@ async def rig() -> AsyncGenerator[Rig, None]:
 
 
 def said(utterance: Utterance) -> tuple[Frame, ...]:
-    """What the floor sends to say a line as written to an API model, with what reads its fate."""
-    return tuple(sent(AsWritten(TTSSpeakFrame("Nobody answered api about Bash in time, so I told it no.")), Pushed(), (utterance,)))
+    """What the brain's stage sends to say a line as written, with what reads its fate."""
+    return uttering((utterance,), (TTSSpeakFrame("Nobody answered api about Bash in time, so I told it no."),))
 
 
 async def test_an_announcement_spoken_is_one_event_with_its_first_audio_timed_from_when_it_was_heard(rig: Rig) -> None:
@@ -102,15 +101,6 @@ async def test_what_of_an_utterance_was_heard_is_read_off_the_output_transport(r
     pushed: dict[Step, Frame] = {"lead": lead, "audio": AUDIO, "barge-in": InterruptionFrame(), "resume": Resumed((utterance,)), "close": close}
     await rig.played([pushed[step] for step in steps])
     assert (await rig.event()).facts["fate"] == fate
-
-
-@pytest.mark.parametrize("telling", [Pushed(), Tailed()])
-async def test_a_note_for_the_model_s_context_is_sent_bare_and_is_silent_as_it_is_sent(rig: Rig, telling: Pushed | Tailed) -> None:
-    """Never said, so never read off the speaker, where a brain turn speaking beside it would lend it its audio."""
-    utterance = rig.utterances.heard(API, EXPIRED)
-    note = LLMMessagesAppendFrame([{"role": "user", "content": "[hands] api is now in plan mode."}], run_llm=False)
-    assert tuple(sent(Known((note,)), telling, (utterance,))) == (note,)
-    assert (await rig.event()).facts["fate"] == "silent"
 
 
 async def test_audio_that_played_after_a_barge_in_cut_an_utterance_is_not_its_first(rig: Rig) -> None:

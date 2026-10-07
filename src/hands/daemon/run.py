@@ -1,7 +1,6 @@
 """`hands run`: the daemon, in the foreground of the terminal it was started in.
 
-    uv run hands run                          # the backend ~/.hands/config.toml names (hands.daemon.config); Sonnet 5 on the Anthropic API when it names none
-    uv run --env-file .env hands run          # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
+    uv run hands run                          # on the brain, logged in with `hands login` (hands.daemon.config)
 
 Sessions join through the hook socket at ~/.hands/hands.sock (the home is
 HANDS_HOME when that is set). A Claude Code session is registered when the hands
@@ -71,27 +70,24 @@ from hands.voice.floor import Floor
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
-from hands.voice import backends
-from hands.voice.backends import AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
-from hands.voice.beside import Noting
-from hands.voice.pipeline import Voice, VoiceConfig, build_llm, build_voice
+from hands.voice.pipeline import Voice, VoiceConfig, build_voice
 from hands.daemon.backend import backend
-from hands.voice.naming import NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS, keep_naming
+from hands.voice.naming import NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.utterance import Utterances
-from hands.voice.speech import Pushed, Tailed, Telling, relay
+from hands.voice.speech import relay
 from hands.voice.working import Playing, keep_playing
-from hands.voice.summary import Summariser, aside, summariser
-from hands.voice.progress_instruction import EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS
+from hands.voice.summary import Summariser, aside
+from hands.voice.progress_instruction import EXPLAIN_INSTRUCTION, EXPLAIN_TIMEOUT_SECONDS
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
-from hands.voice.summarising import SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS, keep_summarising
+from hands.voice.summarising import SENTENCES_TIMEOUT_SECONDS, keep_summarising
 from hands.voice.sentences import SummaryStore
-from hands.voice.briefing import as_sent, brief
+from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
 from hands.daemon.starting import CannotStart, Ended, Start, invocation, keep_beating, start
-from hands.voice.intermediary_instruction import brain_instruction, intermediary_instruction
+from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
@@ -163,14 +159,12 @@ class Watch:
 
 @dataclass(frozen=True)
 class Mind:
-    """The pipeline's LLM stage for the model's variant, what notes the user's words on their way to its context, what that variant runs beside the pipeline, and how the model is told how the sessions stand."""
+    """The pipeline's LLM stage, what the brain runs beside the pipeline, and what answers hands' side questions."""
 
     llm: FrameProcessor
-    noting: Sequence[FrameProcessor]
     watches: Sequence[Watch]
-    telling: Telling
-    # A summariser on this model, given what it is for, its instruction, how many tokens it may answer in, and how long it has.
-    summariser: Callable[[AsideKind, str, int, float], Summariser]
+    # A summariser, given what it is for, its instruction, and how long it has.
+    summariser: Callable[[AsideKind, str, float], Summariser]
 
 
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
@@ -184,49 +178,38 @@ async def mind(
     config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, recall: str, record: Record, environment: Mapping[str, str],
 ) -> AsyncGenerator[Mind]:
-    """The model for the whole conversation: an API service, or the brain's process, the MCP server it reaches hands
-    through, the stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions.
-    The brain alone is given `brain_tools`: what it does with a shell, to find what they act on, and a skill saying when."""
-    # [LAW:single-enforcer] the one place the backend's variant decides the LLM stage.
-    match config.llm:
-        case AnthropicBackend() | OpenAICompatibleBackend() as backend:
-            yield Mind(
-                build_llm(backend, instruction=intermediary_instruction(config.personality), max_tokens=config.max_reply_tokens, record=record),
-                # [LAW:one-source-of-truth] noted from the readers the brain's stage is given.
-                (Noting(front, modality, record),),
-                (),
-                Pushed(),
-                lambda kind, instruction, max_tokens, timeout: summariser(backend, record, kind, instruction, max_tokens, timeout),
-            )
-        case ClaudeCodeBackend(model=model, config_dir=config_dir, account=account):
-            spans = CallSpans()
-            talk = conversation(config_dir, SessionId(str(uuid4())))
-            # Only the brain is behind hands' proxy, so only it has its usage read off the wire, and a tool to ask it with.
-            usage = Usage(talk.session)
-            tools = [*tools, *brain_tools, audited(usage_tool(usage), record)]
-            server = await serve_mcp(tools, record, spans)
-            try:
-                station = Station(config_dir, workdir(config_dir), model, proxy_url, environment)
-                try:
-                    brain = await start_brain(Launch(station, account, brain_instruction(log, config_dir, recall, config.personality), server.config(), talk), record)
-                except Unstartable as error:
-                    # hands runs on no brain it could not start: its start is refused, saying why.
-                    raise CannotStart(str(error)) from error
-                try:
-                    # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
-                    # its own: nothing but the user's turns and their stops is ever typed into the brain.
-                    asides = Asides(station, record)
-                    stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
-                    keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-                    with wire.joined(Kept(stage, keeper, asides, brain, usage)):
-                        watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
-                        # A summary is as long as its Claude Code makes it: only its time is the summary's own.
-                        # The brain's stage notes each turn of the user's itself, as it types it.
-                        yield Mind(stage, (), watches, Tailed(), lambda kind, instruction, _max_tokens, timeout: aside(partial(asides.ask, kind), instruction, timeout))
-                finally:
-                    await brain.stop()
-            finally:
-                await server.close()
+    """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
+    speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is given
+    `brain_tools` beside `tools`: what it does with a shell, to find what they act on, and a skill saying when."""
+    llm = config.llm
+    spans = CallSpans()
+    talk = conversation(llm.config_dir, SessionId(str(uuid4())))
+    # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
+    usage = Usage(talk.session)
+    tools = [*tools, *brain_tools, audited(usage_tool(usage), record)]
+    server = await serve_mcp(tools, record, spans)
+    try:
+        station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
+        try:
+            brain = await start_brain(Launch(station, llm.account, brain_instruction(log, llm.config_dir, recall, config.personality), server.config(), talk), record)
+        except Unstartable as error:
+            # hands runs on no brain it could not start: its start is refused, saying why.
+            raise CannotStart(str(error)) from error
+        try:
+            # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
+            # its own: nothing but the user's turns and their stops is ever typed into the brain.
+            asides = Asides(station, record)
+            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans)
+            keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
+            with wire.joined(Kept(stage, keeper, asides, brain, usage)):
+                watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
+                # A summary is as long as its Claude Code makes it: only its time is the summary's own.
+                # The brain's stage notes each turn of the user's itself, as it types it.
+                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout))
+        finally:
+            await brain.stop()
+    finally:
+        await server.close()
 
 
 async def outlived(brain: Brain) -> None:
@@ -311,10 +294,10 @@ async def run(
             async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home, "recall")), record, environment) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
-                floor = Floor(minded.telling, lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, tools, minded.llm, minded.noting, key, player, floor, refocus, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
+                floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
                 if voice is not None:
-                    sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_MAX_TOKENS, SENTENCES_TIMEOUT_SECONDS)
+                    sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
@@ -334,14 +317,14 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     config = read.voice
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
     # from (None where the home has none and every setting is its default), the collector they name, the
-    # server and model the run reaches and the brain's account (None for a keyed variant), never its key, the voice it
+    # model the run reaches and the brain's account, the voice it
     # starts speaking in, the one the user kept or the default, the personality it comes across in, None for hands' own,
     # and the wake word the wake word trigger listens for, with the model of the user's own it is heard with, None for
     # openWakeWord's own.
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
-        backend=type(config.llm).__name__, base_url=backends.server(config.llm), model=config.llm.model, account=backends.account(config.llm), voice=config.voice,
+        backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=config.voice,
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
     )
     return config
@@ -392,7 +375,6 @@ async def converse(
             failures.append(error)
             quit_event.set()
 
-    await brief(sessions, home, minded.telling, voice.worker.queue_frame)
     # First sight of every project a session is already working in: its backlog is said before anyone asks for it.
     for listing in sessions.live():
         store.want(listing.session.membership.cwd)
@@ -410,12 +392,12 @@ async def converse(
             name="the session speech relay",
         ),
         asyncio.create_task(
-            keep_playing(playing, sessions.live_session, voice.worker.queue_frame, minded.summariser(AsideKind.EXPLANATION, EXPLAIN_INSTRUCTION, EXPLAIN_MAX_TOKENS, EXPLAIN_TIMEOUT_SECONDS)),
+            keep_playing(playing, sessions.live_session, voice.worker.queue_frame, minded.summariser(AsideKind.EXPLANATION, EXPLAIN_INSTRUCTION, EXPLAIN_TIMEOUT_SECONDS)),
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
         asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
-        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_MAX_TOKENS, NAME_TIMEOUT_SECONDS), record), name="the namer"),
+        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]

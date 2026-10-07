@@ -1,20 +1,17 @@
-"""Mode readback: the permission_mode each hook reports is the session's mode, list_sessions says it, and a change reaches the intermediary unspoken."""
+"""Mode readback: the permission_mode each hook reports is the session's mode, and list_sessions says it."""
 
 from pathlib import Path
-from typing import cast, get_args
+from typing import get_args
 
 import pytest
-from pipecat.frames.frames import LLMMessagesAppendFrame
 
-from hands.core.effects import Allow, ModeChanged, Note
+from hands.core.effects import Allow
 from hands.core.events import Joined, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, Mode, PromptId, Permission, PermissionMode, RequestId, SessionId, UnknownMode
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
-from hands.voice.speech import Pushed, Tailed
 from hands.voice.tools import describe_listing
 
-from test_narrator import rendered
 from hands.core.status import Stamp
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
@@ -45,29 +42,16 @@ def test_every_mode_claude_code_has_is_said_by_name() -> None:
     assert all(spoken_mode(mode) for mode in get_args(PermissionMode))
 
 
-def test_a_mode_change_is_put_in_the_context_without_asking_the_model_to_speak() -> None:
-    [noted] = rendered(Note(ModeChanged(SID, "acceptEdits")), Pushed(), names=lambda _: "auth refactor")
-    assert isinstance(noted, LLMMessagesAppendFrame) and noted.run_llm is False
-    [message] = noted.messages
-    assert "auth refactor is now in accept edits mode" in str(cast(dict[str, object], message)["content"])
-
-
-def test_a_mode_change_puts_nothing_in_the_brains_context_whose_tail_says_the_mode() -> None:
-    assert rendered(Note(ModeChanged(SID, "acceptEdits")), Tailed(), names=lambda _: "auth refactor") == ()
-
-
-async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_sessions_next_hook() -> None:
+async def test_a_mode_changed_at_the_keyboard_is_listed_at_the_sessions_next_hook() -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
     await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=PromptId("p1")))
     await sessions.apply(Stopped(SID, "ok", mode="default", prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     assert describe_listing(sessions.live()[0])["mode"] == "manual mode"
-    assert await sessions.heard() == Note(ModeChanged(SID, "default"))
     # Shift-tab at the prompt fires no hook; the next prompt reports where it landed.
     await sessions.apply(Prompted(SID, at=2.0, mode="acceptEdits", prompt=PromptId("p1")))
     assert describe_listing(sessions.live()[0])["mode"] == "accept edits mode"
-    assert await sessions.heard() == Note(ModeChanged(SID, "acceptEdits"))
 
 
 async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:

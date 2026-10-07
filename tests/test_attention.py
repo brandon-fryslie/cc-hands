@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 from loguru import logger
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame
+from pipecat.frames.frames import Frame
 
 from conftest import NO_PYTHON
 
@@ -35,7 +35,7 @@ from hands.voice.refocus import Refocus
 from hands.voice.narrator import Recount, Recounts, delivery, narrate, recount
 from hands.core.pending import News, Pending
 from hands.voice import speech
-from hands.voice.speech import Pushed, Told, Unprompted
+from hands.voice.speech import Narrated, Unprompted
 from hands.voice.utterance import Utterances
 from hands.voice.tools import attention_tool, tell_turn_tool, set_overlay_tool
 
@@ -62,16 +62,12 @@ def noted(entries: list[Entry]) -> list[tuple[object, object]]:
 
 
 def handed(told: Frame | Pending | None) -> str:
-    """What the floor hands the model of what the narrator told, as it lets it go: one message, and the model asked to answer it."""
+    """What the floor hands the brain of what the narrator told, as it lets it go: a turn of its own."""
     pending = told.pending if isinstance(told, Unprompted) else told
     assert pending is not None and not isinstance(pending, Frame)
-    [frame, told] = rendered(pending, Pushed(), names=lambda id: id)
-    assert isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm and isinstance(told, Told)
-    match frame.messages:
-        case [{"role": "user", "content": str() as content}]:
-            return content
-        case other:
-            raise AssertionError(f"not one message from hands: {other!r}")
+    [frame] = rendered(pending, names=lambda id: id)
+    assert isinstance(frame, Narrated)
+    return frame.text
 
 
 @pytest.mark.parametrize(

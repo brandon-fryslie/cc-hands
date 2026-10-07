@@ -9,15 +9,12 @@ the user names still gets what they say to it.
 import asyncio
 
 from loguru import logger
-from pipecat.frames.frames import Frame
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, Refocused
 from hands.sessions.focus import set_focus
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.voice.speech import Told
 
 
 class NotRunning(Exception):
@@ -53,20 +50,3 @@ class Refocus:
             self._record(Refocused(session, "failed", str(error)))
         else:
             self._record(Refocused(session, "moved", None))
-
-
-class Refocusing(FrameProcessor):
-    """Behind an API model's stage, where a telling's Told arrives once the model has said it: the focus moves to the
-    session told of, and the Told goes no further. The brain's stage moves it itself, so no Told reaches here from it."""
-
-    def __init__(self, refocus: Refocus) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self._refocus = refocus
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        await super().process_frame(frame, direction)
-        match frame:
-            case Told(session=session):
-                await self._refocus(session)
-            case _:
-                await self.push_frame(frame, direction)

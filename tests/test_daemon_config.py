@@ -18,11 +18,11 @@ import pytest
 
 from conftest import onboard
 from hands.daemon import cli, config, run
-from hands.daemon.config import ANTHROPIC_MODEL, ANTHROPIC_URL, CLAUDE_MODELS, OPENAI_MODEL, OPENAI_URL, Anthropic, Claude, Config, OpenAI
+from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, Start, start
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat, wrapper
-from hands.sessions.audit import Entry, SettingsEdited, encoded
+from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.hookconfig import DISPLAY_PATH
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -31,32 +31,30 @@ from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
 from hands.voice.wakeword import Pretrained, Trained
-from hands.voice import backends
-from hands.voice.backends import Account, AnthropicBackend, ClaudeCodeBackend, OpenAICompatibleBackend
+from hands.voice.backends import Account, ClaudeCodeBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
 
 
-def test_no_file_is_claude_on_the_anthropic_api(tmp_path: Path) -> None:
-    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Anthropic(url=ANTHROPIC_URL, model=ANTHROPIC_MODEL), collector=None))
+def test_no_file_is_the_brain_on_sonnet(tmp_path: Path) -> None:
+    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Claude(model=ANTHROPIC_MODEL), collector=None))
     assert config.parse("") == Config()
 
 
-def test_the_file_names_the_backend_its_server_and_model(tmp_path: Path) -> None:
+def test_the_file_names_the_backend_and_its_model(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "openai"\nurl = "https://reseller.example/v1"\nmodel = "gpt-other"\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-opus-5-5"\n')
     settings = config.load(home)
-    assert settings.config == Config(llm=OpenAI(url="https://reseller.example/v1", model="gpt-other"))
+    assert settings.config == Config(llm=Claude(model="claude-opus-5-5"))
     assert settings.path(home) == home.config
-    assert config.parse('[llm]\nbackend = "openai"\n').llm == OpenAI(url=OPENAI_URL, model=OPENAI_MODEL)
-    assert config.parse('[llm]\nurl = "https://api-chicago.codexapi.pro"\nmodel = "claude-other"\n').llm == Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
-    assert config.parse('[llm]\nbackend = "claude"\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
+    assert config.parse('[llm]\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
 
 
-def test_the_file_names_how_hands_comes_across_in_the_users_words(tmp_path: Path) -> None:
-    home = Home(tmp_path)
+def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(home, config.load(home), {"ANTHROPIC_API_KEY": "k"}).voice.personality == "Dry and wry."
+    assert run.configured_from(home, config.load(home), os.environ).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -76,16 +74,16 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
     ("text", "said"),
     [
         ("[llm\n", "not TOML"),
-        ('[llm]\nbackend = "local"\n', "backend 'local' is not one of: anthropic, openai, claude"),
-        ('[llm]\nbackend = "gpt"\n', "is not one of"),
+        ('[llm]\nbackend = "local"\n', "backend 'local' is not one hands runs on: it runs on claude, the brain"),
+        # A model API reached with a key is no harness hands drives.
+        ('[llm]\nbackend = "anthropic"\n', "backend 'anthropic' is not one hands runs on: it runs on claude, the brain, a Claude Code of its own, never on a model API reached with a key"),
+        ('[llm]\nbackend = "openai"\n', "backend 'openai' is not one hands runs on"),
         # A url for the brain would be ignored, its requests going through hands' proxy, so it is refused.
         ('[llm]\nbackend = "claude"\nurl = "http://localhost:8080"\n', "[llm] for claude has no 'url'; it takes backend, model"),
-        ('[llm]\nurl = "http://localhost:8080/v1"\n', "ends in /v1"),
-        ('[llm]\nurl = "https://api-chicago.codexapi.pro/v1/"\n', "ends in /v1"),
+        ('[llm]\nurl = "https://api.anthropic.com"\n', "[llm] for claude has no 'url'; it takes backend, model"),
         # A key misspelled is refused, not a setting silently left at its default.
         ('[llm]\nmodle = "m"\n', "has no 'modle'"),
         ('voice = "charles"\n', "the file has no 'voice'"),
-        ('[llm]\nurl = "  "\n', "url should be a non-empty string"),
         ("[llm]\nmodel = 4\n", "model should be a non-empty string, got 4"),
         ('llm = "claude"\n', "llm should be a table"),
         ('[talk]\npersonality = "  "\n', "[talk] personality should be a non-empty string"),
@@ -135,52 +133,18 @@ def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() ->
         config.parse('[whisper]\nmodel = "mlx-community/whisper-large-v3-turbo"\n')
 
 
-def test_a_backend_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path) -> None:
-    home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "openai"\n')
-    with pytest.raises(CannotStart, match="^OPENAI_API_KEY is not set"):
-        run.configured_from(home, config.load(home), {})
+def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    home = Home(tmp_path / ".hands")
+    with pytest.raises(CannotStart, match="`hands login` gives it one"):
+        run.configured_from(home, config.load(home), os.environ)
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
     with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
-        run.configured_from(home, config.load(home), {"ANTHROPIC_API_KEY": "k", "HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
-
-
-def test_anthropic_on_its_own_url_spelled_with_a_slash_is_its_own_api() -> None:
-    assert config.parse('[llm]\nurl = "https://api.anthropic.com/"\n').llm == config.Anthropic()
-
-
-def test_anthropic_on_its_own_api_is_keyed_by_the_environment_else_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
-    kept: dict[str, str] = {}
-    monkeypatch.setattr("hands.daemon.backend.keychain_password", kept.get)
-    with pytest.raises(Rejected, match="ANTHROPIC_API_KEY is not set and the keychain holds no HANDS_LLM_ANT_KEY"):
-        backend(Anthropic(), HOME, {})
-    kept["HANDS_LLM_ANT_KEY"] = "from-keychain"
-    assert backend(Anthropic(), HOME, {}) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="from-keychain", model=ANTHROPIC_MODEL)
-    assert backend(Anthropic(), HOME, {"ANTHROPIC_API_KEY": "k"}) == AnthropicBackend(base_url=ANTHROPIC_URL, api_key="k", model=ANTHROPIC_MODEL)
-
-
-def test_the_keychain_key_never_leaves_for_another_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("hands.daemon.backend.keychain_password", {"HANDS_LLM_ANT_KEY": "anthropic-own"}.get)
-    other = Anthropic(url="https://api-chicago.codexapi.pro", model="claude-other")
-    with pytest.raises(Rejected, match="ANTHROPIC_API_KEY is not set"):
-        backend(other, HOME, {})
-    assert backend(other, HOME, {"ANTHROPIC_API_KEY": "k"}) == AnthropicBackend(base_url="https://api-chicago.codexapi.pro", api_key="k", model="claude-other")
-
-
-def test_openai_needs_its_key() -> None:
-    # Unset, or an empty line in a .env, or only space, is no key.
-    for environment in ({}, {"OPENAI_API_KEY": ""}, {"OPENAI_API_KEY": "   "}):
-        with pytest.raises(Rejected, match="OPENAI_API_KEY is not set"):
-            backend(OpenAI(), HOME, environment)
-    # Space around a key in a .env line is not part of the key.
-    assert backend(OpenAI(), HOME, {"OPENAI_API_KEY": " k "}) == OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="k", model=OPENAI_MODEL)
-    assert backend(OpenAI(url="https://reseller.example/v1", model="gpt-other"), HOME, {"OPENAI_API_KEY": "k"}) == OpenAICompatibleBackend(
-        base_url="https://reseller.example/v1", api_key="k", model="gpt-other"
-    )
+        run.configured_from(home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
 
 
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
@@ -195,29 +159,24 @@ def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, m
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     assert backend(Claude(model=model), home, os.environ).model == model
-    assert backend(Anthropic(model=model), HOME, {"ANTHROPIC_API_KEY": "k"}).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
     # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming the
-    # four, on Anthropic's own API and on the brain.
+    # four.
     for model in ("opus", "claude-opus-9", "claude-sonnet-5"):
-        for backend_ in ("anthropic", "claude"):
-            with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
-                config.parse(f'[llm]\nbackend = "{backend_}"\nmodel = "{model}"\n')
+        with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
+            config.parse(f'[llm]\nbackend = "claude"\nmodel = "{model}"\n')
 
 
 def test_a_model_flag_outranks_the_files_on_the_files_backend(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    assert config.load(home, "claude-opus-5-5") == config.Settings(None, Config(llm=Anthropic(model="claude-opus-5-5")), "claude-opus-5-5")
+    assert config.load(home, "claude-opus-5-5") == config.Settings(None, Config(llm=Claude(model="claude-opus-5-5")), "claude-opus-5-5")
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[telemetry]\ncollector = "http://otel.example:4318"\n')
     assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
     # The file's model, outranked, is never read: one hands no longer offers is no reason to refuse the run.
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-sonnet-4"\n')
     assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"))
-    # A server of its own serves models hands has no list of, the flag's as the file's.
-    home.config.write_text('[llm]\nbackend = "openai"\nurl = "http://localhost:8080/v1"\n')
-    assert config.load(home, "/models/qwen 30b").config == Config(llm=OpenAI(url="http://localhost:8080/v1", model="/models/qwen 30b"))
 
 
 def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_file(tmp_path: Path) -> None:
@@ -261,13 +220,12 @@ def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path
 @pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
 def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], loads: str | None, carried: tuple[str, ...]) -> None:
     home = Home(tmp_path)
-    # A server of its own, whose models hands has no list of.
-    home.config.write_text('[llm]\nbackend = "openai"\nurl = "http://localhost:8080/v1"\n')
     loaded: list[str | None] = []
 
     def door(_home: Home, _start: Start, model: str | None) -> config.Settings:
+        # Only what the restart is given is weighed here: an id that begins with a dash is no model hands offers.
         loaded.append(model)
-        return config.load(home, model)
+        return config.Settings(None, Config(), model)
 
     class Again(Exception):
         pass
@@ -295,7 +253,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     assert loaded == [loads, loads]
 
 
-async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_its_backend_is(tmp_path: Path) -> None:
+async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_anything_else_is(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "claude"\n')
     recorded: list[Entry] = []
@@ -310,7 +268,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
         await watching
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, period=0.01), 2.0))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "anthropic"\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
@@ -341,36 +299,21 @@ def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_na
         backend(Claude(), home, os.environ)
 
 
-def test_the_brain_is_logged_as_reaching_anthropics_api_through_the_proxy_on_its_account() -> None:
-    brain = ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=HOME.brain, account=Account("claude.ai", "brain@example.com"))
-    assert backends.server(brain) == UPSTREAM
-    assert backends.account(brain) == Account("claude.ai", "brain@example.com")
-
-
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
         backend(Claude(), HOME, os.environ)
 
 
-def test_a_backend_printed_does_not_print_its_key() -> None:
-    """The eval prints the backend it runs on, and a key printed is a key leaked."""
-    for printed in (
-        OpenAICompatibleBackend(base_url=OPENAI_URL, api_key="sk-secret", model=OPENAI_MODEL),
-        AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL),
-    ):
-        assert "sk-secret" not in repr(printed) and "sk-secret" not in str(printed)
-
-
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=AnthropicBackend(base_url=ANTHROPIC_URL, api_key="sk-secret", model=ANTHROPIC_MODEL), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
+    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
 
 
 async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A keychain prompt answered slowly is a start that is waiting, never one that looks stuck.
+    # A login check answered slowly is a start that is waiting, never one that looks stuck.
     home, sessions, heart, config = _starting(tmp_path)
     answered = threading.Event()
 
@@ -393,19 +336,18 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     answered.set()
     assert await starting == config
     # The start's event says which file the settings came from, the collector they name, which server and
-    # model the run reaches, and never with what key, the voice it speaks in, the personality it comes across in, and the
+    # model the run reaches and on what account, the voice it speaks in, the personality it comes across in, and the
     # wake word it listens for, with the model of the user's own it is heard with.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "base_url", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
-        "backend": "AnthropicBackend", "base_url": ANTHROPIC_URL, "model": ANTHROPIC_MODEL, "account": None, "voice": voices.DEFAULT,
+        "backend": "ClaudeCodeBackend", "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voices.DEFAULT,
         "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
     }
-    assert "sk-secret" not in str(encoded(event))
 
 
 async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Path) -> None:
@@ -503,7 +445,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
 
         async def refused(quit_event: asyncio.Event) -> Ended:
-            configure = partial(run.configured_from, home, settings, {"ANTHROPIC_API_KEY": "k", "HANDS_LLM": "claude"})
+            configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"})
             await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), quit_event)
             raise AssertionError("a start with HANDS_LLM set went on")
 
@@ -625,7 +567,7 @@ def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_sayin
     assert [event.facts["fritter"] for event in events] == ["unreadable"]
 
 
-def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(tmp_path: Path) -> None:
+def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(fake_claude: Path, tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
 
@@ -635,21 +577,22 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     """
     from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 
-    keyed = {"ANTHROPIC_API_KEY": "sk-test"}
-    home = Home(tmp_path)
-    assert run.configured_from(home, config.load(home), keyed).voice.voice == "charles"
+    logged_in = os.environ
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
+    assert run.configured_from(home, config.load(home), logged_in).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voices.keep(home, voices.parse_voice("Bill Boerst"))
-    assert run.configured_from(home, config.load(home), keyed).voice.voice == "bill_boerst"
+    assert run.configured_from(home, config.load(home), logged_in).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(home, config.load(home), keyed)
+        run.configured_from(home, config.load(home), logged_in)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(home, config.load(home), keyed)
+        run.configured_from(home, config.load(home), logged_in)
 
 
 # The settings of a run started with no file: every default.
@@ -672,18 +615,18 @@ async def test_an_edit_that_parses_is_heard_and_said(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 
 async def test_a_file_saved_unchanged_is_no_edit(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     assert await watching is None
     assert recorded == []
 
@@ -697,16 +640,16 @@ async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_d
     while not recorded:
         await asyncio.sleep(0.01)
     assert not watching.done()
-    assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config}: [llm] backend 'local' is not one of: anthropic, openai, claude")]
+    assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config}: [llm] backend 'local' is not one hands runs on: it runs on claude, the brain, a Claude Code of its own, never on a model API reached with a key")]
     assert audit.level(recorded[0]) == "error"
-    home.config.write_text('[llm]\nbackend = "openai"\n')
+    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert len(recorded) == 1
 
 
 async def test_settings_removed_are_an_edit_back_to_the_defaults(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded))
     await asyncio.sleep(0.05)
@@ -717,21 +660,21 @@ async def test_settings_removed_are_an_edit_back_to_the_defaults(tmp_path: Path)
 
 async def test_an_edit_undone_back_to_the_settings_the_run_is_on_is_no_edit(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.5))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "local"\n')
     while not recorded:
         await asyncio.sleep(0.01)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     assert await watching is None
     assert [type(entry) for entry in recorded] == [SettingsEdited] and audit.level(recorded[0]) == "error"
 
 
 async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=2.0))
     await asyncio.sleep(0.05)
@@ -742,14 +685,14 @@ async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_pat
     assert not watching.done()
     assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config} could not be read: [Errno 21] Is a directory: '{home.config}'")]
     home.config.rmdir()
-    home.config.write_text('[llm]\nbackend = "openai"\n')
+    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
 async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     # What each poll after the run's read reads, as an editor that truncates and then writes leaves it: one poll lands between the two.
-    reads = iter([b'[llm]\nbackend = "cla', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "claude"\n'])
+    reads = iter([b'[llm]\nbackend = "cla', b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-opus-5-5"\n'])
 
     def held(_home: Home) -> bytes | None:
         return next(reads)
@@ -760,29 +703,31 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
     assert recorded == []
 
 
-async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = Home(tmp_path)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
+    monkeypatch.setenv("LOGGED_IN", "0")
     recorded: list[Entry] = []
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), config.load(home), period=0.01), 2.0))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "openai"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     while not recorded:
         await asyncio.sleep(0.01)
     assert not watching.done()
-    assert recorded == [SettingsEdited(path=str(home.config), refused="OPENAI_API_KEY is not set; the [llm] backend hands is set to run on needs it to reach its model.")]
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    home.config.write_text('[llm]\nbackend = "openai"\nmodel = "gpt-other"\n')
+    [refused] = recorded
+    assert isinstance(refused, SettingsEdited) and refused.refused is not None and "`hands login` gives it one" in refused.refused
+    monkeypatch.setenv("LOGGED_IN", "1")
+    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
 async def test_a_comment_added_is_no_edit(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
     await asyncio.sleep(0.05)
-    home.config.write_text('# openai later\n[llm]\nbackend = "claude"\n')
+    home.config.write_text('# opus for now\n[llm]\nmodel = "claude-opus-5-5"\n')
     assert await watching is None
     assert recorded == []
 
@@ -793,12 +738,12 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
 
     def overwritten(settings: Config) -> None:
         # The first edit is saved over with a typo while its backend is checked.
-        if settings.llm == Claude():
+        if settings.llm == Claude(model="claude-opus-5-5"):
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01), 0.5))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\n')
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     with pytest.raises(TimeoutError):
         await watching
     assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
@@ -806,7 +751,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
 
 async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    edit, other = b'[llm]\nbackend = "claude"\n', b'[llm]\nbackend = "openai"\n'
+    edit, other = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-haiku-4-5-20251001"\n'
     # Seen, settled, saved over as its backend is checked, and back before the next poll.
     reads = iter([edit, edit, other, edit, edit])
 

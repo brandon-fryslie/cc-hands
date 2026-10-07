@@ -15,7 +15,7 @@ from hands.sessions.names import Finished, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
 from hands.sessions.wide import annotate, fail, unit
-from hands.voice.summary import SUMMARY_FAILURES, Summariser
+from hands.voice.summary import Summariser, SummaryFailed
 
 NAME_INSTRUCTION = """\
 You name a coding session so a person can tell it apart from the others they run, and name it back by voice. You are \
@@ -38,8 +38,6 @@ A good reply:
 naming fix
 """
 
-# A name is a few words; this is room for them and nothing else.
-NAME_MAX_TOKENS = 30
 NAME_TIMEOUT_SECONDS = 60.0
 
 # How much of the end of the session's last reply the model is shown, where a session told to close on a concise
@@ -94,7 +92,7 @@ async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: 
         annotate(before=before, pending=names.pending(session))
         try:
             reply = await name(asked(before, [each for each in beside if each is not None], turn.closing))
-        except SUMMARY_FAILURES as error:
+        except SummaryFailed as error:
             annotate(judged=Judged.FAILED)
             fail(f"the model gave no name: {type(error).__name__}: {error}")
             return

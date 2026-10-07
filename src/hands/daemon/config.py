@@ -2,9 +2,8 @@
 run runs starts the run again, on the file as edited.
 
     [llm]
-    backend = "claude"           # "anthropic" (the default), "openai", or "claude", the brain
-    model = "claude-sonnet-5-5"  # any backend's
-    url = "https://..."          # "anthropic" and "openai" only: another server that speaks the API
+    backend = "claude"           # the brain, a Claude Code of hands' own: the default, and the one there is
+    model = "claude-sonnet-5-5"  # one of CLAUDE_MODELS
 
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
@@ -14,8 +13,7 @@ run runs starts the run again, on the file as edited.
     wake_word = "Hey Mycroft"     # what the wake word trigger listens for: Hey Jarvis (the default), Hey Mycroft, Hey Rhasspy, or Alexa
     wake_word_model = "~/wake/hey_computer.onnx"      # or a model of your own, trained with openWakeWord on wake_word, said as written
 
-A file left out, or a key, is the default. Secrets are not settings: an API key comes from the environment or the
-keychain, and the brain's login from its own config directory. The voice is not either: the user chooses it by voice,
+A file left out, or a key, is the default. Secrets are not settings: the brain's login is in its own config directory. The voice is not either: the user chooses it by voice,
 and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
 that choice is an edit to this file (OwnModel), taken as any edit is. `hands run --model` names one that outranks the
 file's for as long as that run runs, its restarts included.
@@ -45,31 +43,10 @@ from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0
 
-# The SDK appends /v1/messages to this, so an Anthropic-compatible server's URL has no /v1 of its own.
-ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
-# The models hands runs on through Anthropic's API or the brain: one Haiku, Sonnet, Opus, and Fable each. A model
-# outside them is refused where the file is parsed, since by voice a turn that fails on it could never choose another.
+# The models hands runs on: one Haiku, Sonnet, Opus, and Fable each. A model outside them is refused where the file is
+# parsed, since by voice a turn that fails on it could never choose another.
 CLAUDE_MODELS = ("claude-haiku-4-5-20251001", ANTHROPIC_MODEL, "claude-opus-5-5", "claude-fable-5-1")
-OPENAI_URL = "https://api.openai.com/v1"
-# Not a reasoning model, so no thinking precedes the first spoken word; it calls tools and takes max_tokens.
-OPENAI_MODEL = "gpt-4.1-mini"
-
-
-@dataclass(frozen=True)
-class Anthropic:
-    """Claude over the Anthropic API, or another server that speaks it."""
-
-    url: str = ANTHROPIC_URL
-    model: str = ANTHROPIC_MODEL
-
-
-@dataclass(frozen=True)
-class OpenAI:
-    """An OpenAI chat completions server: OpenAI's own, or another that speaks it."""
-
-    url: str = OPENAI_URL
-    model: str = OPENAI_MODEL
 
 
 @dataclass(frozen=True)
@@ -79,16 +56,13 @@ class Claude:
     model: str = ANTHROPIC_MODEL
 
 
-type LLM = Anthropic | OpenAI | Claude
-
-
 @dataclass(frozen=True)
 class Config:
     """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
     but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
     the wake word the wake word trigger listens for."""
 
-    llm: LLM = Anthropic()
+    llm: Claude = Claude()
     collector: str | None = None
     personality: str | None = None
     wake: Word = Pretrained()
@@ -140,7 +114,7 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
             if settings != running.config:
-                # reachable blocks, on a keychain prompt or a login check, on a thread a stop does not wait for.
+                # reachable blocks, on the brain's login check, on a thread a stop does not wait for.
                 await off_loop(partial(reachable, settings), "weighing a settings edit")
                 if _held(home) == now:
                     return SettingsEdited(path=str(home.config), refused=None)
@@ -178,10 +152,6 @@ class OwnModel:
             # change nothing until hands is started without the flag.
             raise Rejected(f"hands was started with --model {self._running.model}, which it keeps over {self._home.config} until it is started without it")
         model = model.strip()
-        # A model is named by its id; one with a space is a name as said aloud, which no backend serves. Only here, where a
-        # name said aloud enters: a model named in the file by hand may be a local server's path, spaces and all.
-        if any(character.isspace() for character in model):
-            raise Rejected(f"{model!r} has a space in it; a model is named by its id, such as {ANTHROPIC_MODEL}")
         held = _readable(self._home, _held(self._home))
         edited = _with_model(held, model)
         chosen = _settings(self._home, edited)
@@ -316,50 +286,31 @@ def _base(url: str, where: str, server: str, example: str, appended: str) -> str
     return url
 
 
-def _llm(table: Mapping[str, object], model: str | None) -> LLM:
-    match backend := _text(table, "[llm]", "backend", "anthropic"):
-        case "anthropic":
-            _known(table, "[llm] for anthropic", ("backend", "model", "url"))
-            # [LAW:parse-dont-validate] spelled one way from here on, so Anthropic's own server is known by equality.
-            url = _text(table, "[llm]", "url", ANTHROPIC_URL).rstrip("/")
-            if url.endswith("/v1"):
-                raise Rejected(f"[llm] url {url!r} ends in /v1, and the Anthropic client appends /v1/messages itself; drop the /v1")
-            return _on(Anthropic(url=url), table, model)
-        case "openai":
-            _known(table, "[llm] for openai", ("backend", "model", "url"))
-            return _on(OpenAI(url=_text(table, "[llm]", "url", OPENAI_URL)), table, model)
+def _llm(table: Mapping[str, object], model: str | None) -> Claude:
+    # [LAW:one-type-per-behavior] hands reaches its model through a harness it drives, as it drives Claude Code: the brain.
+    # Another harness joins as another backend here; a model API reached with a key is none.
+    match backend := _text(table, "[llm]", "backend", "claude"):
         case "claude":
             # A url would be ignored, its requests going through hands' proxy to Anthropic's API, so it is refused.
             _known(table, "[llm] for claude", ("backend", "model"))
             return _on(Claude(), table, model)
         case _:
-            raise Rejected(f"[llm] backend {backend!r} is not one of: anthropic, openai, claude")
+            raise Rejected(f"[llm] backend {backend!r} is not one hands runs on: it runs on claude, the brain, a Claude Code of its own, never on a model API reached with a key")
 
 
-def _on(llm: LLM, table: Mapping[str, object], flag: str | None) -> LLM:
+def _on(llm: Claude, table: Mapping[str, object], flag: str | None) -> Claude:
     """`llm` on the model `table` names, its default where it names none, or on `flag`, the --model that outranks it."""
     if flag is None:
-        return _offered_on(llm, _text(table, "[llm]", "model", llm.model))
+        return replace(llm, model=_offered(_text(table, "[llm]", "model", llm.model)))
     try:
-        return _offered_on(llm, flag)
+        return replace(llm, model=_offered(flag))
     except Rejected as error:
         raise ModelFlagRejected(f"--model {flag!r}: {error}") from error
 
 
-def _offered_on(llm: LLM, model: str) -> LLM:
-    """`llm` on `model`. [LAW:single-enforcer] the one place a model is refused that hands does not offer, whether the
-    file or --model named it."""
-    match llm:
-        case Anthropic(url=url):
-            # Another server serves models of its own, which hands has no list of.
-            return replace(llm, model=_offered(model) if url == ANTHROPIC_URL else model)
-        case OpenAI():
-            return replace(llm, model=model)
-        case Claude():
-            return replace(llm, model=_offered(model))
-
-
 def _offered(model: str) -> str:
+    # [LAW:single-enforcer] the one place a model is refused that hands does not offer, whether the file, --model, or a
+    # choice by voice named it.
     if model not in CLAUDE_MODELS:
         raise Rejected(f"hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}")
     return model

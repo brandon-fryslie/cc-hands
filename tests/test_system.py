@@ -7,9 +7,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import anthropic
-import httpx2
-import openai
 import pytest
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
@@ -101,39 +98,22 @@ class Services:
         return alarm(error, stt=self.stt, llm=self.llm, tts=self.tts)
 
 
-REFUSED = openai.APIConnectionError(request=httpx2.Request("POST", "http://192.168.7.240:8080/v1/chat/completions"))
-
-# What Anthropic answered every call with from 15:07 on 2026-09-27, which hands said as "invalid request".
-LIMIT = "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
 RETURNS = datetime(2026, 10, 1, tzinfo=UTC).timestamp()
-
-
-def anthropic_error(status: int, message: str) -> anthropic.APIStatusError:
-    response = httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
-    return anthropic.APIStatusError(f"Error code: {status} - {message}", response=response, body={"type": "error", "error": {"type": "api_error", "message": message}})
-
-
-def openai_streamed_error(message: str) -> openai.APIError:
-    return openai.APIError(message, httpx2.Request("POST", "http://inferno.local:8080/v1/chat/completions"), body={"message": message})
 
 
 @pytest.mark.parametrize(
     ("exception", "category", "fact"),
     [
-        (anthropic_error(400, LIMIT), ErrorCategory.INVALID_REQUEST, UsageLimitReached(RETURNS)),
-        (anthropic_error(400, "You have reached your specified API usage limits."), ErrorCategory.INVALID_REQUEST, UsageLimitReached(None)),
-        (openai_streamed_error(LIMIT), ErrorCategory.UNKNOWN, UsageLimitReached(RETURNS)),
-        # Anything else keeps its category, and none of the API's own text is said: it can carry ids, counts and URLs.
-        (anthropic_error(400, "prompt is too long: 205113 tokens > 200000 maximum"), ErrorCategory.INVALID_REQUEST, ModelFailed(ErrorCategory.INVALID_REQUEST)),
-        (anthropic_error(529, "Overloaded"), ErrorCategory.SERVER, ModelFailed(ErrorCategory.SERVER)),
-        (RuntimeError("boom"), ErrorCategory.UNKNOWN, ModelFailed(ErrorCategory.UNKNOWN)),
-        # Under the brain the stage has read the fact off the wire already, and it is said as read.
+        # The brain's stage has read the fact off the wire already, and it is said as read.
         (ModelFault(UsageLimitReached(RETURNS)), ErrorCategory.UNKNOWN, UsageLimitReached(RETURNS)),
         (ModelFault(ModelUnreachable()), ErrorCategory.UNKNOWN, ModelUnreachable()),
         (ModelFault(ModelReplyEmpty()), ErrorCategory.UNKNOWN, ModelReplyEmpty()),
+        # Anything else keeps its category, and none of its own text is said: it can carry ids, counts and URLs.
+        (RuntimeError("boom"), ErrorCategory.UNKNOWN, ModelFailed(ErrorCategory.UNKNOWN)),
+        (RuntimeError("overloaded"), ErrorCategory.SERVER, ModelFailed(ErrorCategory.SERVER)),
     ],
 )
-def test_a_spent_usage_limit_is_said_as_itself_and_every_other_refusal_by_its_category(exception: Exception, category: ErrorCategory, fact: SystemFact) -> None:
+def test_a_fault_the_brains_stage_read_is_said_as_itself_and_any_other_failure_by_its_category(exception: Exception, category: ErrorCategory, fact: SystemFact) -> None:
     services = Services()
     error = ErrorFrame(f"Unknown error occurred: {exception}", exception=exception, processor=services.llm, category=category)
     assert services.alarm(error) == Say(fact)
@@ -156,9 +136,6 @@ def test_the_limit_is_said_to_lift_in_the_listeners_own_time() -> None:
 
 def test_an_error_is_told_by_the_processor_that_raised_it() -> None:
     services = Services()
-    # A stopped model server refuses the connection; Pipecat files the SDK's error as UNKNOWN.
-    assert services.alarm(ErrorFrame("Error during completion", exception=REFUSED, processor=services.llm, category=ErrorCategory.UNKNOWN)) == Say(ModelUnreachable())
-    assert services.alarm(ErrorFrame("timed out", processor=services.llm, category=ErrorCategory.CONNECTIVITY)) == Say(ModelUnreachable())
     assert services.alarm(ErrorFrame("bad key", processor=services.llm, category=ErrorCategory.AUTHENTICATION)) == Say(ModelFailed(ErrorCategory.AUTHENTICATION))
     assert services.alarm(ErrorFrame("boom", processor=services.stt)) == Say(TranscriptionFailed())
     assert services.alarm(ErrorFrame("no voice", processor=services.tts)) == Post("no voice")

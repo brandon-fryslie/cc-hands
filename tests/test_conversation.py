@@ -7,12 +7,6 @@ from dataclasses import dataclass, field
 
 from pipecat.frames.frames import (
     Frame,
-    FunctionCallCancelFrame,
-    FunctionCallFromLLM,
-    FunctionCallInProgressFrame,
-    FunctionCallResultFrame,
-    FunctionCallResultProperties,
-    FunctionCallsStartedFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -96,27 +90,6 @@ async def conversing() -> AsyncGenerator[Conversation]:
         yield conversation
 
 
-def calling(call: str, *said_meanwhile: Frame) -> list[Frame]:
-    """A reply of the model's that says it is checking and makes one call, as an API service sends it: the call is
-    announced ahead of the reply's end and runs once the reply has ended, and `said_meanwhile` is said while it runs."""
-    return [
-        LLMFullResponseStartFrame(),
-        LLMTextFrame("Checking."),
-        FunctionCallsStartedFrame([FunctionCallFromLLM("list_sessions", call, {}, None)]),
-        LLMFullResponseEndFrame(),
-        FunctionCallInProgressFrame("list_sessions", call, {}, cancel_on_interruption=True),
-        *said_meanwhile,
-    ]
-
-
-def result(call: str, run_llm: bool) -> FunctionCallResultFrame:
-    return FunctionCallResultFrame("list_sessions", call, {}, {"sessions": []}, properties=FunctionCallResultProperties(run_llm=run_llm))
-
-
-ANSWER = (LLMFullResponseStartFrame(), LLMTextFrame("Nothing is running."), LLMFullResponseEndFrame())
-CHECKING = Replied("Checking.", interrupted=False)
-
-
 async def test_a_line_hands_says_after_the_models_reply_is_written_as_heard_whole_once_it_is_said() -> None:
     """hands-readback-ddk, hands-readback-v6m: it was written only at the next key press, as cut off, however long
     before it had been heard."""
@@ -153,86 +126,6 @@ async def test_a_line_kept_out_of_the_context_is_no_reply() -> None:
         assert await conversation.replies(1) == [Replied("The session api is gone.", interrupted=False)]
 
 
-async def test_a_line_said_while_a_call_runs_is_written_with_the_reply_that_answers_the_call() -> None:
-    """Written as it is said, it would follow the call's result in the context, and the request that answers the call
-    would end on an assistant message, which Claude refuses."""
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")), result("c1", run_llm=True))
-        assert conversation.ends_on() == "tool"
-
-        await conversation.said(*ANSWER)
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone. Nothing is running.", interrupted=False)]
-
-
-async def test_a_line_said_after_a_result_the_model_is_run_on_is_written_with_the_reply_that_answers_it() -> None:
-    """The model's turn is open until that reply starts: the request for it is made from this same context."""
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1"), result("c1", run_llm=True), TTSSpeakFrame("The session api is gone."))
-        assert conversation.ends_on() == "tool"
-
-        await conversation.said(*ANSWER)
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone. Nothing is running.", interrupted=False)]
-
-
-async def test_a_line_said_while_a_call_runs_that_is_the_whole_reply_is_written_as_the_call_is_answered() -> None:
-    """A playback tool's sentences: the model is not run again, so nothing later would end their turn."""
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1", TTSSpeakFrame("That was the last of it.")), result("c1", run_llm=False))
-
-        assert await conversation.replies(2) == [CHECKING, Replied("That was the last of it.", interrupted=False)]
-
-
-async def test_a_line_said_while_a_call_runs_is_written_as_the_call_is_cancelled() -> None:
-    """A call cancelled with the model not run again ends the model's turn as an answered one does."""
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")))
-        await conversation.said(FunctionCallCancelFrame("list_sessions", "c1"))
-
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
-
-
-async def test_a_line_heard_whole_while_a_call_runs_is_written_as_heard_whole_at_a_barge_in() -> None:
-    """The barge-in ends the model's turn, and cut off nothing of the line said inside it."""
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")))
-        await conversation.barge_in()
-
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
-
-
-async def test_a_line_heard_whole_is_written_as_that_at_a_barge_in_on_the_reply_behind_it_before_a_sentence_of_it_is_heard() -> None:
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1", TTSSpeakFrame("The session api is gone.")), result("c1", run_llm=True))
-        await conversation.said(LLMFullResponseStartFrame())
-        await conversation.barge_in()
-
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
-
-
-async def test_a_line_said_after_a_barge_in_a_call_ran_on_through_is_written_with_the_reply_that_answers_the_call() -> None:
-    """After a barge-in Pipecat's TTS service ends a line's turn itself, whatever the model's turn (1.10.0)."""
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1"))
-        await conversation.barge_in()
-        await conversation.said(result("c1", run_llm=True), TTSSpeakFrame("The session api is gone."))
-        assert conversation.ends_on() == "tool"
-
-        await conversation.said(*ANSWER)
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone. Nothing is running.", interrupted=False)]
-
-
-async def test_a_call_cancelled_before_it_is_told_as_in_progress_holds_no_line_said_after_it() -> None:
-    """A barge-in while the reply that made the call still plays: the cancellation overtakes the in-progress frame, which
-    the audio holds back, and Pipecat's aggregator keeps the call as open from then on (1.10.0)."""
-    call = FunctionCallFromLLM("list_sessions", "c1", {}, None)
-    async with conversing() as conversation:
-        await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame("Checking."), FunctionCallsStartedFrame([call]), LLMFullResponseEndFrame())
-        await conversation.said(FunctionCallCancelFrame("list_sessions", "c1"))
-        await conversation.said(FunctionCallInProgressFrame("list_sessions", "c1", {}, cancel_on_interruption=True), TTSSpeakFrame("The session api is gone."))
-
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]
-
-
 async def test_a_reply_started_again_after_a_barge_in_it_goes_on_through_is_written_whole_at_its_end() -> None:
     """The brain's stage starts the reply again where its turn goes on through a barge-in: each sentence said after one
     would otherwise be a turn of its own."""
@@ -242,10 +135,3 @@ async def test_a_reply_started_again_after_a_barge_in_it_goes_on_through_is_writ
         await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame("It opened pull request 68. "), LLMTextFrame("Nothing else changed."), LLMFullResponseEndFrame())
 
         assert (await conversation.replies(2))[-1] == Replied("It opened pull request 68. Nothing else changed.", interrupted=False)
-
-
-async def test_a_line_said_after_a_call_that_was_the_whole_reply_is_written_once_it_is_said() -> None:
-    async with conversing() as conversation:
-        await conversation.said(*calling("c1"), result("c1", run_llm=False), TTSSpeakFrame("The session api is gone."))
-
-        assert await conversation.replies(2) == [CHECKING, Replied("The session api is gone.", interrupted=False)]

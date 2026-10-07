@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import ClassVar
 
-import anthropic
-import openai
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.pipeline.worker import PipelineWorker
@@ -23,7 +21,6 @@ from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
-from hands.voice.refusal import usage_limit
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 
@@ -119,10 +116,6 @@ class Unrouted:
 
 Alarm = Say | Post | Unrouted
 
-# An SDK's connection error carries no status code and is no ConnectionError, so Pipecat files it as UNKNOWN.
-_UNREACHABLE = (openai.APIConnectionError, anthropic.APIConnectionError, ConnectionError, TimeoutError)
-
-
 def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: FrameProcessor) -> Alarm:
     """What the user is told about a pipeline error, decided by the processor that raised it."""
     match error.processor:
@@ -140,17 +133,12 @@ def alarm(error: ErrorFrame, *, stt: FrameProcessor, llm: FrameProcessor, tts: F
 
 
 def model_fact(error: ErrorFrame) -> ModelFact:
-    if isinstance(error.exception, ModelFault):
-        return error.exception.fact
-    if isinstance(error.exception, _UNREACHABLE) or error.category is ErrorCategory.CONNECTIVITY:
-        return ModelUnreachable()
-    # [LAW:no-silent-failure] a spent usage limit fails every call until a stated date, and its category alone said
-    # "invalid request" (2026-09-27). The API's text is read for that one case and never spoken: what the channel says
-    # comes from a closed set (see SystemChannel._claim), so it stays short and a burst of it stays one burst.
-    match usage_limit(error.exception):
-        case UsageLimitReached() as limit:
-            return limit
-        case None:
+    # The brain's stage says what failed a turn as a ModelFault, read off the wire; a turn it could not hand the brain at
+    # all carries no fact of its own.
+    match error.exception:
+        case ModelFault(fact=fact):
+            return fact
+        case _:
             return ModelFailed(error.category or ErrorCategory.UNKNOWN)
 
 
