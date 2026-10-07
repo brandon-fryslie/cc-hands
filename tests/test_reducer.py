@@ -1379,7 +1379,7 @@ def test_a_command_whose_idle_was_read_first_is_told_once_it_printed() -> None:
 
 @pytest.mark.parametrize("before", [in_turn(RUNNING), registry(replace(live(in_turn(RUNNING)), turn=Opened(TURN, frozenset({COMMAND})))), holding(IDLE, Told(COMMAND))])
 def test_a_command_ends_no_turn_but_the_one_it_opened(before: Registry) -> None:
-    """Run while another turn runs, a command is filed under that turn's ids (see Taken): what it printed ends none of it."""
+    """Run while another turn runs, a command joins that turn's others under its own id (see Taken): what it printed ends none of it."""
     assert reduce(before, CarriedOut(ONE.id, COMMAND, at=12.1)) == (before, [])
 
 

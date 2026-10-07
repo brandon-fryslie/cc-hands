@@ -421,7 +421,9 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (CarriedOut(prompt=prompt), Opened(turn=running) as opened) if prompt == running:
             # The command's turn is over, though a subagent working in the background keeps Claude Code from setting the
             # idle that would say so: told as it stands. Only the turn it opened: a command run while another turn runs
-            # is filed under that turn's ids (see Taken), and ends nothing of it.
+            # joins that turn's others under its own id (see Taken), and ends nothing of it. One written under the
+            # running turn's own id follows that turn's interrupt record (every such command in this machine's
+            # transcripts), so the turn is over before it is read.
             return _over(id, opened)
         case (CarriedOut(prompt=prompt), Untold(turn=waiting)) if prompt == waiting:
             # Its idle was read first: what it printed is the record of how it ended.
