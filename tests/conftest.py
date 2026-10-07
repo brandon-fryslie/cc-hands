@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+import wave
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -32,6 +33,13 @@ from hands.voice.wakeword import Pretrained
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
+
+
+def spoken(text: str, at: Path) -> bytes:
+    """`text` spoken by macOS's own voice, as 16 kHz mono 16-bit audio, the way the desk's microphone is heard."""
+    subprocess.run(["say", "-v", "Samantha", "-o", str(at), "--data-format=LEI16@16000", text], check=True)
+    with wave.open(str(at)) as clip:
+        return clip.readframes(clip.getnframes())
 
 
 # How long a pipeline may take to start before a test fails on it.

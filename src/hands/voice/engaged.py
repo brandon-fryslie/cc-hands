@@ -2,9 +2,10 @@
 end-of-turn detection closes it, until another hold disengages it.
 
 Two models listen to the desk's microphone, heard through the echo canceller as every buffer is: Silero's voice
-activity detector says where speech starts and stops, and Smart Turn says whether a stop is the end of the turn or a
-pause inside it, from how the speech ended rather than from how long the silence is. A pause it judges a thought still
-going holds the turn open; if the silence then runs on to Smart Turn's own `stop_secs`, the turn ends there.
+activity detector says where speech starts and stops, a silence shorter than `STOP_SECS` being inside the speech, and
+at each stop Smart Turn says whether it is the end of the turn or a pause inside it, from how the speech ended. A pause
+it judges a thought still going holds the turn open; if the silence then runs on to Smart Turn's own `stop_secs`, the
+turn ends there.
 
 The edge moves the gate with the held key's own moves, so the gate, Whisper, and the cues take an engaged turn as they
 take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was only a noise
@@ -26,7 +27,7 @@ from typing import Literal, Protocol, get_args
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADState
+from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
@@ -214,16 +215,27 @@ class Ears(Protocol):
     def afresh(self) -> None: ...
 
 
+# The silence that ends speech: a pause between words is shorter, so it is inside the speech. At Pipecat's 0.2 s, tuned
+# for Smart Turn, Smart Turn judged every such pause, and a phrase said before one read to it as complete, so each
+# phrase was a turn (the real-model test in tests/test_engaged.py fails at 0.2). The price is that every turn ends this
+# long after the speech does, before Smart Turn is asked.
+STOP_SECS = 0.8
+
+
 class Models:
     """Silero's voice activity detector and Smart Turn v3, run locally on the CPU, both shipped inside Pipecat."""
 
     def __init__(self, sample_rate: int) -> None:
-        self._vad = SileroVADAnalyzer(sample_rate=sample_rate)
+        self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
         self._vad.set_sample_rate(sample_rate)
         self._turn = LocalSmartTurnAnalyzerV3(sample_rate=sample_rate)
         self._turn.set_sample_rate(sample_rate)
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
+
+    @property
+    def vad_stop_secs(self) -> float:
+        return self._vad.params.stop_secs
 
     async def detect(self, audio: bytes) -> VADState:
         return await self._vad.analyze_audio(audio)
@@ -257,7 +269,8 @@ async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGe
     loading = asyncio.create_task(asyncio.to_thread(Models, sample_rate))
     try:
         with unit("trigger.loaded", emit):
-            await asyncio.shield(loading)
+            # [LAW:nothing-unseen] the pause the detector ends speech at, as it was loaded with it.
+            annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
         yield loading.result()
     finally:
         # A switch away while they load waits the load out, so what it built is let go of too.

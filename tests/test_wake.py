@@ -2,8 +2,6 @@
 detector hears silence."""
 
 import asyncio
-import subprocess
-import wave
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,6 +9,7 @@ from pathlib import Path
 import aiohttp
 import pytest
 from aiohttp import web
+from conftest import spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -148,11 +147,8 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
 
 
 def said(text: str, at: Path) -> bytes:
-    """`text` spoken by macOS's own voice, as 16 kHz mono 16-bit audio with a second of silence either side."""
-    subprocess.run(["say", "-v", "Samantha", "-o", str(at), f"--data-format=LEI16@{SAMPLE_RATE}", text], check=True)
-    with wave.open(str(at)) as clip:
-        audio = clip.readframes(clip.getnframes())
-    return bytes(SAMPLE_RATE * 2) + audio + bytes(SAMPLE_RATE * 2)
+    """`text` spoken by macOS's own voice with a second of silence either side."""
+    return bytes(SAMPLE_RATE * 2) + spoken(text, at) + bytes(SAMPLE_RATE * 2)
 
 
 def wakes(word: WakeWord, audio: bytes) -> bool:
