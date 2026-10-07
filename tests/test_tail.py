@@ -1299,6 +1299,43 @@ async def test_a_command_held_back_as_carried_out_is_not_once_its_turn_goes_on(t
 
 
 @pytest.mark.parametrize(
+    ("printed", "after"),
+    [((GOAL, GOAL_SET), GOAL_PROMPT), ((MODEL, MODEL_PRINTED), ASKED)],
+    ids=["goal goes on", "model is followed by the next prompt"],
+)
+async def test_what_a_command_printed_before_a_line_half_written_waits_for_that_line(tmp_path: Path, printed: tuple[str, ...], after: str) -> None:
+    """A read that lands inside an append ends on what the command printed, though the line being written may go on."""
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE))
+    tails = await following(transcript)
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="DEBUG", filter="hands.sessions.tail")
+    try:
+        with transcript.open("a") as more:
+            more.write(lines(*printed) + after[: len(after) // 2])
+        assert [event for event in heard(await tails.catch_up()) if isinstance(event, CarriedOut)] == []
+        with transcript.open("a") as more:
+            more.write(after[len(after) // 2 :] + "\n")
+        assert [event for event in heard(await tails.catch_up()) if isinstance(event, CarriedOut)] == []
+    finally:
+        logger.remove(sink)
+    assert any("followed by a line half written" in line for line in said)
+
+
+async def test_what_a_command_printed_is_carried_out_once_the_half_written_line_after_it_is_none_of_its_turn(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED, DONE))
+    tails = await following(transcript)
+    snapshot = '{"type":"file-history-snapshot","messageId":"m9","snapshot":{}}'
+    with transcript.open("a") as more:
+        more.write(lines(MODEL, MODEL_PRINTED) + snapshot[:10])
+    assert heard(await tails.catch_up()) == [Taken(SID, PromptId("p2"), None, 7.0)]
+    with transcript.open("a") as more:
+        more.write(snapshot[10:] + "\n")
+    assert heard(await tails.catch_up()) == [CarriedOut(SID, PromptId("p2"), at=7.0)]
+
+
+@pytest.mark.parametrize(
     ("records", "said"),
     [
         # The words /compact under one id and its command record under another: which turn they name, nothing read says.

@@ -139,6 +139,9 @@ class Following:
     # record says it ended: heard after all if a record says it went on, as when a Stop hook sends Claude on or an
     # Escape flushes a queued message into it.
     held: list[tuple[int, Transcribed]] = field(default_factory=list[tuple[int, Transcribed]])
+    # Whether the last record read is what a command Claude Code carries out itself printed, read while the line after it
+    # was half written: that line may be the prompt /goal hands Claude, so the turn is carried out only once it is read.
+    printed: bool = False
     # Every subagent of the session known, by id, each followed in its own transcript.
     delegates: dict[AgentId, Delegate] = field(default_factory=dict[AgentId, Delegate])
 
@@ -207,6 +210,7 @@ class Following:
         self.offset = 0
         self.asked = self.answering = None
         self.held = []
+        self.printed = False
         self.delegates = {}
 
 
@@ -375,7 +379,7 @@ class Tails:
         following.offset = read.offset
         # What each record says that no hook does, by the turn it was read into.
         heard: list[tuple[int, Transcribed]] = []
-        went_on = carried = False
+        went_on, carried = False, following.printed
         for record in _records(read.lines, f"session {session}"):
             # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
             # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
@@ -385,7 +389,12 @@ class Tails:
             # Of the last record read only: anything after what a command printed says its turn went on.
             carried = isinstance(following.reading.turn.ended, Printed)
             heard += [(following.reading.number, event) for event in (prompted, interrupted, *_backgrounded(session, record)) if event is not None]
-        if carried:
+        # [LAW:no-ambient-temporal-coupling] which record is the last is known only once no line is half written.
+        following.printed = carried and read.unfinished
+        if following.printed:
+            # [LAW:nothing-unseen] the decision explained, so a command's turn told late is seen to have waited.
+            logger.debug(f"what a command of session {session} printed is followed by a line half written: its turn is carried out once that line is read and says it did not go on")
+        elif carried:
             heard += [(following.reading.number, event) for event in self._carried_out(session, following.reading)]
         # [LAW:single-enforcer] the one place a record is decided to be history: of a file read from its start, only the
         # turn it ends in may still be running, which Claude Code's status says; every turn before it was over before
