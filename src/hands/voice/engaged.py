@@ -2,10 +2,10 @@
 end-of-turn detection closes it, until another hold disengages it.
 
 Two models listen to the desk's microphone, heard through the echo canceller as every buffer is: Silero's voice
-activity detector says where speech starts and stops, a stop being `STOP_SECS` of silence, and Smart Turn says whether
-a stop is the end of the turn or a pause inside it, from how the speech ended rather than from how long the silence is.
-A pause it judges a thought still going holds the turn open; if the silence then runs on to Smart Turn's own
-`stop_secs`, the turn ends there.
+activity detector says where speech starts and stops, a silence shorter than `STOP_SECS` being inside the speech, and
+at each stop Smart Turn says whether it is the end of the turn or a pause inside it, from how the speech ended. A pause
+it judges a thought still going holds the turn open; if the silence then runs on to Smart Turn's own `stop_secs`, the
+turn ends there.
 
 The edge moves the gate with the held key's own moves, so the gate, Whisper, and the cues take an engaged turn as they
 take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was only a noise
@@ -215,9 +215,10 @@ class Ears(Protocol):
     def afresh(self) -> None: ...
 
 
-# The silence that ends speech: a pause between words is shorter, so it is inside the speech and nothing judges it.
-# Pipecat's 0.2 s, tuned for Smart Turn, has Smart Turn judge every such pause, and a phrase said before one reads to it
-# as complete, so each phrase was a turn. 0.8 s is Pipecat's own stop for a voice activity detector alone.
+# The silence that ends speech: a pause between words is shorter, so it is inside the speech. At Pipecat's 0.2 s, tuned
+# for Smart Turn, Smart Turn judged every such pause, and a phrase said before one read to it as complete, so each
+# phrase was a turn (the real-model test in tests/test_engaged.py fails at 0.2). The price is that every turn ends this
+# long after the speech does, before Smart Turn is asked.
 STOP_SECS = 0.8
 
 

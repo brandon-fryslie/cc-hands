@@ -2,12 +2,12 @@
 another hold disengages."""
 
 import asyncio
-import wave
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from conftest import spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -238,35 +238,31 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     assert [(event.event, event.outcome, event.facts) for event in events] == [("trigger.loaded", "ok", {"stop_secs": STOP_SECS})]
 
 
-SPEECH = Path(__file__).parent / "fixtures" / "speech"
-
-
-def spoken(name: str) -> bytes:
-    """A phrase spoken by macOS `say`, as 16 kHz 16-bit mono, the way the desk's microphone is heard."""
-    with wave.open(str(SPEECH / name)) as said:
-        return said.readframes(said.getnframes())
-
-
 def quiet(seconds: float) -> bytes:
     return bytes(round(16_000 * seconds) * 2)
 
 
-async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models() -> None:
+async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models(tmp_path: Path) -> None:
     rig = Rig(verdicts=[])
+    # Two phrases with a breath between them, then silence past Smart Turn's own stop: one turn, whatever it judges.
+    audio = spoken("create a ticket", tmp_path / "asked.wav") + quiet(0.4) + spoken("to read session history", tmp_path / "more.wav") + quiet(4.0)
     async with loaded(16000, rig.events.append) as models:
         driving = asyncio.create_task(drive_engaged(rig.tapped, rig.overheard, models, rig.on_move, rig.events.append))
         await rig.press()
-        # Two phrases with a breath between them, then silence past Smart Turn's own stop: one turn, whatever it judges.
-        audio = spoken("create_a_ticket.wav") + quiet(0.4) + spoken("read_session_history.wav") + quiet(4.0)
         await rig.hear(*(audio[at : at + 640] for at in range(0, len(audio), 640)))
         async with asyncio.timeout(10.0):
+            # The hold that disengages is heard after every buffer, so the engagement ends once all of it is heard.
             while rig.audio.qsize():
                 await asyncio.sleep(0.01)
-        # Heard after every buffer, the hold that disengages ends the engagement once all of it is heard.
-        await rig.press()
-        await rig.settle(5)
+            await rig.press()
+            while "deafen" not in rig.made:
+                await asyncio.sleep(0.01)
         await stopped(driving)
     assert rig.made == ["listen", "arm", "start", "stop", "deafen"]
+    # The turn ended on its own, by a verdict or by the silence after it, not by the hold that disengaged.
+    engagement = next(event for event in rig.events if event.event == "trigger.engaged")
+    verdicts = [event.facts["complete"] for event in rig.events if event.event == "trigger.judged"]
+    assert verdicts.count(True) + engagement.counts["ended_on_silence"] == 1
 
 
 async def test_a_switch_away_mid_step_hands_the_gate_what_that_step_still_owed_it() -> None:
