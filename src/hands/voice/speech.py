@@ -6,20 +6,19 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePath
 
-from pipecat.frames.frames import DataFrame, Frame, LLMMessagesAppendFrame, TTSSpeakFrame, UninterruptibleFrame
+from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, ModeChanged, Narrate, Note, Progress, SessionGone, Speak, Tell
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
-from hands.core.pending import Briefing, Finished, Mentioned, News, Pending, Unread, Working, went_on
+from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
 from hands.core.sentences import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
-from hands.voice.readback import spoken_mode
-from hands.voice.utterance import Utterance, Utterances, uttering
+from hands.voice.utterance import Utterance, Utterances
 
 # How much of what a session replied is handed to the model in one telling, however many turns it folds. Every telling
 # grows the model's history toward compaction, so what is handed is bounded; a session asked to end on a concise
@@ -47,19 +46,6 @@ _AFTER_PLAN: Mapping[ModeAfterPlan, str] = {
 }
 
 
-@dataclass(frozen=True)
-class Pushed:
-    """The model is told how the sessions stand by notes in its context: one when hands starts, and one at each change."""
-
-
-@dataclass(frozen=True)
-class Tailed:
-    """The model reads how the sessions stand at the tail of each request its turn makes, so no note goes into its context."""
-
-
-Telling = Pushed | Tailed
-
-
 @dataclass
 class Narrated(DataFrame, UninterruptibleFrame):
     """A message from hands the brain takes as a turn of its own, once no turn of the user's is waiting.
@@ -75,17 +61,6 @@ class Narrated(DataFrame, UninterruptibleFrame):
     unsaid: str
     session: SessionId
     utterances: tuple[Utterance, ...]
-
-
-@dataclass
-class Told(DataFrame):
-    """An API model has said hands' telling of a session's turn or its question: what the user says next is taken first
-    as said to that session. Passed on in order behind the telling, so words the user spoke before it reach the session
-    they were meant for, and dropped with it by a barge-in that comes before the model has said it, so a telling the
-    model never said moves nothing. Like the brain's stage, it moves the focus as the model says the telling, not as it
-    is played: a barge-in on the playing stops what is heard, not the move."""
-
-    session: SessionId
 
 
 @dataclass
@@ -126,37 +101,28 @@ class InOwnWords:
 
 @dataclass(frozen=True)
 class Known:
-    """What the model is to know and never say: notes for its context, none where the tail of its requests tells it."""
-
-    notes: tuple[LLMMessagesAppendFrame, ...]
+    """What the model knows without being told: the tail of its next request says it, so nothing is said or sent."""
 
 
-# How something hands tells is said. [LAW:one-type-per-behavior] the frames each makes depend on the model's telling
-# alone, and `sent` is the one place that decides them.
+# How something hands tells is said. [LAW:one-type-per-behavior] `sent` is the one place that decides the frames each makes.
 Saying = AsWritten | InOwnWords | Known
 
 
-def sent(saying: Saying, telling: Telling, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
-    """The frames that say `saying` under the model's telling, sent with what tells which of `utterances` was heard;
-    what is never said settles them `silent` here."""
-    match saying, telling:
-        case AsWritten(spoken=spoken), Pushed():
-            return uttering(utterances, (spoken,))
-        case AsWritten(spoken=spoken), Tailed():
+def sent(saying: Saying, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
+    """The frames that say `saying`, sent with what tells which of `utterances` was heard; what is never said settles
+    them `silent` here."""
+    match saying:
+        case AsWritten(spoken=spoken):
             # In hands' lane, in order with what it hands the brain: the brain's stage sends it with what tells it was heard.
             return (Aloud(spoken, utterances),)
-        case InOwnWords(text=text, session=session), Pushed():
-            # An API model's stage answers the context it is handed before it takes the next frame, so Told follows the
-            # telling as said, and words the user speaks while it is said wait behind it.
-            return uttering(utterances, (LLMMessagesAppendFrame([{"role": "user", "content": text}], run_llm=True), Told(session)))
-        case InOwnWords(text=text, unsaid=unsaid, session=session), Tailed():
+        case InOwnWords(text=text, unsaid=unsaid, session=session):
             # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
             return (Narrated(text, unsaid, session, utterances),)
-        case Known(notes=notes), _:
+        case Known():
             # Never said, so never read off the speaker: a brain turn speaking beside it would lend it its audio.
             for utterance in utterances:
                 utterance.settle("silent")
-            return notes
+            return ()
 
 
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
@@ -221,36 +187,30 @@ def _routed(route: Route, progress: Progress, utterance: Utterance, play: Callab
             utterance.settle("noted")
 
 
-def frames(pending: Pending, telling: Telling, names: Names) -> Saying:
+def frames(pending: Pending, names: Names) -> Saying:
     # [LAW:one-type-per-behavior] the route is the pending thing's own variant: Speak needs no model, Narrate needs one to explain.
-    match pending, telling:
-        case Speak(announcement=announcement), _:
-            # Kept in the context, so the intermediary knows what the user has already been told. In hands' lane under the
-            # brain, so a deadline is heard after the question it counts down, never ahead of it.
+    match pending:
+        case Speak(announcement=announcement):
+            # In hands' lane, so a deadline is heard after the question it counts down, never ahead of it.
             return AsWritten(TTSSpeakFrame(announcement_text(announcement, names)))
-        case Narrate(moment=moment), _:
+        case Narrate(moment=moment):
             return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session)
-        case Note(fact=fact), Pushed():
-            return Known((LLMMessagesAppendFrame([{"role": "user", "content": noted(fact, names)}], run_llm=False),))
-        case Note(), Tailed():
+        case Note():
             # [LAW:one-source-of-truth] the tail of the brain's next request says how the session stands now.
-            return Known(())
-        case Finished(session=session, news=news, amount=amount), _:
+            return Known()
+        case Finished(session=session, news=news, amount=amount):
             name = names(session)
             return InOwnWords(told(session, name, news, amount), f"{name} finished {_turns(news)}, and I could not tell it.", session)
-        case Unread(session=session), _:
+        case Unread(session=session):
             return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False))
-        case SessionGone(session=session), _:
+        case SessionGone(session=session):
             return AsWritten(TTSSpeakFrame(f"The session {names(session)} is gone."))
-        case Briefing(note=note), _:
-            return Known((LLMMessagesAppendFrame([{"role": "user", "content": note}], run_llm=False),))
-        case Mentioned(session=session, occurrence=occurrence, amount=amount), _:
+        case Mentioned(session=session, occurrence=occurrence, amount=amount):
             # Said as written: what the hook said, worded here, with nothing for a model to add.
             return AsWritten(TTSSpeakFrame(occurrence_said(occurrence, names(session), amount)))
-        case Working(session=session, of=of, doings=doings), _:
-            # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add. Kept out of
-            # a pushed context, which keeps every message it is given and would take one every few seconds a session
-            # works: the session listing says what it last set out to do [LAW:one-source-of-truth].
+        case Working(session=session, of=of, doings=doings):
+            # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add; the session
+            # listing says what it last set out to do [LAW:one-source-of-truth].
             return AsWritten(TTSSpeakFrame(f"{_doer(names(session), of)}: {said(doings)}.", append_to_context=False))
 
 
@@ -299,10 +259,6 @@ def _turns(news: Sequence[News]) -> str:
     # A telling that tells more of the turn before it is not another turn.
     count = len(news) - sum(went_on(before, after) for before, after in pairwise(news))
     return "a turn" if count == 1 else f"{count} turns"
-
-
-def noted(fact: ModeChanged, names: Names) -> str:
-    return f"[hands] The Claude Code session {names(fact.session)} is now in {spoken_mode(fact.mode)}. Say nothing about it unless the user asks."
 
 
 def narration(moment: Asking, names: Names) -> str:

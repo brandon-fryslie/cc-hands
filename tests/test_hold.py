@@ -312,7 +312,7 @@ def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -
     shown: list[str] = []
     sink = logger.add(lambda message: shown.append(message.record["message"]), filter=on_terminal)
     try:
-        for module in ("hands.sessions.tail", "pipecat.services.anthropic.llm"):
+        for module in ("hands.sessions.tail", "pipecat.pipeline.worker"):
             patched = logger.patch(lambda record, module=module: record.update(name=module))
             for level in ("DEBUG", "INFO", "WARNING"):
                 patched.log(level, f"{module} {level}")
@@ -321,5 +321,5 @@ def test_the_terminal_shows_hands_from_info_and_everything_else_from_warning() -
     assert shown == [
         "hands.sessions.tail INFO",
         "hands.sessions.tail WARNING",
-        "pipecat.services.anthropic.llm WARNING",
+        "pipecat.pipeline.worker WARNING",
     ]

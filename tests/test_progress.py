@@ -22,7 +22,7 @@ from hands.core.turn import AgentId, AgentTask
 from hands.sessions.audit import Entry, jsonable
 from hands.sessions.wide import WideEvent, unit
 from hands.sessions.tail import Tails
-from hands.voice.speech import Aloud, Pushed, Tailed, Unprompted, relay
+from hands.voice.speech import Aloud, Unprompted, frames, relay, sent
 from hands.voice.utterance import Fate, Utterance, Utterances
 from hands.voice.summary import SummaryFailed
 from hands.voice.working import Playing, keep_playing
@@ -165,12 +165,9 @@ def test_progress_folds_and_gives_way_to_the_result(pending: tuple[Pending, ...]
     assert tuple(each.pending for each in coalesce(pending, LIVE)) == told
 
 
-def test_progress_heard_is_said_as_written_in_the_lane_its_telling_keeps() -> None:
-    [pushed] = rendered(Working(SID, IN_TURN, (TESTS,)), Pushed(), names=lambda _: "cc-hands")
-    # Never in a pushed context, which keeps every message: the listing says what a session last set out to do.
-    assert isinstance(pushed, TTSSpeakFrame) and pushed.text == "cc-hands: run the test suite." and not pushed.append_to_context
-    [tailed] = rendered(Working(SID, IN_TURN, (TESTS,)), Tailed(), names=lambda _: "cc-hands")
-    assert isinstance(tailed, Aloud) and tailed.spoken.text == "cc-hands: run the test suite."
+def test_progress_heard_is_said_as_written_in_hands_lane() -> None:
+    [said] = sent(frames(Working(SID, IN_TURN, (TESTS,)), lambda _: "cc-hands"), ())
+    assert isinstance(said, Aloud) and said.spoken.text == "cc-hands: run the test suite."
 
 
 def running(turn: Turn) -> Registry:
@@ -466,7 +463,7 @@ async def test_the_focus_is_heard_explaining_by_a_summary_of_what_it_wrote() -> 
     assert asked == [WRITTEN.strip()]
     assert queued == [Working(SID, IN_TURN, (explained("explain how DNS resolution works"), TESTS))]
     assert handed_on(told, "explain how DNS resolution works")
-    [spoken] = rendered(queued[0], Pushed(), names=lambda _: "cc-hands")
+    [spoken] = rendered(queued[0], names=lambda _: "cc-hands")
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands: explain how DNS resolution works, then run the test suite."
 
 
@@ -754,7 +751,7 @@ def test_progress_of_a_turn_that_ended_while_it_was_held_is_dropped_as_it_is_let
 
 
 def test_a_subagent_s_work_is_said_as_the_job_its_call_gave_it() -> None:
-    [spoken] = rendered(Working(SID, REVIEW, (READ_TAIL, TESTS)), Pushed(), names=lambda _: "cc-hands")
+    [spoken] = rendered(Working(SID, REVIEW, (READ_TAIL, TESTS)), names=lambda _: "cc-hands")
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands, its subagent to review the parser change: read tail.py, then run the test suite."
 
 

@@ -18,7 +18,7 @@ from hands.sessions.backlog import Unread, Untracked, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, annotate, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
-from hands.voice.summary import SUMMARY_FAILURES, Summariser
+from hands.voice.summary import Summariser, SummaryFailed
 
 # How many things one summariser call is asked for: a few calls for a whole backlog, each reply short enough to finish.
 BATCH = 20
@@ -27,8 +27,7 @@ BATCH = 20
 # whose first pages say what the ticket is.
 TEXT_LIMIT = 4000
 
-# Room for BATCH lines of about thirty words each, and the time a slim Claude Code takes to write them.
-SENTENCES_MAX_TOKENS = 2000
+# The time a slim Claude Code takes to write BATCH lines of about thirty words each.
 SENTENCES_TIMEOUT_SECONDS = 180.0
 
 async def keep_summarising(store: SummaryStore, summarise: Summariser, record: Record) -> None:
@@ -73,7 +72,7 @@ async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, m
         count(calls=1)
         try:
             reply = await summarise(page(asked, TEXT_LIMIT))
-        except SUMMARY_FAILURES as error:
+        except SummaryFailed as error:
             count(failed_calls=1)
             missed.errors.append(f"{type(error).__name__}: {error}")
             # [LAW:no-silent-failure] a call that failed fails its pass, so the pass is read as an error; the pass goes on

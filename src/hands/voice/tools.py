@@ -1,8 +1,8 @@
-"""The tools the intermediary can call, and the adapter that hands them to Pipecat.
+"""The tools the brain can call.
 
 Each is a `hands.voice.tool.Tool`: a plain async body, called with the model's arguments and returning what the model
-is handed back. [LAW:decomposition] what each tool does knows nothing of who calls it: Pipecat's LLM stage is one
-adapter over the bodies, hands' MCP server another.
+is handed back. [LAW:decomposition] what each tool does knows nothing of who calls it: hands' MCP server is the adapter
+over the bodies.
 """
 
 import asyncio
@@ -10,21 +10,15 @@ import functools
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypedDict, cast
+from typing import Literal, Protocol, TypedDict
 
 import aiohttp
 from loguru import logger
-from pipecat.adapters.schemas import direct_function
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.frames.frames import FunctionCallFromLLM, FunctionCallResultProperties, TTSSpeakFrame
-from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.services.llm_service import FunctionCallParams, FunctionCallRunnerItem, LLMService
 
-from hands.voice.tool import Result, Tool, silent, tool, whole
+from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
@@ -65,96 +59,12 @@ from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 from hands.threads import off_loop
 from hands import spotify
 
-Handler = Callable[[FunctionCallParams], Awaitable[None]]
-
-
 @dataclass(frozen=True)
 class Called:
     """What the model gave a tool, and the result it was handed back: None while the body runs, and for a body that raised."""
 
     arguments: Mapping[str, object]
     result: Result | None
-
-
-def context_tools(tools: Sequence[Tool], lines: FrameProcessor, llm: FrameProcessor) -> ToolsSchema:
-    """The tools as the model's stage calls them. Only an API service runs them through Pipecat; the brain's calls are
-    answered by its MCP server, and its stage decides for each reply itself, so its context carries none.
-
-    `lines` stands ahead of the TTS service: what a call hands hands to say is said through it, as written.
-    """
-    match llm:
-        case RunsReplies():
-            return ToolsSchema(standard_tools=[pipecat_function(tool, lines, llm.replies) for tool in tools])
-        case _:
-            return ToolsSchema(standard_tools=[])
-
-
-class RunsReplies(LLMService[Any]):
-    """An API service that tells hands' tools of each reply's calls before Pipecat runs any of them."""
-
-    @functools.cached_property
-    def replies(self) -> "Replies":
-        return Replies()
-
-    async def _call_event_handler(self, event_name: str, *args: Any, **kwargs: Any) -> None:
-        if event_name == "on_function_calls_cancelled":
-            [items] = args
-            self.replies.cancelled([item.tool_call_id for item in cast(Sequence[FunctionCallRunnerItem], items)])
-        await super()._call_event_handler(event_name, *args, **kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-
-    async def run_function_calls(self, function_calls: Sequence[FunctionCallFromLLM]) -> None:
-        # [LAW:no-ambient-temporal-coupling] told here, before any call runs: Pipecat's own started event runs as a task
-        # of its own, which a call's handler can outrun. A call to no function of hands' is Pipecat's to answer.
-        self.replies.started([call.tool_call_id for call in function_calls if self.has_function(call.function_name)])
-        await super().run_function_calls(function_calls)
-
-
-def pipecat_function(tool: Tool, lines: FrameProcessor, replies: "Replies") -> FunctionSchema:
-    """The tool as Pipecat's LLM stage calls it: the schema it advertises, and a handler that hands back the body's reply."""
-    # [LAW:single-enforcer] the one place a tool meets Pipecat, so what "silence" and "completes" mean there is said once.
-    async def handler(params: FunctionCallParams) -> None:
-        result = await tool.body(**params.arguments)
-        match result:
-            case {"says": str() as says}:
-                # Kept out of the context: the result the model is handed holds it once.
-                await lines.push_frame(TTSSpeakFrame(says, append_to_context=False))
-            case _:
-                pass
-        await params.result_callback(result, properties=replies.answered(params.tool_call_id, silent(tool, result)))
-
-    # Pipecat's decorator is untyped; it only marks the handler with its call options.
-    options = cast(Callable[[Handler], Handler], direct_function.tool_options(cancel_on_interruption=not tool.completes))  # pyright: ignore[reportUnknownMemberType]
-
-    return FunctionSchema(tool.name, tool.description, {name: dict(schema) for name, schema in tool.properties.items()}, list(tool.required), handler=options(handler))
-
-
-class Replies:
-    """The calls of each reply Pipecat runs, so that whether the model goes on is decided once for the reply, not per call.
-
-    Pipecat takes each result's own word on whether to run the model, and the last of a reply's calls to finish has the
-    final one: a silent call finishing after a refused one would leave its error unanswered. So every call but the last
-    holds the model, and the last says what `whole` says of them all.
-    """
-
-    def __init__(self) -> None:
-        # [LAW:no-shared-mutable-globals] owned here, written only through `started`, `cancelled`, and `answered`.
-        self._open: dict[str, dict[str, bool | None]] = {}
-
-    def started(self, calls: Sequence[str]) -> None:
-        reply: dict[str, bool | None] = dict.fromkeys(calls)
-        self._open.update(dict.fromkeys(calls, reply))
-
-    def cancelled(self, calls: Sequence[str]) -> None:
-        # A call a barge-in stopped never answers; the model is not run after a barge-in, so its reply is done with.
-        for call in calls:
-            self._open.pop(call, None)
-
-    def answered(self, call: str, silent: bool) -> FunctionCallResultProperties:
-        reply = self._open.pop(call)
-        reply[call] = silent
-        verdicts = [verdict for verdict in reply.values() if verdict is not None]
-        last = len(verdicts) == len(reply)
-        return FunctionCallResultProperties(run_llm=last and not whole(verdicts))
 
 
 # How much of a session one reading hands over. A session that has run for an hour has hundreds of steps, and

@@ -1,7 +1,6 @@
-"""The intermediary's system prompt: the conversational model between the user's voice and their Claude Code sessions.
+"""The brain's system prompt: the conversational model between the user's voice and their Claude Code sessions.
 
-Its own deliverable, judged by `evals/intermediary.py` against the model
-the daemon runs. Two rules keep it and the tools from giving the model two orders for one thing:
+Two rules keep it and the tools from giving the model two orders for one thing:
 
 - It says WHEN to reach for a tool. HOW to use what a tool returns lives in that tool's docstring, which is what the
   model reads at the moment of calling [LAW:one-source-of-truth]. A line here that repeats a docstring's rule is
@@ -9,9 +8,6 @@ the daemon runs. Two rules keep it and the tools from giving the model two order
 - It names only tools the model is given. A tool that is planned gets its line from the ticket that builds it: a
   prompt that asks for `resume` before there is one gets a model that paraphrases a resume from memory, which is
   exactly the failure the tool exists to end.
-
-The brain is given more sections, on reading hands' log, on starting and closing sessions, on typing into a session's terminal, on working a backlog, on
-where its own setup is, and on the skill it talks with, because it alone is given Bash and a setup of its own to use them with.
 """
 
 import shlex
@@ -158,11 +154,6 @@ sessions actually did rather than what you remember. Nothing reaches a session u
 should, and what the user tells you to do yourself, you do."""
 
 
-def intermediary_instruction(personality: str | None) -> str:
-    """The intermediary's system prompt, coming across as `personality`, the user's words for it; None is hands' own."""
-    return "\n\n".join((_BODY, *_manner(personality), _ABOVE_ALL))
-
-
 def _manner(personality: str | None) -> tuple[str, ...]:
     """The section a personality the user chose adds, last before the closing words, so those still hold over it."""
     if personality is None:
@@ -176,10 +167,6 @@ The user chose how you come across, and said it in their own words:
 
 Speak that way in every reply. It sets your tone and the words you choose, and where it and anything else you are told \
 about tone differ, it wins. It never changes what you do, how short a reply is, or whether what you say is true.""",)
-
-
-# What `evals/intermediary.py` judges: the prompt in hands' own personality.
-INTERMEDIARY_INSTRUCTION = intermediary_instruction(None)
 
 
 _KEYS = """\
@@ -229,7 +216,7 @@ RIGHT: you load hands:chat, then search for the repository."""
 
 
 def brain_instruction(log: Path, setup: Path, recall: str, personality: str | None) -> str:
-    """The brain's system prompt: the intermediary's, with how to read hands' log at `log`, how to recall from it with the
+    """The brain's system prompt: what it is and how it speaks, with how to read hands' log at `log`, how to recall from it with the
     shell command `recall`, how to start and close sessions, how to type into a session's terminal, how to work a backlog, where its own setup is, and the
     skill it talks with, before the personality's section and its closing words."""
     return "\n\n".join((_BODY, _reading(log), _recalling(recall), _STARTING, _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))

@@ -11,14 +11,13 @@ import struct
 import threading
 import wave
 from pathlib import Path
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from io import BytesIO
 from dataclasses import dataclass, field, replace
-from typing import Literal, cast
+from typing import Literal
 
 import pytest
-from aiohttp import web
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
@@ -37,21 +36,16 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import Endpoint, ServeApi, events, running, unprimed
-from hands.core.front import FrontUnread, InFront, SessionInFront
-from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
-from hands.voice.beside import Noting
+from conftest import running, unprimed
+from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
-from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
-from hands.voice.refocus import Refocus
 from hands.voice import player as played
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
@@ -60,11 +54,10 @@ from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
-from hands.voice.speech import Pushed, Unprompted
+from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.turnstop import Hold, TurnOpened, TurnResolved, Typed
 from hands.voice import whisper
 from hands.voice.whisper import Whisper
-from test_llm import Shape, anthropic_stream, openai_stream
 from test_narrator import heard
 from test_playback import ended, spoken
 from hands.voice import voices
@@ -96,6 +89,8 @@ class Recorded(FrameProcessor):
         self.order: list[str] = []
         # Every message in the model's context as the last frame of it passed: appends that land together share one.
         self.context: list[str] = []
+        # What hands handed the brain to say in its own words, in order.
+        self.told: list[str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -113,8 +108,11 @@ class Recorded(FrameProcessor):
             case UserStoppedSpeakingFrame():
                 self.stopped += 1
                 self.order.append("stopped")
-            case TTSSpeakFrame(text=text):
+            case TTSSpeakFrame(text=text) | Aloud(spoken=TTSSpeakFrame(text=text)):
                 self.order.append(f"said: {text}")
+            case Narrated(text=text):
+                self.told.append(text)
+                self.order.append(f"told: {text}")
             case TextFrame(text=text):
                 self.order.append(text)
             case TurnResolved(hold=hold):
@@ -223,27 +221,23 @@ class Rig:
 
 @pytest.fixture
 async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[Rig, None]:
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [], []) as made:
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as made:
         yield made
 
 
 @asynccontextmanager
 async def rigged(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, noting: list[FrameProcessor], behind: list[FrameProcessor], watching: Sequence[BaseObserver] = ()
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, behind: list[FrameProcessor], watching: Sequence[BaseObserver] = ()
 ) -> AsyncGenerator[Rig]:
-    """The rig, what Whisper heard passed through `noting` on its way to the user's turns, with `behind` run behind what
-    records them, and `watching` beside the latency observer."""
+    """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     voice = built.build_voice(
-        built.VoiceConfig(llm=built.AnthropicBackend(base_url="unused", api_key="unused", model="unused"), voice=voices.DEFAULT),
-        tools=[],
+        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
         llm=llm,
-        noting=noting,
         key=PushToTalk(recorded.append),
         player=Player(recorded.append),
-        floor=Floor(Pushed(), lambda id: id, dict),
-        refocus=Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append),
+        floor=Floor(lambda id: id, dict),
         prompt=unprimed,
         record=recorded.append,
     )
@@ -263,7 +257,7 @@ async def rigged(
     cue_receipt(voice.user_turns, lambda: received.append(None))
     told: list[Mark] = []
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
-    stages = [voice.stt, Floor(Pushed(), lambda id: id, lambda: live, clock), *noting, voice.user_turns, out, *behind, voice.assistant_turns]
+    stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context)
 
@@ -426,7 +420,7 @@ async def reading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGener
     and a line said through `heard` waiting on the speaker: what the player records, and that line's waiter."""
     cut: list[Entry] = []
     player, speaker, output = Player(cut.append), IdentityFilter(), Speaker()
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [], [player.lines, speaker, output], [player.watching(speaker, output)]) as rig:
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [player.lines, speaker, output], [player.watching(speaker, output)]) as rig:
         await rig.worker.queue_frames([spoken("The parser is fixed."), spoken("Its tests pass.")])
         line = asyncio.create_task(player.heard("Shall I push it?"))
         try:
@@ -500,7 +494,7 @@ async def test_the_reply_a_turn_cut_off_is_in_the_context_ahead_of_the_words_tha
 ) -> None:
     # The pipeline's stages between the user's turn and the assistant aggregator, which writes the reply as cut off.
     stages: list[FrameProcessor] = [IdentityFilter() for _ in range(8)]
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [], stages) as rig:
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), stages) as rig:
         await rig.worker.queue_frames([LLMFullResponseStartFrame(), ended("The parser is fixed.")])
         await rig.until(lambda: "The parser is fixed." in rig.out.order)
         await rig.hold(held, by=by)
@@ -749,7 +743,7 @@ async def test_a_press_that_passes_the_floor_ahead_of_the_last_turns_stop_keeps_
     first: the floor stays the user's through the turn that press opened."""
     out = Recorded()
     one, two = Hold(1, "held key"), Hold(2, "engaged conversation")
-    async with running([Floor(Pushed(), lambda id: id, dict), out], []) as run:
+    async with running([Floor(lambda id: id, dict), out], []) as run:
 
         async def until(what: Callable[[], bool]) -> None:
             async with asyncio.timeout(PATIENCE_SECS):
@@ -776,7 +770,7 @@ def waiting_on(session: SessionId, request: str) -> Session:
     return Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=dialog)
 
 
-async def test_a_request_for_an_api_model_while_the_key_is_held_joins_the_context_after_the_users_turn(rig: Rig) -> None:
+async def test_a_request_heard_while_the_key_is_held_is_handed_the_brain_after_the_users_turn(rig: Rig) -> None:
     rig.live[API] = waiting_on(API, "r1")
     await rig.hold(["down", "down"])
     await rig.until(lambda: rig.out.started == 1)
@@ -786,153 +780,7 @@ async def test_a_request_for_an_api_model_while_the_key_is_held_joins_the_contex
     await rig.texts.put("what time is it")
     await rig.until(lambda: len(rig.out.order) == 5)
     assert rig.out.order[:4] == ["started", "marker", "stopped", "sent: what time is it"]
-    assert rig.out.order[4].startswith("sent: [hands] The Claude Code session api is waiting for permission to use Bash")
-
-
-def user_texts(request: dict[str, object]) -> list[str]:
-    """Each text a request's user messages hold, in order, in either API's shape: a string, or blocks of text."""
-    texts: list[str] = []
-    for message in cast(list[dict[str, str | list[dict[str, str]]]], request["messages"]):
-        match message:
-            case {"role": "user", "content": str() as text}:
-                texts.append(text)
-            case {"role": "user", "content": list() as blocks}:
-                texts.extend(block["text"] for block in blocks)
-            case _:
-                pass
-    return texts
-
-
-AUDIO_ONLY = "[hands] The user is audio-only: they cannot see a screen."
-IN_FRONT = '[hands] As the user said this, iTerm2 was in front on the Mac\'s screen, showing the session "api" (id api). Say nothing about this unless it bears on what they said.'
-
-
-async def api_in_front() -> InFront:
-    return SessionInFront("iTerm2", API, "api")
-
-
-@dataclass
-class Served:
-    """The rig asking a served model, the user's words noted on their way: every request the model was made, and each
-    read of the screen's event."""
-
-    rig: Rig
-    requests: list[dict[str, object]]
-    noted: list[Entry]
-
-
-@asynccontextmanager
-async def served(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, shape: Shape, front: Callable[[], Awaitable[InFront]]) -> AsyncGenerator[Served]:
-    requests: list[dict[str, object]] = []
-
-    def answering(stream: list[str]) -> Endpoint:
-        async def answer(request: web.Request) -> web.StreamResponse:
-            requests.append(await request.json())
-            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
-            await response.prepare(request)
-            for event in stream:
-                await response.write(event.encode())
-            return response
-
-        return answer
-
-    api = await api_server(answering(openai_stream("words")), answering(anthropic_stream("words")))
-    backend = OpenAICompatibleBackend(base_url=api.url, api_key="k", model="m") if shape == "openai" else AnthropicBackend(base_url=api.anthropic_url, api_key="k", model="m")
-    llm = built.build_llm(backend, instruction="Speak.", max_tokens=50, record=lambda _entry: None)
-    noted: list[Entry] = []
-    async with rigged(monkeypatch, tmp_path, llm, [Noting(front, lambda: "audio-only", noted.append)], [llm]) as rig:
-        yield Served(rig, requests, noted)
-
-
-@pytest.mark.parametrize("shape", ["openai", "anthropic"])
-async def test_an_api_models_request_carries_hands_notes_beside_the_users_words_and_beside_nothing_hands_tells(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, shape: Shape
-) -> None:
-    async with served(monkeypatch, tmp_path, api_server, shape, api_in_front) as asked:
-        rig, requests = asked.rig, asked.requests
-        await rig.hold(["down", "up"])
-        await rig.texts.put("what time is it")
-        await rig.until(lambda: len(requests) == 1)
-        # The reply is written before what hands tells next is asked, so that request ends on what hands tells.
-        await rig.until(lambda: any(not isinstance(each, LLMSpecificMessage) and each.get("role") == "assistant" for each in rig.context.get_messages()))
-        # What hands tells of a session is no turn of the user's: it is asked with no note of its own.
-        rig.live[API] = waiting_on(API, "r1")
-        await rig.worker.queue_frame(asking(API, "r1"))
-        await rig.until(lambda: len(requests) == 2)
-    note = f"{IN_FRONT}\n\n{AUDIO_ONLY}"
-    assert user_texts(requests[0]) == [note, "what time is it"]
-    noted_once, words, told = user_texts(requests[1])
-    assert (noted_once, words) == (note, "what time is it") and told.startswith("[hands] The Claude Code session api is waiting for permission")
-    # [LAW:nothing-unseen] the one hold let go is one event: what was read, and where the user was.
-    [noted] = events(asked.noted, "front.read")
-    assert noted.outcome == "ok" and noted.facts == {"front": SessionInFront("iTerm2", API, "api"), "modality": "audio-only"}
-
-
-@pytest.mark.parametrize(("by", "held", "let_go_of"), HOLDS)
-async def test_a_turns_note_reaches_the_model_beside_its_words_whenever_the_turn_cuts(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi, by: Edge, held: list[Captured], let_go_of: list[Captured]
-) -> None:
-    async with served(monkeypatch, tmp_path, api_server, "anthropic", api_in_front) as asked:
-        # A turn the voice opened cuts as its words arrive, with the note pushed right behind them.
-        await asked.rig.hold([*held, *let_go_of], by=by)
-        await asked.rig.texts.put("what time is it")
-        await asked.rig.until(lambda: len(asked.requests) == 1)
-    assert user_texts(asked.requests[0]) == [f"{IN_FRONT}\n\n{AUDIO_ONLY}", "what time is it"]
-
-
-async def test_a_turn_whose_screen_could_not_be_read_is_asked_with_where_the_user_is_alone_and_its_event_says_why(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
-) -> None:
-    unread = FrontUnread("the screen was not read in this test")
-
-    async def front() -> InFront:
-        return unread
-
-    async with served(monkeypatch, tmp_path, api_server, "anthropic", front) as asked:
-        await asked.rig.hold(["down", "up"])
-        await asked.rig.texts.put("what time is it")
-        await asked.rig.until(lambda: len(asked.requests) == 1)
-    assert user_texts(asked.requests[0]) == [AUDIO_ONLY, "what time is it"]
-    [noted] = events(asked.noted, "front.read")
-    assert noted.outcome == "ok" and noted.facts == {"front": unread, "modality": "audio-only"}
-
-
-async def never_read() -> InFront:
-    await asyncio.Event().wait()
-    raise AssertionError("a read that never ends ended")
-
-
-async def test_words_that_arrive_before_the_screen_is_read_are_asked_at_once_with_where_the_user_is_alone(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
-) -> None:
-    async with served(monkeypatch, tmp_path, api_server, "anthropic", never_read) as asked:
-        await asked.rig.hold(["down", "up"])
-        await asked.rig.texts.put("what time is it")
-        await asked.rig.until(lambda: len(asked.requests) == 1)
-        await asked.rig.until(lambda: len(events(asked.noted, "front.read")) == 1)
-    assert user_texts(asked.requests[0]) == [AUDIO_ONLY, "what time is it"]
-    # The read the words did not wait for is seen as ended by them, with where the user was.
-    [read] = events(asked.noted, "front.read")
-    assert read.outcome == "cancelled" and read.facts == {"modality": "audio-only"}
-
-
-async def test_what_hands_held_through_a_noted_turn_follows_the_users_words_and_their_note(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_server: ServeApi
-) -> None:
-    async with served(monkeypatch, tmp_path, api_server, "anthropic", api_in_front) as asked:
-        rig, requests = asked.rig, asked.requests
-        rig.live[API] = waiting_on(API, "r1")
-        await rig.hold(["down", "down"])
-        await rig.until(lambda: rig.out.started == 1)
-        await rig.worker.queue_frames([asking(API, "r1"), TextFrame("marker")])
-        await rig.until(lambda: "marker" in rig.out.order)
-        await rig.hold(["up"])
-        await rig.texts.put("what time is it")
-        await rig.until(lambda: len(requests) == 2)
-    note = f"{IN_FRONT}\n\n{AUDIO_ONLY}"
-    assert user_texts(requests[0]) == [note, "what time is it"]
-    noted_once, words, told = user_texts(requests[1])
-    assert (noted_once, words) == (note, "what time is it") and told.startswith("[hands] The Claude Code session api is waiting for permission")
+    assert rig.out.order[4].startswith("told: [hands] The Claude Code session api is waiting for permission to use Bash")
 
 
 async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_and_one_telling_a_session(rig: Rig) -> None:
@@ -950,9 +798,9 @@ async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_an
     rig.clock.now = 5.0
     await rig.hold(["up"])
     await rig.texts.put("what time is it")
-    await rig.until(lambda: len(rig.out.context) == 3)
-    said, asked, told = rig.out.context
-    assert said == "what time is it"
+    await rig.until(lambda: len(rig.out.told) == 2)
+    asked, told = rig.out.told
+    assert rig.out.sent == ["what time is it"]
     assert asked.startswith("[hands] The Claude Code session web is waiting for permission") and "Request id: w2." in asked
     assert told.startswith("[hands] The Claude Code session api (id api) finished 2 turns. The last thing it said was:\n\nFixed the parser.\n\nThen, in the turn after that: The last thing it said was:\n\nPushed it.")
     # Each thing heard is followed to its fate: both turns told in one telling, and the request answered meanwhile dropped.

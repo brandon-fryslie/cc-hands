@@ -111,7 +111,7 @@ def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_session
     daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
     try:
         before = running(home)
-        home.config.write_text('[llm]\nbackend = "claude"\n')
+        home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
         after = running(home)
         until = time.monotonic() + 10
         while after.started_at == before.started_at and time.monotonic() < until:

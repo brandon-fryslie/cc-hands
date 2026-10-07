@@ -10,7 +10,7 @@ Whether it was heard is read off the output transport, by two frames sent with w
 `Uttered` behind. `Uttering` is dropped by a barge-in like the words it leads, and `Uttered` is kept through one, so each
 utterance's `Uttered` reaches the output transport, in order with the audio ahead of it. A barge-in the brain's turn goes
 on through cuts off none of what that turn is still to say: the brain's stage leads the rest with `Resumed`. What is
-never said, a note to the model's context, is never sent between them: its fate is `silent` as it is sent. Pushed by the output transport,
+never said, what the model knows unsaid, is never sent between them: its fate is `silent` as it is sent. Pushed by the output transport,
 `Uttering` means what follows it is this utterance's, the first audio after it is its first audio, and a barge-in
 before its `Uttered` cut it off; an `Uttered` with no `Uttering` before it was cut off before any of it played.
 """

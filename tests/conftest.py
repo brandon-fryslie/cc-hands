@@ -7,14 +7,13 @@ import stat
 import subprocess
 import sys
 import wave
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import mlx_whisper
 import pytest
-from aiohttp import web
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.pipeline import Pipeline
@@ -91,89 +90,6 @@ def plugin(tmp_path: Path) -> Path:
 # Where the plugin's hooks and skills run: a PATH with no Python new enough for hands, since /usr/bin's python3 on macOS
 # is 3.9, so the launcher can only be running the interpreter it names.
 NO_PYTHON = "/usr/bin:/bin"
-
-
-@dataclass(frozen=True)
-class Api:
-    """A served model: a chat completions endpoint under `url` and an Anthropic messages one under `anthropic_url`."""
-
-    url: str
-    # The Anthropic SDK appends /v1/messages itself, so its base is the bare host.
-    anthropic_url: str
-
-
-Endpoint = Callable[[web.Request], Awaitable[web.StreamResponse]]
-ServeApi = Callable[[Endpoint, Endpoint], Awaitable[Api]]
-
-
-@pytest.fixture
-async def api_server() -> AsyncIterator[ServeApi]:
-    """Serves the chat completions endpoint and the Anthropic messages one, each by the handler given; stopped after the test."""
-    runners: list[web.AppRunner] = []
-
-    async def serve(complete: Endpoint, message: Endpoint) -> Api:
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", complete)
-        app.router.add_post("/v1/messages", message)
-        runner = web.AppRunner(app)
-        runners.append(runner)
-        await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", 0).start()
-        host = f"http://127.0.0.1:{runner.addresses[0][1]}"
-        return Api(url=f"{host}/v1", anthropic_url=host)
-
-    yield serve
-    for runner in runners:
-        await runner.cleanup()
-
-
-@dataclass
-class ChatServer:
-    """A served model answering every request whole, and what it has been asked: each request's body and key."""
-
-    url: str
-    anthropic_url: str
-    asked: list[dict[str, object]]
-    keys: list[str]
-
-
-ServeChat = Callable[[str | None], Awaitable[ChatServer]]
-
-
-@pytest.fixture
-async def chat_server(api_server: ServeApi) -> ServeChat:
-    """Starts a server whose two endpoints answer every request with the content given; stopped after the test."""
-
-    async def serve(content: str | None) -> ChatServer:
-        asked: list[dict[str, object]] = []
-        keys: list[str] = []
-
-        async def complete(request: web.Request) -> web.Response:
-            asked.append(await request.json())
-            keys.append(request.headers["Authorization"].removeprefix("Bearer "))
-            return web.json_response(
-                {
-                    "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
-                    "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
-                    "usage": {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11, "prompt_tokens_details": {"cached_tokens": 4}},
-                }
-            )
-
-        async def message(request: web.Request) -> web.Response:
-            asked.append(await request.json())
-            keys.append(request.headers["x-api-key"])
-            return web.json_response(
-                {
-                    "id": "m1", "type": "message", "role": "assistant", "model": "m", "stop_reason": "end_turn", "stop_sequence": None,
-                    "content": [] if content is None else [{"type": "text", "text": content}],
-                    "usage": {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4, "output_tokens": 2},
-                }
-            )
-
-        api = await api_server(complete, message)
-        return ChatServer(url=api.url, anthropic_url=api.anthropic_url, asked=asked, keys=keys)
-
-    return serve
 
 
 @dataclass

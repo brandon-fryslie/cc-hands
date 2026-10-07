@@ -62,16 +62,13 @@ is not, what does it; it exits 0 only when every step is done.
    claude plugin install hands@cc-hands
    ```
 
-6. A model to talk with. The default is Claude Sonnet 5 on Anthropic's API, keyed by
-   `ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`:
+6. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
+   plan or, with `--console`, an Anthropic Console key. It runs Claude Code's first screens in
+   the brain's own directory, `~/.hands/brain`: answer them, log in, and `/exit`.
 
    ```
-   security add-generic-password -s HANDS_LLM_ANT_KEY -a "$USER" -w     # asks for the key
+   hands login
    ```
-
-   Or the brain, on a Claude plan or an Anthropic Console key: `backend = "claude"` under
-   `[llm]` in `~/.hands/config.toml`, then `hands login`. The other backends are under
-   [Shape](#shape).
 
 7. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
    key from other apps: System Settings > Privacy & Security > Input Monitoring, then
@@ -171,7 +168,7 @@ mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts �
 
 hands' settings are `~/.hands/config.toml`; with no file, every setting is its default. Save an
 edit while hands runs and it restarts on it, keeping its sessions; an edit it cannot read, one
-naming a backend whose key or login it lacks, or one naming a Claude model hands does not offer, is
+made while the brain has no login, or one naming a Claude model hands does not offer, is
 said in `hands log`, and hands runs on as it was.
 You can also ask hands by voice to change its own model ("switch yourself to Opus"). It says it is
 switching, writes `model` into this file, and restarts on it. `hands run --model claude-opus-5-5`
@@ -180,9 +177,8 @@ chosen by voice, since the file's model would change nothing:
 
 ```toml
 [llm]
-backend = "claude"            # "anthropic" (the default), "openai", or "claude"
-model = "claude-opus-5-5"     # another model, for any backend
-url = "https://..."           # another server, for anthropic and openai
+backend = "claude"            # the brain: the default, and the one there is
+model = "claude-opus-5-5"     # one of the four below
 
 [telemetry]
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address
@@ -209,19 +205,10 @@ With a collector set, each wide event `hands run` writes to its audit log is als
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
 collector did not take them, why.
 
-The LLM is a backend variant: `anthropic`, the default, is Claude Sonnet 5.5, keyed by
-`ANTHROPIC_API_KEY` or, when that is not set, by the keychain's `HANDS_LLM_ANT_KEY`; `openai`
-is `gpt-4.1-mini` through OpenAI's API, keyed by `OPENAI_API_KEY`. `model` names another
-model for either. On Anthropic's own API and on `claude`, the model is one of four:
-`claude-haiku-4-5-20251001`, `claude-sonnet-5-5`, `claude-opus-5-5`, or `claude-fable-5-1`. `url` moves either to another server that speaks its API, keyed only by
-the environment's key (the keychain's key is Anthropic's own and goes nowhere else), and the two take
-it differently: the Anthropic client appends `/v1/messages`, so its URL has no `/v1`
-(`https://api-chicago.codexapi.pro`), while the OpenAI client appends `/chat/completions`, so its URL
-usually ends in `/v1` (`https://api-chicago.codexapi.pro/v1`: the bare host answers 404). The server
-must stream tool calls, because the pipeline's service always streams: api-chicago.codexapi.pro streams
-Anthropic `tool_use` but drops OpenAI-shape tool calls (2026-09-25), so it is reached as `anthropic`.
-`claude` is the brain: one long-lived Claude Code of hands' own, on any login Claude Code takes from Anthropic,
-whose requests go through hands' proxy and which reaches the sessions through hands' tools over MCP
+hands talks through a harness it drives, never a model API called with a key: `claude`, the brain, is one long-lived
+Claude Code of hands' own, on any login Claude Code takes from Anthropic, on Claude Sonnet 5.5 unless `model` names
+another of the four hands offers: `claude-haiku-4-5-20251001`, `claude-sonnet-5-5`, `claude-opus-5-5`, or
+`claude-fable-5-1`. Its requests go through hands' proxy, and it reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, and it does not start without one.
 A restart resumes the brain's conversation rather than starting it over; to start it over, remove `~/.hands/brain/conversation`
 before starting hands.
@@ -257,18 +244,15 @@ Beside them, hands gives it skills of hands' own, shipped with the code they ser
 `hands:close` is how it closes the sessions you are finished with, by name or the ones that are done, with `close_session`.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
-What hands asks in the background, the Claude Code backend's summaries and the sentence an old tool result goes as,
+What hands asks in the background, its summaries and the sentence an old tool result goes as,
 is asked of a second interactive Claude Code started for each question, with `/btw` and the question as its opening
 prompt (`src/hands/brain/asides.py`), so a spoken turn never waits on one; each is a `brain.aside` wide event. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
 it says is spoken from its requests on the wire, never from its screen; each turn's `voice.turn` wide event names the
 exchanges its words came from. A barge-in stops it, except while a tool whose effect must land is running,
 which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands
 answers the brain's next request itself, so the model is not asked to go on. A turn the brain ends in error is
-said as the other variants' model failures are.
-A variant stops at start, naming where its key can be, when it has none. The run's audit log says which
-backend, URL, and model it reached, never the key. The key can live in a `.env` at the repository root,
-which git ignores, and `uv run --env-file .env` puts it in the environment; uv stops if
-the file is not there. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
+said as a failure of the model.
+The run's audit log says which backend, URL, model, and account it reached. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call. Measured on 2026-10-04 with the brain, the same six
@@ -392,9 +376,8 @@ without `uv run`.
 
 ```
 uv sync
-uv run hands run                        # the backend ~/.hands/config.toml names; hold Right Shift in any app to talk, release to send; q in its terminal quits
+uv run hands run                        # on the brain and the model ~/.hands/config.toml names; hold Right Shift in any app to talk, release to send; q in its terminal quits
 uv run hands run --model claude-opus-5-5  # on that model in place of the one config.toml names, until it quits
-uv run --env-file .env hands run        # its key in .env: ANTHROPIC_API_KEY (else the keychain's HANDS_LLM_ANT_KEY) or OPENAI_API_KEY
 uv run hands status                     # up, stopped, refused to start (and why), not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
@@ -405,17 +388,16 @@ uv run hands phone                      # the addresses a phone opens the talk p
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
-uv run python evals/intermediary.py    # conversations through the intermediary's prompt and tools; needs the model to be up
 ```
 
 `hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)
 and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-backend's key or login; this terminal's Input Monitoring grant; hands running; each running session hands
+brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
-says the same lines as it starts, the backend as it reached it. An up daemon is not a
+says the same lines as it starts, the brain as it reached it. An up daemon is not a
 working hands: `hands status` says only whether the daemon is running.
 
 `hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &

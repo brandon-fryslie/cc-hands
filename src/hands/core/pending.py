@@ -58,13 +58,6 @@ class Unread:
 
 
 @dataclass(frozen=True)
-class Briefing:
-    """How the sessions stood as hands started, for the model to know before anything else is told."""
-
-    note: str
-
-
-@dataclass(frozen=True)
 class Working:
     """What a session is doing as it works, said as it happens: the focused session's progress."""
 
@@ -83,7 +76,7 @@ class Mentioned:
     amount: Amount
 
 
-Pending = Speak | Narrate | Note | Finished | Unread | SessionGone | Briefing | Working | Mentioned
+Pending = Speak | Narrate | Note | Finished | Unread | SessionGone | Working | Mentioned
 
 # How soon a pending thing is told, soonest first. "known" goes into the model's context and is never spoken, so it
 # costs the user nothing to have it first, and what is spoken after it is said knowing it. "blocking" is something a
@@ -95,7 +88,7 @@ _SOONEST: Sequence[Priority] = ("known", "blocking", "result", "fyi")
 def priority(pending: Pending) -> Priority:
     # [LAW:one-source-of-truth] read off the variant, never stored beside it.
     match pending:
-        case Note() | Briefing():
+        case Note():
             return "known"
         case Narrate() | Speak():
             return "blocking"
@@ -181,7 +174,7 @@ def _story(pending: Pending, at: int) -> SessionId | int:
             return moment.session
         case Finished(session=session) | Unread(session=session) | SessionGone(session=session) | Working(session=session) | Mentioned(session=session):
             return session
-        case Note() | Briefing():
+        case Note():
             return at
 
 

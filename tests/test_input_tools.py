@@ -3,19 +3,15 @@
 import asyncio
 import io
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from loguru import logger
-from pipecat.frames.frames import Frame, FunctionCallResultProperties, TTSSpeakFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMUserAggregatorParams, UserTurnMessageAddedMessage
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.llm_service import FunctionCallParams
 
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
@@ -29,26 +25,11 @@ from hands.sessions.wide import unit
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns, turns
 from hands.voice.tool import Result, Tool, tool
-from hands.voice.tools import audited, cued, draft_tools, keyboard_tools, pipecat_function, Replies
+from hands.voice.tools import audited, cued, draft_tools, keyboard_tools
 
 
 def unrecorded(_: object) -> None:
     pass
-
-
-class Lines(FrameProcessor):
-    """The processor standing ahead of the speaker, keeping what hands hands it."""
-
-    def __init__(self) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self.frames: list[Frame] = []
-
-    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
-        self.frames.append(frame)
-
-    @property
-    def said(self) -> list[tuple[str, bool]]:
-        return [(frame.text, frame.append_to_context) for frame in self.frames if isinstance(frame, TTSSpeakFrame)]
 
 
 def typing_into(typed: Callable[[Type[Input]], None]) -> Callable[[Type[Input]], Awaitable[None]]:
@@ -147,55 +128,6 @@ async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_
     assert tools[0].properties["resolutions"]["items"] == {"type": "object", "properties": {"heard": {"type": "string"}, "meant": {"type": "string"}}, "required": ["heard", "meant"]}
     assert all(tool.completes for tool in tools)
     assert [tool.then for tool in tools] == ["silence", "silence", "reply", "reply"]
-
-
-async def reply(lines: Lines, *calls: tuple[Tool, Mapping[str, object]]) -> list[bool | None]:
-    """One reply's calls as Pipecat runs them, answered in the order given: whether each result asks Pipecat to run the model."""
-    replies = Replies()
-    replies.started([f"c{index}" for index, _ in enumerate(calls)])
-    told: list[bool | None] = []
-
-    async def result_callback(_: object, *, properties: FunctionCallResultProperties | None = None) -> None:
-        told.append(None if properties is None else properties.run_llm)
-
-    for index, (tool, arguments) in enumerate(calls):
-        handler = pipecat_function(tool, lines, replies)._handler  # pyright: ignore[reportPrivateUsage]
-        assert handler is not None
-        await handler(cast(FunctionCallParams, SimpleNamespace(tool_call_id=f"c{index}", arguments=arguments, result_callback=result_callback)))
-    return told
-
-
-async def test_pipecat_says_a_staged_draft_as_written_and_runs_no_model_after_it(tmp_path: Path) -> None:
-    sessions, id = await joined(tmp_path)
-    [stage, *_] = draft_tools(sessions)
-    lines = Lines()
-    assert await reply(lines, (stage, {"session": id, "text": "run the tests", "resolutions": []})) == [False]
-    # Said by hands as written, straight to the speaker: no model is asked to say it, so none rewords it.
-    assert lines.said == [("Draft for cc-hands: run the tests", False)]
-
-
-async def test_pipecat_runs_the_model_once_a_reply_is_in_when_any_call_in_it_was_refused_or_asks_a_reply(tmp_path: Path) -> None:
-    sessions, id = await joined(tmp_path)
-    [stage, _, discard, _] = draft_tools(sessions)
-    lines = Lines()
-    staged: tuple[Tool, Mapping[str, object]] = (stage, {"session": id, "text": "run the tests", "resolutions": []})
-    refused: tuple[Tool, Mapping[str, object]] = (stage, {"session": "cc-hands", "text": "run the tests", "resolutions": []})
-    # The silent call finishing last does not decide for the reply: the refusal before it is the model's to answer.
-    assert await reply(lines, refused, staged) == [False, True]
-    assert await reply(lines, staged, refused) == [False, True]
-    assert await reply(lines, (discard, {"session": id}), staged) == [False, True]
-    # Each staged draft is said by hands; the refusal is not.
-    assert [text for text, _ in lines.said] == [
-        "Draft for cc-hands: run the tests",
-        "New draft for cc-hands, replacing the last one: run the tests",
-        "Draft for cc-hands: run the tests",
-    ]
-
-
-async def test_pipecat_is_told_a_barge_in_cancels_no_draft_tool(tmp_path: Path) -> None:
-    sessions, _ = await joined(tmp_path)
-    handlers = [pipecat_function(tool, Lines(), Replies())._handler for tool in draft_tools(sessions)]  # pyright: ignore[reportPrivateUsage]
-    assert [getattr(handler, "_pipecat_cancel_on_interruption") for handler in handlers] == [False] * 4
 
 
 async def fire(aggregator: object, event: str, message: object) -> None:

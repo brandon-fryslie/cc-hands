@@ -5,13 +5,12 @@ import asyncio
 import json
 import shutil
 from dataclasses import dataclass
-from collections.abc import Callable
 from typing import cast
 from pathlib import Path
 
 import pytest
 from loguru import logger
-from pipecat.frames.frames import Frame, LLMMessagesAppendFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
@@ -25,15 +24,11 @@ from hands.sessions.overlays import Overlays
 from hands.core.attention import Attention, Spoken, Withheld
 from hands.sessions.attention import attention
 from hands.sessions.tail import Tails
-from hands.core.pending import Finished, News, Pending
+from hands.core.pending import News, Pending
 from hands.voice.narrator import Recount, Recounts, narrate, recount
-from hands.voice.speech import REPLY_SHOWN, Names, Narrated, Pushed, Tailed, Telling, Told, Unprompted, frames, sent, told
-from hands.voice.utterance import Utterance, Utterances, Uttered, Uttering
-from hands.voice.backends import AnthropicBackend, OpenAICompatibleBackend
-from hands.voice.summary import SUMMARY_FAILURES, SummaryFailed, summariser
-from hands.brain.asides import AsideKind
+from hands.voice.speech import REPLY_SHOWN, Aloud, Names, Narrated, Unprompted, frames, sent, told
+from hands.voice.utterance import Utterance, Utterances
 
-from conftest import ChatServer, ServeChat
 from hands.core.status import Stamp
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
@@ -85,9 +80,9 @@ def unprompted(frame: Frame) -> Pending:
     return frame.pending
 
 
-def rendered(pending: Pending, telling: Telling, names: Names) -> tuple[Frame, ...]:
-    """The frames the floor sends to say `pending`, without those that read what of it was heard."""
-    return tuple(frame for frame in sent(frames(pending, telling, names), telling, ()) if not isinstance(frame, Uttering | Uttered))
+def rendered(pending: Pending, names: Names) -> tuple[Frame, ...]:
+    """The frames the floor sends to say `pending`, a line hands says as written shown as the frame that says it."""
+    return tuple(frame.spoken if isinstance(frame, Aloud) else frame for frame in sent(frames(pending, names), ()))
 
 
 def heard() -> Utterance:
@@ -99,25 +94,18 @@ def utterances(recorded: list[Entry]) -> list[WideEvent]:
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "utterance"]
 
 
-def said(told: Pending | None, telling: Telling = Pushed()) -> Frame:
-    """The frame the floor makes of what the narrator told, as it lets it go, and that it says the session was told of
-    behind it to an API model."""
+def said(told: Pending | None) -> Frame:
+    """The frame the floor makes of what the narrator told, as it lets it go."""
     assert told is not None
-    [frame, *after] = rendered(told, telling, lambda _: "cc-hands")
-    assert [each.session for each in after if isinstance(each, Told)] == ([SID] if isinstance(told, Finished) and isinstance(telling, Pushed) else [])
-    assert all(isinstance(each, Told) for each in after)
+    [frame] = rendered(told, lambda _: "cc-hands")
     return frame
 
 
 def handed(told: Pending | None) -> str:
-    """What a model reached through Pipecat is handed to say: one message, and the model asked to answer it."""
+    """What the brain is handed to say, as a turn of its own."""
     frame = said(told)
-    assert isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm
-    match frame.messages:
-        case [{"role": "user", "content": str() as content}]:
-            return content
-        case other:
-            raise AssertionError(f"not one message from hands: {other!r}")
+    assert isinstance(frame, Narrated)
+    return frame.text
 
 
 def _prompt(prompt: str, text: str) -> str:
@@ -172,14 +160,14 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
 
 
 async def test_the_brain_takes_a_finished_turn_as_a_narration_and_never_through_the_pipelines_context(tmp_path: Path) -> None:
-    told = said(await recount(tailing(said_turn(tmp_path, "Fixed it.")), SID, PromptId("p1"), None, heard(), Delta(), Spoken("full", "finished"), Recounts()), Tailed())
+    told = said(await recount(tailing(said_turn(tmp_path, "Fixed it.")), SID, PromptId("p1"), None, heard(), Delta(), Spoken("full", "finished"), Recounts()))
     assert isinstance(told, Narrated) and "The last thing it said was:\n\nFixed it.\n\n" in told.text
     assert told.unsaid == "cc-hands finished a turn, and I could not tell it."
 
 
 async def test_a_narration_the_brain_cannot_take_says_only_that_it_could_not_be_told(tmp_path: Path) -> None:
     """Nothing of a turn is said as written past the brain: a question said bare was answered by a user whose brain never heard it."""
-    told = said(await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, heard(), Delta(), Spoken("full", "finished"), Recounts()), Tailed())
+    told = said(await recount(tailing(said_turn(tmp_path, "Fixed it. Want me to push it?")), SID, PromptId("p1"), None, heard(), Delta(), Spoken("full", "finished"), Recounts()))
     assert isinstance(told, Narrated) and told.unsaid == "cc-hands finished a turn, and I could not tell it."
 
 
@@ -419,85 +407,3 @@ async def test_a_turn_stopped_before_it_did_anything_is_handed_to_the_model_as_i
     )
     told = handed(await recount(tailing(transcript), SID, None, None, heard(), Delta(), Spoken("full", "finished"), Recounts()))
     assert "It said nothing. From its record, hands adds: You interrupted it. Tell the user" in told
-
-
-async def test_the_openai_compatible_summariser_sends_the_instruction_and_the_turn_with_its_key_and_returns_the_text(
-    chat_server: ServeChat,
-) -> None:
-    server = await chat_server("  Fixed the test.  ")
-    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), list[Entry]().append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)
-    assert await summarise("The user asked:\nfix it") == "Fixed the test."
-    [request] = server.asked
-    assert request["model"] == "m" and request["max_tokens"] == 50
-    assert request["messages"] == [{"role": "system", "content": "Summarise."}, {"role": "user", "content": "The user asked:\nfix it"}]
-    assert server.keys == ["k"]
-
-
-async def test_the_anthropic_summariser_sends_the_instruction_and_the_turn_with_its_key_to_its_url_and_returns_the_text(
-    chat_server: ServeChat,
-) -> None:
-    server = await chat_server("  Fixed the test.  ")
-    summarise = summariser(AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m"), list[Entry]().append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)
-    assert await summarise("The user asked:\nfix it") == "Fixed the test."
-    [request] = server.asked
-    assert request["model"] == "m" and request["max_tokens"] == 50 and request["system"] == "Summarise."
-    assert request["messages"] == [{"role": "user", "content": "The user asked:\nfix it"}]
-    assert server.keys == ["k"]
-
-
-def openai_on(server: ChatServer) -> OpenAICompatibleBackend:
-    return OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m")
-
-
-def anthropic_on(server: ChatServer) -> AnthropicBackend:
-    return AnthropicBackend(base_url=server.anthropic_url, api_key="k", model="m")
-
-
-@pytest.mark.parametrize(
-    ("backend", "usage"),
-    [
-        (openai_on, {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11, "cache_read_input_tokens": 4}),
-        (anthropic_on, {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4, "output_tokens": 2}),
-    ],
-)
-async def test_each_summary_is_one_request_event_saying_what_it_was_for_and_the_usage_its_api_reported(
-    chat_server: ServeChat, backend: Callable[[ChatServer], AnthropicBackend | OpenAICompatibleBackend], usage: dict[str, int]
-) -> None:
-    server = await chat_server("Fixed the test.")
-    recorded: list[Entry] = []
-    await summariser(backend(server), recorded.append, AsideKind.NAME, "Summarise.", max_tokens=50, timeout=5.0)("The user asked:\nfix it")
-    [event] = recorded
-    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("model.request", "ok")
-    assert event.facts == {"kind": AsideKind.NAME, **usage}
-
-
-@pytest.mark.parametrize(
-    "backend",
-    [OpenAICompatibleBackend(base_url="http://127.0.0.1:9/v1", api_key="k", model="m"), AnthropicBackend(base_url="http://127.0.0.1:9", api_key="k", model="m")],
-)
-async def test_a_summary_request_that_raises_is_a_failed_request_event_with_what_it_raised(backend: AnthropicBackend | OpenAICompatibleBackend) -> None:
-    recorded: list[Entry] = []
-    with pytest.raises(SUMMARY_FAILURES) as raised:
-        await summariser(backend, recorded.append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)("The user asked:\nfix it")
-    [event] = recorded
-    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("model.request", "failed")
-    assert event.error == f"{type(raised.value).__name__}: {raised.value}"
-    assert event.facts == {"kind": AsideKind.SUMMARY}
-
-
-async def test_a_summary_with_nothing_in_it_is_a_failure(chat_server: ServeChat) -> None:
-    server = await chat_server(None)
-    summarise = summariser(OpenAICompatibleBackend(base_url=server.url, api_key="k", model="m"), list[Entry]().append, AsideKind.SUMMARY, "Summarise.", max_tokens=50, timeout=5.0)
-    with pytest.raises(SummaryFailed):
-        await summarise("The user asked:\nfix it")
-
-
-def test_a_summary_turns_thinking_off_only_for_a_model_that_would_think_unasked() -> None:
-    from anthropic import omit
-
-    from hands.voice.summary import thinking
-
-    assert thinking("claude-sonnet-5") == {"type": "disabled"}
-    # Haiku does not think unless asked, and Opus 5.5 rejects thinking turned off, so neither is sent the setting.
-    assert thinking("claude-haiku-4-5") is omit
-    assert thinking("claude-opus-5-5") is omit

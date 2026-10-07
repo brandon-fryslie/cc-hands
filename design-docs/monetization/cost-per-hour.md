@@ -8,6 +8,9 @@ of the brain, hands costs that key about $0.20 for an ordinary hour and at least
 for an hour of steady talk on Sonnet 5.5. Most of the steady hour is a fixed prefix sent
 uncached on every request. This settles hands-monetization-76j.lbi.
 
+Since hands-raw-api-swd (2026-10-07) hands has no keyed intermediary: the keyed figures
+below price a path that no longer exists, and are kept only as the measurement they were.
+
 ## How it was measured
 
 hands' audit log records every request the brain and the wrapped sessions make, with

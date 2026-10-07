@@ -1,17 +1,15 @@
 """Mode readback: the permission_mode each hook reports is the session's mode, list_sessions says it, and a change reaches the intermediary unspoken."""
 
 from pathlib import Path
-from typing import cast, get_args
+from typing import get_args
 
 import pytest
-from pipecat.frames.frames import LLMMessagesAppendFrame
 
 from hands.core.effects import Allow, ModeChanged, Note
 from hands.core.events import Joined, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, Mode, PromptId, Permission, PermissionMode, RequestId, SessionId, UnknownMode
 from hands.sessions.registry import Sessions
 from hands.voice.readback import spoken_mode
-from hands.voice.speech import Pushed, Tailed
 from hands.voice.tools import describe_listing
 
 from test_narrator import rendered
@@ -45,15 +43,8 @@ def test_every_mode_claude_code_has_is_said_by_name() -> None:
     assert all(spoken_mode(mode) for mode in get_args(PermissionMode))
 
 
-def test_a_mode_change_is_put_in_the_context_without_asking_the_model_to_speak() -> None:
-    [noted] = rendered(Note(ModeChanged(SID, "acceptEdits")), Pushed(), names=lambda _: "auth refactor")
-    assert isinstance(noted, LLMMessagesAppendFrame) and noted.run_llm is False
-    [message] = noted.messages
-    assert "auth refactor is now in accept edits mode" in str(cast(dict[str, object], message)["content"])
-
-
 def test_a_mode_change_puts_nothing_in_the_brains_context_whose_tail_says_the_mode() -> None:
-    assert rendered(Note(ModeChanged(SID, "acceptEdits")), Tailed(), names=lambda _: "auth refactor") == ()
+    assert rendered(Note(ModeChanged(SID, "acceptEdits")), names=lambda _: "auth refactor") == ()
 
 
 async def test_a_mode_changed_at_the_keyboard_is_listed_and_noted_at_the_sessions_next_hook() -> None:

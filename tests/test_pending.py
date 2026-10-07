@@ -8,7 +8,7 @@ import pytest
 
 from hands.core.effects import Asking, DeadlineNear, Expired, ModeChanged, Narrate, Note, SessionGone, Speak
 from hands.core.narration import THE_TESTS, Segment
-from hands.core.pending import Briefing, Coalesced, Finished, News, Pending, Unread, coalesce
+from hands.core.pending import Coalesced, Finished, News, Pending, Unread, coalesce
 from hands.core.session import Held, Membership, Permission, PromptId, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 
@@ -120,12 +120,6 @@ GONE = SessionGone(SessionId("old"))
             held(API, "a2"),
             (),
             id="a deadline on a request asked again the same way is not told",
-        ),
-        pytest.param(
-            (asks(API, "a1"), Briefing("how the sessions stood")),
-            held(API, "a1"),
-            (Briefing("how the sessions stood"), asks(API, "a1")),
-            id="the briefing is known before anything is said",
         ),
     ],
 )

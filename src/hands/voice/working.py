@@ -14,7 +14,7 @@ from hands.core.progress import WRITING, Doing, explained
 from hands.core.session import Session, SessionId
 from hands.sessions.wide import continuing
 from hands.voice.speech import Unprompted
-from hands.voice.summary import SUMMARY_FAILURES, Summariser
+from hands.voice.summary import Summariser, SummaryFailed
 from hands.voice.utterance import Utterance
 
 # The one lane progress to be played goes by, from the relay that routes it to the task that plays it, with how much of
@@ -85,7 +85,7 @@ async def _explained(progress: Progress, explain: Summariser, utterance: Utteran
                 # [LAW:nothing-unseen] the side question it is asked as is a part of the utterance it delays.
                 with continuing(utterance.begun.span):
                     return explained(await explain(text)), None
-            except SUMMARY_FAILURES as error:
+            except SummaryFailed as error:
                 # [LAW:no-silent-failure] the burst is still said, its text as written and never as what it says.
                 logger.error(f"the text session {progress.session} wrote could not be summarised, so it is said to have been written: {type(error).__name__}: {error}")
                 return Doing(WRITING, None), f"{type(error).__name__}: {error}"

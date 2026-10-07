@@ -197,7 +197,7 @@ class ModeChanged:
 
 @dataclass(frozen=True)
 class Note:
-    """Put in the intermediary's context and not spoken: the model knows, and says nothing of it until asked."""
+    """Known and not spoken: the tail of the brain's next request says it, and it says nothing of it until asked."""
 
     fact: ModeChanged
 

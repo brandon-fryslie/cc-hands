@@ -11,9 +11,8 @@ session did, each session's finished turns folded into one telling, and what is 
 answered at the keyboard meanwhile, and progress of a turn that ended meanwhile. Nothing else is dropped, since none of
 it had started to play.
 
-This is the one queue what hands tells of the sessions waits in before the model's stage, under either telling: the
-brain's stage keeps its own lanes behind it, and an API model's notes join the context here, behind the user's turn. The
-system voice is not in it: it reports the model's own failures, so it is queued past the model, at the TTS.
+This is the one queue what hands tells of the sessions waits in before the model's stage: the brain's stage keeps its
+own lanes behind it. The system voice is not in it: it reports the model's own failures, so it is queued past the model, at the TTS.
 """
 
 import time
@@ -25,7 +24,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core.pending import coalesce
 from hands.core.session import Session, SessionId
-from hands.voice.speech import Names, Telling, Unprompted, frames, sent
+from hands.voice.speech import Names, Unprompted, frames, sent
 from hands.voice.turnstop import Hold, TurnOpened, TurnResolved
 
 
@@ -51,13 +50,11 @@ class Floor(FrameProcessor):
 
     def __init__(
         self,
-        telling: Telling,
         names: Names,
         live: Callable[[], Mapping[SessionId, Session]],
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self._telling = telling
         self._names = names
         self._live = live
         self._now = clock
@@ -118,5 +115,5 @@ class Floor(FrameProcessor):
             for utterance in utterances:
                 # What it was told as, and how many things hands heard were told in it.
                 utterance.annotate(told=type(each.pending).__name__, folded=len(each.sources))
-            for frame in sent(frames(each.pending, self._telling, self._names), self._telling, utterances):
+            for frame in sent(frames(each.pending, self._names), utterances):
                 await self.push_frame(frame)

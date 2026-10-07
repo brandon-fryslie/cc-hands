@@ -24,7 +24,7 @@ from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
 from hands.core.session import RequestId
-from hands.voice.speech import Pushed, Unprompted, relay
+from hands.voice.speech import Unprompted, relay
 from hands.voice.utterance import Utterances
 
 from test_narrator import rendered
@@ -187,7 +187,7 @@ def test_a_long_detail_is_cut_and_says_so() -> None:
 
 
 def test_what_is_mentioned_is_said_as_written() -> None:
-    [frame] = rendered(Mentioned(SID, Cleared(), "brief"), Pushed(), names=lambda _: "cc-hands")
+    [frame] = rendered(Mentioned(SID, Cleared(), "brief"), names=lambda _: "cc-hands")
     assert isinstance(frame, TTSSpeakFrame) and frame.text == "cc-hands was cleared."
 
 
