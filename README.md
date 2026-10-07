@@ -252,7 +252,7 @@ exchanges its words came from. A barge-in stops it, except while a tool whose ef
 which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands
 answers the brain's next request itself, so the model is not asked to go on. A turn the brain ends in error is
 said as a failure of the model.
-The run's audit log says which backend, URL, model, and account it reached. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
+The run's audit log says which backend, model, and account it reached. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call. Measured on 2026-10-04 with the brain, the same six

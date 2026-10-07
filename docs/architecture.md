@@ -347,7 +347,7 @@ would under their own paste.
 
 `fritter/README.md` holds the protocol and what was measured.
 
-## Four ways to reach the ear
+## Three ways to reach the ear
 
 Every event that reaches the pipeline takes one of three routes, and the route is
 chosen by a table, not by code that looks at the event `[LAW:dataflow-not-control-flow]`.
@@ -360,8 +360,7 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 - **Play.** A narration's segments go to TTS one at a time through the player,
   already in spoken form. There is no model call at playback, because the
   summariser did that work first. The player knows which segment is on the speaker,
-  so an interruption leaves a bookmark, and each played segment is appended to the
-  intermediary's context as a note so it can answer about what you heard. Used for
+  so an interruption leaves a bookmark. Used for
   a turn's results, progress while a session works, and a subagent's report.
 - **Narrate.** The event is handed to the brain as a turn of its own. The model
   interprets and speaks. Used when the content is a conversation turn: a permission
