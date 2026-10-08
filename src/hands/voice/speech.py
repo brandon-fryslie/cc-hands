@@ -190,7 +190,8 @@ def frames(pending: Pending, names: Names) -> Saying:
             return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session, None)
         case Finished(session=session, news=news, telling=telling):
             name = names(session)
-            return InOwnWords(told(session, name, news, telling), f"{name} finished {_turns(news)}, and I could not tell it.", session, steered(telling))
+            acting = _acting(telling, news[-1].asked)
+            return InOwnWords(told(session, name, news, telling), _untold(name, news, acting), session, acting)
         case Unread(session=session, stopped=stopped):
             ended = "" if stopped is None else ", so I stopped driving it"
             return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it{ended}.", append_to_context=False))
@@ -212,6 +213,25 @@ def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:
             return f"{name}, its subagent to {lowered(description)}"
         case frozenset():
             return name
+
+
+def _acting(telling: Amount | Steering, asked: str) -> Drive | None:
+    """The drive the brain acts on the turn under; None when it tells the user, as it does a driven session's question,
+    which is theirs to answer and so moves their focus to the session that asked it."""
+    match steered(telling), asked:
+        case Drive() as drive, "":
+            return drive
+        case _:
+            return None
+
+
+def _untold(name: str, news: Sequence[News], acting: Drive | None) -> str:
+    """What hands says as written when the brain cannot take the turn; under a drive, that the drive waits on the user."""
+    match acting:
+        case None:
+            return f"{name} finished {_turns(news)}, and I could not tell it."
+        case Drive():
+            return f"{name} finished {_turns(news)} while I was driving it, and I could not act on it: tell me to go on, or to stop driving it."
 
 
 def told(session: SessionId, name: str, news: Sequence[News], telling: Amount | Steering) -> str:

@@ -472,3 +472,14 @@ async def test_a_driven_turn_that_cannot_be_read_ends_the_drive_and_says_so(tmp_
     assert sessions.driven(SID) is None
     [utterance] = cast(Unprompted, queued).utterances
     assert utterance.facts["drive_ended"] == DriveStopped(SID, Drive("keep fixing tests until they pass", 0))
+
+
+def test_a_driven_turn_that_asks_the_user_moves_their_focus_and_a_failed_one_says_the_drive_waits() -> None:
+    asks = News(PromptId("p1"), "Delete it?", "", "Delete the legacy migration?", (), frozenset())
+    plain = News(PromptId("p1"), "Fixed one.", "", "", (), frozenset())
+    steering = Steering(Drive("keep billing going", 2), Spoken("brief", "finished"))
+    asked = said(Finished(SID, (asks,), steering))
+    acted = said(Finished(SID, (plain,), steering))
+    assert isinstance(asked, Narrated) and asked.drive is None
+    assert isinstance(acted, Narrated) and acted.drive == Drive("keep billing going", 2)
+    assert acted.unsaid == "cc-hands finished a turn while I was driving it, and I could not act on it: tell me to go on, or to stop driving it."

@@ -1384,7 +1384,7 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
         """Type the next prompt into a session you are driving and press Return, with no draft and no readback. It is
         refused for any session the user has not told you to drive. Write the prompt as the prompt skill says.
 
-        Say what you sent in one short sentence, naming the session.
+        Say what you sent in one short sentence, naming the session, unless hands told you to say nothing of its turns.
 
         Args:
             session: The session's id, the one hands said you are driving.
