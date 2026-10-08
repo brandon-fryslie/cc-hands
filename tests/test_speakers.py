@@ -66,13 +66,31 @@ def test_the_phone_never_teaches(tmp_path: Path) -> None:
 def test_a_conversation_with_one_voice_in_it_teaches_the_owners_print_once_it_is_over(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     heard = Voices(tmp_path, recorded)
-    assert heard.told(voice(1), hold("engaged conversation", 1)) == Untold("no voiceprint")
+    for _ in range(speakers.FIRST_PRINT_HOLDS):
+        assert heard.told(voice(1), hold("engaged conversation", 1)) == Untold("no voiceprint")
     # Its last hold, short, is told after the owner disengaged: still the first conversation's.
     assert heard.told(voice(1, 0.4), hold("engaged conversation", 1)) == Untold("no voiceprint")
     assert heard.told(voice(1), hold("engaged conversation", 2)) == Matched(1.0)
-    assert learnt(recorded) == [{"conversation": 1, "holds": 2, "alike": 1.0, "owners": None, "alone": True, "taught": 1}]
+    assert learnt(recorded) == [{"conversation": 1, "holds": 4, "alike": 1.0, "owners": None, "alone": True, "taught": 3}]
     # Used in the next conversation, with someone else in it.
     assert heard.told(voice(2), hold("engaged conversation", 2)) == Other(0.0)
+
+
+def test_one_remark_alone_is_not_the_first_print(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    heard = Voices(tmp_path, recorded)
+    heard.told(voice(2), hold("engaged conversation", 1))
+    assert heard.told(voice(1), hold("engaged conversation", 2)) == Untold("no voiceprint")
+    assert [(facts["alone"], facts["taught"]) for facts in learnt(recorded)] == [(False, 0)]
+
+
+def test_the_wake_words_holds_are_told_and_never_learnt_from(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    heard = Voices(tmp_path, recorded)
+    for conversation in (1, 2, 3, 4):
+        heard.told(voice(1), hold("wake word", conversation))
+    assert heard.told(voice(1), hold("engaged conversation", 5)) == Untold("no voiceprint")
+    assert learnt(recorded) == []
 
 
 def test_a_conversation_with_two_voices_in_it_teaches_nothing(tmp_path: Path) -> None:

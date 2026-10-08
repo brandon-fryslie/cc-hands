@@ -2,9 +2,10 @@
 them and hands knows which of them said what. Anyone who is not the owner is someone else.
 
 The owner's voiceprint is learnt without asking anyone to enrol, only from what can only be theirs: a hold of the desk's
-key, and a conversation at the desk with one voice in it. A hold the voice opened, in an engaged conversation or after
-the wake word, is told by how like that print it sounds; a conversation is learnt from once it is over and known to have
-been the owner's alone. Each voice is heard as an embedding by 3D-Speaker's CAM++, trained on VoxCeleb, run on the CPU
+key, and an engaged conversation at the desk with one voice in it. A hold the voice opened, in an engaged conversation
+or after the wake word, is told by how like that print it sounds; an engaged conversation is learnt from once it is over
+and known to have been the owner's alone. The wake word listens for as long as it is the trigger, with no conversation
+ending in it, so its holds are told and never learnt from. Each voice is heard as an embedding by 3D-Speaker's CAM++, trained on VoxCeleb, run on the CPU
 with ONNX Runtime through sherpa-onnx: about 55 ms a hold on an M-series Mac.
 """
 
@@ -39,6 +40,9 @@ SAME_VOICE = 0.5
 # The least voice a hold must hold to teach the voiceprint: an embedding of less is mostly the room. A hold the voice
 # opened is told however short, since the short ones are the yeses that move sessions.
 LEAST_SECONDS = 1.0
+# The holds long enough to teach that a conversation must have to teach the first print, with none to check it against:
+# one remark of someone else's, the owner silent, is not a print.
+FIRST_PRINT_HOLDS = 3
 
 How = Literal["by hand", "by voice"]
 
@@ -100,13 +104,15 @@ class Speakers:
                 self._teach((embedding,))
                 return ByHand(taught=True, similarity=similarity)
             case "by voice":
-                # [LAW:no-ambient-temporal-coupling] a conversation is over when a hold of the next one is told, so
-                # its last hold, told after the owner disengaged, is still counted in it.
-                if hold.conversation != self._conversation.number:
-                    self._learn(self._conversation)
-                    self._conversation = _Conversation(hold.conversation)
                 embedding = self._embedding(samples)
-                self._conversation.heard.append((embedding, long_enough))
+                if hold.opener == "engaged conversation":
+                    # [LAW:no-ambient-temporal-coupling] a conversation is over when a hold of the next one is told,
+                    # so its last hold, told after the owner disengaged, is still counted in it.
+                    if hold.conversation != self._conversation.number:
+                        # Moved on before it is learnt from, so a print that failed to save is not taught twice.
+                        over, self._conversation = self._conversation, _Conversation(hold.conversation)
+                        self._learn(over)
+                    self._conversation.heard.append((embedding, long_enough))
                 if self._taught is None:
                     return Untold("no voiceprint")
                 similarity = _cosine(embedding, self._taught)
@@ -123,8 +129,9 @@ class Speakers:
             # The least alike of any two holds: two voices make at least one pair unalike, however many holds are each's.
             alike = round(float((embeddings @ embeddings.T).min()), 3)
             owners = None if self._taught is None else _cosine(embeddings.sum(axis=0), self._taught)
-            alone = alike >= SAME_VOICE and (owners is None or owners >= SAME_VOICE)
-            teaching = tuple(embedding for embedding, long_enough in conversation.heard if long_enough) if alone else ()
+            long_enough = tuple(embedding for embedding, long_enough in conversation.heard if long_enough)
+            alone = alike >= SAME_VOICE and (len(long_enough) >= FIRST_PRINT_HOLDS if owners is None else owners >= SAME_VOICE)
+            teaching = long_enough if alone else ()
             annotate(conversation=conversation.number, holds=len(conversation.heard), alike=alike, owners=owners, alone=alone, taught=len(teaching))
             self._teach(teaching)
 
@@ -142,10 +149,12 @@ class Speakers:
         if not embeddings:
             return
         taught = sum(embeddings, start=np.zeros_like(embeddings[0]))
-        self._taught = taught if self._taught is None else self._taught + taught
+        print_ = taught if self._taught is None else self._taught + taught
         partial = self._voiceprint.with_name(f"{VOICEPRINT}.partial.npy")
-        np.save(partial, self._taught)
+        np.save(partial, print_)
         partial.replace(self._voiceprint)
+        # Only once kept: a print that failed to save is not the one told by.
+        self._taught = print_
 
 
 def teller(directory: Path, record: Record) -> Callable[[bytes, Hold], Speaker]:
