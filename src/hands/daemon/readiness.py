@@ -225,13 +225,7 @@ def hears(granted: bool, running: Finding) -> Ready | Missing:
     the app this runs in has the grant."""
     if isinstance(running, Ready):
         return Ready("hands is running, so it started with the Input Monitoring grant of the app it runs in, and hears the talk key (Right Shift)")
-    if not granted:
-        return Missing(
-            "the app this runs in has no Input Monitoring grant, so `hands run` here would not hear the talk key (Right Shift): "
-            "grant it to this app in System Settings > Privacy & Security > Input Monitoring and restart it, or open hands.app, "
-            "which asks for a grant of its own"
-        )
-    return grant(True)
+    return grant(granted)
 
 
 def grant(granted: bool) -> Ready | Missing:
