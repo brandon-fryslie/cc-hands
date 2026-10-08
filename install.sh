@@ -8,7 +8,8 @@
 # running it again. It puts each one's directory on the PATH of the person's login shell, the shim's first, and ends in a
 # fresh login shell, so this terminal has them too. The only input it asks for is the administrator password Homebrew's
 # own install needs, what Claude Code asks only once (its theme, its login, and whether to trust the folder `hands smoke`
-# runs in), and the yes Claude Code asks for to install a plugin by running a command, each said before it is asked.
+# runs in), the same for the brain, hands' own Claude Code, and the yes Claude Code asks for to install a plugin by running
+# a command, each said before it is asked.
 set -euo pipefail
 
 REPO=brandon-fryslie/cc-hands
@@ -147,6 +148,15 @@ case $first_run in
   *) fail "Claude Code's first run is not finished: Claude Code could not be asked, as said above" ;;
 esac
 
+# The brain's login, which only the person can make: a brain that holds one keeps it, and nothing is asked.
+login=0
+hands login || login=$?
+case $login in
+  0) ;;
+  1) fail "the brain is not logged in, so hands has no model to talk with; running this command again asks again" ;;
+  *) fail "the brain is not logged in, so hands has no model to talk with: Claude Code could not be asked, as said above" ;;
+esac
+
 # Last, so that declining it leaves every step before it done.
 plugin=0
 hands install-plugin || plugin=$?
@@ -156,5 +166,5 @@ case $plugin in
   *) fail "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked, as said above" ;;
 esac
 
-say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, and Claude Code has been through its first run; this terminal is now a login shell that finds them"
+say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, Claude Code has been through its first run, and the brain is logged in; this terminal is now a login shell that finds them"
 exec "$SHELL" -l

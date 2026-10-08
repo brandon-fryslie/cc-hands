@@ -156,8 +156,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     showing = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     showing.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
-    logging_in = commands.add_parser("login", help="set the brain up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
-    logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
+    logging_in = commands.add_parser("login", help="set the brain up on a home with none, at this terminal, saying what Claude Code asks before it asks; with --claudeai or --console, log it in again or onto another account; with neither, a brain that holds a login keeps it and nothing is asked; exits 0 only when it holds a login after, the one asked for when one was")
+    chosen = logging_in.add_mutually_exclusive_group()
+    chosen.add_argument("--claudeai", action="store_const", const="claudeai", dest="method", help="log the brain in on a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
+    chosen.add_argument("--console", action="store_const", const="console", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("install-plugin", help=f"install hands' Claude Code plugin, {PLUGIN_ID}, for every session, at this terminal: Claude Code shows the command `hands plugin` and asks the person to accept it, which is said before it asks; exits 0 only when the plugin is installed and enabled, asking nothing when it already is; 1 when Claude Code asked and it is not, as when the person declines; 2 when Claude Code could not be asked")
     commands.add_parser("first-run", help="answer, at this terminal, what the person's own Claude Code asks only once: its theme and login, whether to trust the folder `hands smoke` starts its session in, and whether to use an API key it is given, by starting it there, then its own login if it has none; each said before it is asked, and nothing asked when all are answered; exits 0 only when they are; 1 when something is still unanswered after; 2 when Claude Code could not be asked")
@@ -676,32 +678,50 @@ def audit_log_of(home: Home) -> audit.AuditLog:
     return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
 
 
-def login(home: Home, method: "Method", record: audit.Record) -> int:
+def login(home: Home, method: "Method | None", record: audit.Record) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
+    from hands.brain.process import Kept, LoginFailed, Made, NotLoggedIn, Unasked, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
-    # it took Claude Code's first run, and the account it ended on.
+    # it kept the login held or made one, through the first run and `claude auth login` when either ran, and the account
+    # it ended on. Exits 1 when Claude Code ran and did not finish, as when the person quits, or left the brain on another
+    # login than the one asked for; 2 when Claude Code could not be asked, or `claude auth status` says what no login
+    # mends, which asking again does not mend either.
+    terminal = sys.stdin.isatty()
     with wide.unit("brain.login", record):
-        wide.annotate(asked=method)
+        wide.annotate(asked=method, terminal=terminal)
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(home.brain, UPSTREAM, os.environ, method)
-        except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
-            wide.fail(str(error))
-            print(f"hands login: {error}", file=sys.stderr)
-            return 1
+            signed = brain_login(home.brain, UPSTREAM, os.environ, method, terminal, told)
+        except (Unasked, Unstartable, NotLoggedIn) as error:
+            return not_logged_in(str(error), 2)
+        except (LoginFailed, OSError) as error:
+            return not_logged_in(str(error), 1)
         except KeyboardInterrupt:
-            wide.fail("interrupted")
-            print("hands login: interrupted", file=sys.stderr)
-            return 1
-        wide.annotate(first_run=signed.first_run, account=signed.account)
-    print(f"the brain at {home.brain} is logged in as {signed.account}")
-    print("a hands already running started its brain on the login before: restart it to start the brain on this one")
+            return not_logged_in("interrupted", 1)
+        wide.annotate(login=signed)
+    match signed:
+        case Kept(account=account):
+            print(f"the brain at {home.brain} is logged in already, as {account}: `hands login --claudeai` or `--console` logs it in again")
+        case Made(account=account):
+            print(f"the brain at {home.brain} is logged in as {account}")
+            print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0
+
+
+def not_logged_in(said: str, status: int) -> int:
+    wide.fail(said)
+    print(f"hands login: {said}", file=sys.stderr)
+    return status
+
+
+def told(said: str) -> None:
+    """Says at this terminal what Claude Code is about to ask, and drops what was typed before it asks."""
+    print(said, flush=True)
+    typed_ahead_dropped()
 
 
 def install_fritter(home: Home, record: audit.Record) -> int:
@@ -760,8 +780,7 @@ def install_plugin(record: audit.Record) -> int:
                     return not_installed(f"`claude plugin marketplace add {MARKETPLACE}` failed ({added.returncode})", 2)
             case readiness.Ready():
                 pass
-        print(f"Claude Code now shows the command `hands plugin`, which installs {PLUGIN_ID}, and asks whether to run it: answer y", flush=True)
-        typed_ahead_dropped()
+        told(f"Claude Code now shows the command `hands plugin`, which installs {PLUGIN_ID}, and asks whether to run it: answer y")
         # Over an install that is disabled, this enables it again and asks nothing (Claude Code 2.1.289).
         installed = subprocess.run(["claude", "plugin", "install", "--scope", "user", PLUGIN_ID])
         wide.annotate(install_exit=installed.returncode)
@@ -806,8 +825,7 @@ def first_run(home: Home, record: audit.Record) -> int:
                     return not_first_run("Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one", 2)
                 case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
                     home.smoke.mkdir(parents=True, exist_ok=True)
-                    print(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit", flush=True)
-                    typed_ahead_dropped()
+                    told(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit")
                     ran = subprocess.run([claude], cwd=home.smoke, env=environment)
                     wide.annotate(first_run_exit=ran.returncode)
                 case readiness.FirstRun():
@@ -818,8 +836,7 @@ def first_run(home: Home, record: audit.Record) -> int:
                     return not_first_run(said, 2)
                 # Only after a first run that finished: one quit part-way was walked away from, login and all.
                 case readiness.FirstRun(claude=claude, unanswered=None, logged_in=False):
-                    print("Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account", flush=True)
-                    typed_ahead_dropped()
+                    told("Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account")
                     signed = subprocess.run([claude, "auth", "login"], env=environment)
                     wide.annotate(login_exit=signed.returncode)
                 case readiness.FirstRun():

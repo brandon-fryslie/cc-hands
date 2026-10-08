@@ -160,7 +160,9 @@ if sys.argv[1:3] == ["auth", "login"] or first_run:
     os.makedirs(os.environ["CLAUDE_CONFIG_DIR"], exist_ok=True)
     if os.environ.get("LOGIN_EXIT", "0") != "0":
         sys.exit(int(os.environ["LOGIN_EXIT"]))
-    with open(login, "w") as made:
+    # FIRST_RUN_LOGIN=0: a first run on screens other than its login, which makes none.
+    if not (first_run and os.environ.get("FIRST_RUN_LOGIN") == "0"):
+      with open(login, "w") as made:
         json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd(), "settings": os.path.exists(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json")), "credentials": sorted(set(os.environ) & {{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}})}}, made)
     # LOGIN_UNANSWERED: quit before its last screen, which Claude Code exits 0 on as on any other.
     if first_run and not os.environ.get("LOGIN_UNANSWERED"):
