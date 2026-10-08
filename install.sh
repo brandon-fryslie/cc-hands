@@ -3,10 +3,12 @@
 #
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"
 #
-# It installs what is missing of Claude Code, Homebrew, PortAudio, uv, and the newest released hands, and leaves what
-# is there; a run stopped part-way is finished by running it again. It puts each one's directory on the PATH of the
-# person's login shell, and ends in a fresh login shell, so this terminal has them too. The only input it asks for is the
-# administrator password Homebrew's own install needs, said before it is asked.
+# It installs what is missing of Claude Code, Homebrew, PortAudio, uv, the newest released hands, the claude shim that
+# starts every session under fritter, and hands' plugin, and leaves what is there; a run stopped part-way is finished by
+# running it again. It puts each one's directory on the PATH of the person's login shell, the shim's first, and ends in a
+# fresh login shell, so this terminal has them too. The only input it asks for is the administrator password Homebrew's
+# own install needs, and the yes Claude Code asks for to install a plugin by running a command, each said before it is
+# asked.
 set -euo pipefail
 
 REPO=brandon-fryslie/cc-hands
@@ -74,21 +76,37 @@ else
   # the versions the release was tested on. --reinstall replaces a hands that is there but does not answer its version.
   uv tool install --reinstall --python 3.12 --constraints "$release/constraints.txt" "$release/hands-$version-$WHEEL_TAG.whl"
 fi
+# Claude Code runs `hands plugin` from this PATH to install the plugin.
+export PATH="$bin:$PATH"
+
+# hands' home as hands finds it (hands.sessions.home.default_home): HANDS_HOME, or ~/.hands. Its bin holds the claude
+# shim, which hands writes and which says it is installed only when it is the claude PATH finds.
+shims=${HANDS_HOME:-$HOME/.hands}/bin
+PATH="$shims:$PATH" hands install-fritter
 
 # The login shell's PATH is the one every new terminal starts with: a directory it lacks gets one line in the profile
-# it reads, and one it has is left as it is.
+# it reads, and one it has is left as it is. A new terminal's shell is interactive too, and zsh then reads ~/.zshrc after
+# the profile: rc is the file such a shell reads last.
 case $(basename "$SHELL") in
-  zsh) profile=$HOME/.zprofile ;;
+  zsh) profile=$HOME/.zprofile rc=$HOME/.zshrc ;;
   bash)
     # A bash login shell reads only the first of these that exists, so the line goes in that one; with none, a new
     # .bash_profile.
     profile=$HOME/.bash_profile
-    for name in .profile .bash_login .bash_profile; do [ ! -e "$HOME/$name" ] || profile=$HOME/$name; done ;;
-  *) profile= ;;
+    for name in .profile .bash_login .bash_profile; do [ ! -e "$HOME/$name" ] || profile=$HOME/$name; done
+    rc=$profile ;;
+  *) profile= rc= ;;
 esac
-# A new terminal's login shell starts from launchd's PATH, not this run's, which already has every directory. Its PATH is
-# the last line it prints, after whatever the profile itself prints.
-login_path=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" -lc 'printf "\n%s" "$PATH"' </dev/null | tail -n 1)
+# The PATH the person's shell, started with these flags, ends its startup files with. It starts from launchd's PATH, as a
+# new terminal's does, not this run's, which already has every directory, and its PATH is the line marked as it, among
+# whatever its startup files and a login shell's logout file print. It fails where the shell ends without saying it.
+shell_path() {
+  local printed
+  printed=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" "$1" 'printf "\n@hands-path@%s\n" "$PATH"' </dev/null) || return
+  printed=$(printf '%s\n' "$printed" | sed -n 's/^@hands-path@//p' | tail -n 1)
+  [ -n "$printed" ] && printf '%s' "$printed"
+}
+login_path=$(shell_path -lc) || fail "your shell, $SHELL -lc, run with no terminal, ended without saying its PATH, so which commands a new terminal finds is unknown"
 on_login_path() { case ":$login_path:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
 lines=()
 on_login_path "$HOMEBREW_PREFIX/bin" || lines+=("eval \"\$($HOMEBREW_PREFIX/bin/brew shellenv)\"")
@@ -99,6 +117,35 @@ if [ ${#lines[@]} -gt 0 ]; then
   printf '%s\n' "${lines[@]}" >>"$profile"
   say "added to $profile, for your login shell's PATH: ${lines[*]}"
 fi
+# The shim runs the claude after it on PATH, so it must be the claude a new terminal finds, not only on its PATH: the
+# shim's line goes last in the file read last. A shell whose startup files end it when it has no terminal, as one that
+# starts tmux does, cannot be asked what a new terminal finds: the login shell is asked instead, and the line goes in the
+# profile it reads.
+terminal=-ilc
+if ! shell_path -ilc >/dev/null; then
+  terminal=-lc rc=$profile
+  say "your shell, $SHELL -ilc, run with no terminal, ended without saying its PATH, as one whose startup files start tmux does: which claude a new terminal finds is judged from its login shell alone, which reads $profile"
+fi
+terminal_claude() { PATH=$(shell_path "$terminal") command -v claude; }
+line="export PATH=\"$shims:\$PATH\""
+if [ "$(terminal_claude)" != "$shims/claude" ]; then
+  [ -n "$rc" ] || fail "your shell, $SHELL, is not zsh or bash; add this line last to the file it reads at start and open a new terminal: $line"
+  # A line there already has been read and undone; adding it again would undo nothing more.
+  [ -f "$rc" ] && grep -qxF "$line" "$rc" || {
+    printf '%s\n' "$line" >>"$rc"
+    say "added to $rc, so a new terminal's claude is hands': $line"
+  }
+  [ "$(terminal_claude)" = "$shims/claude" ] || fail "a new terminal's claude is $(terminal_claude), not hands' $shims/claude, though $rc has $line: a startup file read after it puts another claude first; put that line after this one"
+fi
 
-say "done: Claude Code, PortAudio, uv and hands $version are installed; this terminal is now a login shell that finds them"
+# Last, so that declining it leaves every step before it done.
+plugin=0
+hands install-plugin || plugin=$?
+case $plugin in
+  0) ;;
+  1) fail "hands' Claude Code plugin is not installed, so no session joins hands; running this command again asks again" ;;
+  *) fail "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked, as said above" ;;
+esac
+
+say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed; this terminal is now a login shell that finds them"
 exec "$SHELL" -l

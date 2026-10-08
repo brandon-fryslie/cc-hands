@@ -10,9 +10,11 @@ hands runs on macOS on Apple silicon. These steps take a Mac with none of it to 
 turn, in this order. `hands check` says of each one whether it is done and, of one that
 is not, what does it; it exits 0 only when every step is done.
 
-1. Claude Code, Homebrew's PortAudio, which the microphone is opened through, uv, and the newest
+1. Claude Code, Homebrew's PortAudio, which the microphone is opened through, uv, the newest
    [release](https://github.com/brandon-fryslie/cc-hands/releases) of hands, with the versions it was tested
-   on, from one command in Terminal:
+   on, the `claude` that starts every session under fritter ([Wrapping every session](#wrapping-every-session)),
+   and the plugin whose hooks join every session to hands ([Installing the hooks](#installing-the-hooks)), from
+   one command in Terminal:
 
    ```
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"
@@ -20,27 +22,13 @@ is not, what does it; it exits 0 only when every step is done.
 
    It installs whichever of them is missing and leaves the rest, so a run stopped part-way is finished by running it
    again. On a Mac without Homebrew it says it needs your administrator password, and asks for it, to install Homebrew.
-   It puts each on your login shell's `PATH` and leaves the terminal in a fresh login shell, where they are found.
+   Last, Claude Code shows the command `hands plugin` and asks whether to run it, which the command says just before:
+   answer y. It puts each on your login shell's `PATH`, hands' `claude` first, and leaves the terminal in a fresh login
+   shell, where they are found.
 
    Then run `claude` once to answer what it asks only the first time, a theme and a login, and exit it.
 
-2. The `claude` that starts every session under fritter, first on `PATH`
-   ([Wrapping every session](#wrapping-every-session)):
-
-   ```
-   hands install-fritter
-   echo 'export PATH="$HOME/.hands/bin:$PATH"' >> ~/.zshrc     # then open a new terminal
-   ```
-
-3. The plugin, whose hooks join every session to hands. Claude Code shows you the command
-   `hands plugin` and asks you to accept it ([Installing the hooks](#installing-the-hooks)):
-
-   ```
-   claude plugin marketplace add brandon-fryslie/cc-hands
-   claude plugin install hands@cc-hands
-   ```
-
-4. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
+2. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
    plan or, with `--console`, an Anthropic Console key. It runs Claude Code's first screens in
    the brain's own directory, `~/.hands/brain`: answer them, log in, and `/exit`.
 
@@ -48,11 +36,11 @@ is not, what does it; it exits 0 only when every step is done.
    hands login
    ```
 
-5. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
+3. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
    you have one, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-6. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
+4. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
    start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
 
    ```
@@ -60,7 +48,7 @@ is not, what does it; it exits 0 only when every step is done.
    hands check        # in another terminal: every line ok
    ```
 
-7. The smoke test, in another terminal while hands runs. It calls hands as the phone's
+5. The smoke test, in another terminal while hands runs. It calls hands as the phone's
    page does and takes three spoken turns in macOS's voice: it asks hands to have a
    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
    asks what the session said. Each part of the pipeline gets an `ok` line, and the run
@@ -248,8 +236,7 @@ which writes the plugin, its hooks run by that hands' own Python, and prints whe
 Claude Code shows you that command and asks you to accept it at install.
 
 ```
-claude plugin marketplace add brandon-fryslie/cc-hands   # once; a checkout's path works too
-claude plugin install hands@cc-hands              # accept `hands plugin`; hooks on, in every new session
+hands install-plugin                              # the one command runs this; accept `hands plugin`; hooks on, in every new session
 claude plugin disable hands@cc-hands              # hooks off, still installed
 claude plugin enable hands@cc-hands               # hooks back on
 claude plugin uninstall hands@cc-hands            # hooks gone

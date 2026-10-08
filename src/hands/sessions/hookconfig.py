@@ -31,9 +31,12 @@ SHIM_MODULE = "hands.sessions.shim"
 LAUNCHER = "hooks/python"
 # Where the plugin's hook file lives, relative to the plugin root; Claude Code loads it from there unasked.
 HOOKS_FILE = "hooks/hooks.json"
-# The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name in
-# .claude-plugin/marketplace.json.
-PLUGIN_ID = "hands@cc-hands"
+# The marketplace's name in .claude-plugin/marketplace.json, and where Claude Code adds it from: this repository, on
+# GitHub.
+MARKETPLACE_NAME = "cc-hands"
+MARKETPLACE = "brandon-fryslie/cc-hands"
+# The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name.
+PLUGIN_ID = f"hands@{MARKETPLACE_NAME}"
 
 # [LAW:one-source-of-truth] where MessageDisplay is posted: Claude Code dispatches it synchronously for every batch of
 # lines it displays (2.1.270), so it is an HTTP hook, with no process spawned per batch. Its URL takes no variables

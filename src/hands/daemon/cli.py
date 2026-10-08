@@ -6,7 +6,9 @@ import fcntl
 import os
 import signal
 import struct
+import subprocess
 import sys
+import termios
 import threading
 import time
 from collections.abc import Callable, Coroutine, Sequence
@@ -26,6 +28,7 @@ from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, E
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
+from hands.sessions.hookconfig import MARKETPLACE, PLUGIN_ID
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -155,6 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging_in = commands.add_parser("login", help="set the brain up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
+    commands.add_parser("install-plugin", help=f"install hands' Claude Code plugin, {PLUGIN_ID}, for every session, at this terminal: Claude Code shows the command `hands plugin` and asks the person to accept it, which is said before it asks; exits 0 only when the plugin is installed and enabled, asking nothing when it already is; 1 when Claude Code asked and it is not, as when the person declines; 2 when Claude Code could not be asked")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
@@ -293,6 +297,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return login(home, arguments.method, record)
         case "install-fritter":
             return install_fritter(home, record)
+        case "install-plugin":
+            return install_plugin(record)
         case "plugin":
             return render_plugin(home, record)
         case "restart":
@@ -718,6 +724,62 @@ def install_fritter(home: Home, record: audit.Record) -> int:
             case readiness.Missing(said=said) | readiness.Unknown(said=said):
                 print(said, file=sys.stderr)
                 return 1
+
+
+def install_plugin(record: audit.Record) -> int:
+    # [LAW:nothing-unseen] an install is a unit of work: what Claude Code said of the plugin before, whether the
+    # marketplace it comes from was there or added, what its install exited with when it asked, and what it said after.
+    # Exits 1 when Claude Code asked and the plugin is not there after, as when the person declines; 2 when Claude Code
+    # could not be asked, which asking again does not mend.
+    path = os.environ.get("PATH", "")
+    with wide.unit("plugin.install", record):
+        before = readiness.plugin(path)
+        wide.annotate(before=type(before).__name__.lower())
+        match before:
+            case readiness.Ready(said=said):
+                print(said)
+                return 0
+            case readiness.Unknown(said=said):
+                return not_installed(said, 2)
+            case readiness.Missing():
+                pass
+        # A marketplace the person added from a checkout is theirs: Claude Code refuses to add the same name again
+        # from another source.
+        source = readiness.marketplace(path)
+        wide.annotate(marketplace=type(source).__name__.lower())
+        match source:
+            case readiness.Unknown(said=said):
+                return not_installed(said, 2)
+            case readiness.Missing():
+                added = subprocess.run(["claude", "plugin", "marketplace", "add", MARKETPLACE])
+                wide.annotate(marketplace_add_exit=added.returncode)
+                if added.returncode != 0:
+                    return not_installed(f"`claude plugin marketplace add {MARKETPLACE}` failed ({added.returncode})", 2)
+            case readiness.Ready():
+                pass
+        print(f"Claude Code now shows the command `hands plugin`, which installs {PLUGIN_ID}, and asks whether to run it: answer y", flush=True)
+        # Keys pressed during what ran before would reach Claude Code's [y/N] as an answer the person never gave it.
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        # Over an install that is disabled, this enables it again and asks nothing (Claude Code 2.1.289).
+        installed = subprocess.run(["claude", "plugin", "install", "--scope", "user", PLUGIN_ID])
+        wide.annotate(install_exit=installed.returncode)
+        after = readiness.plugin(path)
+        wide.annotate(after=type(after).__name__.lower())
+        match after:
+            case readiness.Ready(said=said):
+                print(said)
+                return 0
+            case readiness.Missing(said=said):
+                return not_installed(said, 1)
+            case readiness.Unknown(said=said):
+                return not_installed(said, 2)
+
+
+def not_installed(said: str, status: int) -> int:
+    wide.fail(said)
+    print(f"hands install-plugin: {said}", file=sys.stderr)
+    return status
 
 
 def render_plugin(home: Home, record: audit.Record) -> int:
