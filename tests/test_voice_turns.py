@@ -38,7 +38,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import by_hand, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import ByHand, CutOff, Entry, HoldHeard, Levels, Other, TurnStart, Unsaid, UserTurn, Voiced
+from hands.sessions.audit import ByHand, CutOff, Entry, HoldHeard, Levels, Other, TurnStart, Unsaid, Untellable, UserTurn, Voiced
 from hands.sessions.audit import Speaker as Voice
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
@@ -172,7 +172,9 @@ class Rig:
     # The context both sides of the conversation write.
     context: LLMContext = field(default_factory=LLMContext)
     # Whose voice each hold with words in it is told to be, oldest first; the user's hand, once none are left.
-    speakers: list[Voice] = field(default_factory=list[Voice])
+    speakers: list[Voice | Exception] = field(default_factory=list[Voice | Exception])
+    # The samples each was told from.
+    told_samples: list[bytes] = field(default_factory=list[bytes])
 
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
@@ -235,10 +237,17 @@ async def rigged(
     """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
-    speakers: list[Voice] = []
+    speakers: list[Voice | Exception] = []
+    told_samples: list[bytes] = []
 
-    def voiced(_samples: bytes, _opener: object) -> Voice:
-        return speakers.pop(0) if speakers else ByHand(taught=False)
+    def voiced(samples: bytes, _opener: object) -> Voice:
+        # Told the voice alone: Pipecat's padding is no part of it.
+        told_samples.append(samples)
+        match speakers.pop(0) if speakers else ByHand(taught=False):
+            case Exception() as failed:
+                raise failed
+            case speaker:
+                return speaker
 
     voice = built.build_voice(
         built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
@@ -268,7 +277,7 @@ async def rigged(
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context, speakers=speakers)
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context, speakers=speakers, told_samples=told_samples)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -283,6 +292,16 @@ async def test_words_in_someone_elses_voice_reach_the_model_as_theirs(rig: Rig) 
     await rig.texts.put("should we split the ticket")
     assert await rig.everything_sent(holds=1) == ["[someone else in the room] should we split the ticket"]
     assert [(entry.hold, entry.speaker) for entry in rig.recorded if isinstance(entry, Voiced)][0] == (1, Other(similarity=0.12))
+
+
+async def test_words_whose_voice_could_not_be_told_still_reach_the_model(rig: Rig) -> None:
+    rig.speakers.append(OSError("disk full"))
+    await rig.hold(["down", "down", "up"], by="engaged conversation")
+    await rig.texts.put("file the ticket")
+    assert await rig.everything_sent(holds=1) == ["file the ticket"]
+    assert [entry.speaker for entry in rig.recorded if isinstance(entry, Voiced)][0] == Untellable("OSError: disk full")
+    # The voice told is the hold as the microphone heard it, without the silence Pipecat pads its WAV with.
+    assert rig.told_samples[0] and rig.told_samples[0] + rig.stt._trailing_silence() == rig.heard[0]  # pyright: ignore[reportPrivateUsage]
 
 
 def holds_heard(rig: Rig) -> list[HoldHeard]:

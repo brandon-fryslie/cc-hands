@@ -35,13 +35,13 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt  # pyright: ignore[reportUnknownVariableType]  (untyped in Pipecat)
 
-from hands.sessions.audit import HoldHeard, Levels, Record, Speaker, Unsaid, Voiced
+from hands.sessions.audit import HoldHeard, Levels, Record, Speaker, Unsaid, Untellable, Voiced
 from hands.sessions.wide import annotate, fail, unit
 from hands.core.place import Place
 from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.speakers import spoken_as
+from hands.voice.speakers import seconds, spoken_as
 from hands.voice.trigger import Opener, turn_start
 from hands.voice.turnstop import Hold, HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
 
@@ -379,22 +379,37 @@ class Whisper(SegmentedSTTService):
         try:
             async with bound:
                 heard = await self._heard(hold.number, levels, audio, await self._prompt())
-            # Recorded, so "I spoke and nothing happened" can be looked into.
-            self._record(heard)
-            match heard.said:
-                case None:
+                # Recorded, so "I spoke and nothing happened" can be looked into.
+                self._record(heard)
+                match heard.said:
+                    case None:
+                        given = None
+                    case said:
+                        # Told inside the bound too: a speaker model that never returns holds the turn open as surely.
+                        given = spoken_as(said, await self._speaker(hold, audio))
+            match heard.said, given:
+                case str() as said, str() as given:
+                    await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
+                    yield Words(given, self._user_id, time_now_iso8601(), LANGUAGE)
+                case _:
                     # Not said: Brandon does not need to hear it (2026-09-27).
                     pass
-                case said:
-                    samples = _samples(audio)
-                    speaker = await self._model.run(lambda: self._told(samples, hold.opener))
-                    self._record(Voiced(hold.number, speaker, round(len(samples) / 2 / transcription.RATE, 3)))
-                    await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
-                    yield Words(spoken_as(said, speaker), self._user_id, time_now_iso8601(), LANGUAGE)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
+
+    async def _speaker(self, hold: Hold, audio: bytes) -> Speaker:
+        """Whose voice the hold in `audio` is in, recorded; told on the voice alone, without the silence Pipecat pads a
+        hold's WAV with."""
+        samples = _samples(audio)[: -len(self._trailing_silence()) or None]
+        try:
+            speaker = await self._model.run(lambda: self._told(samples, hold.opener))
+        except Exception as error:
+            # [LAW:no-silent-failure] the failure is an error line; the words Whisper heard still reach the brain.
+            speaker = Untellable(f"{type(error).__name__}: {error}")
+        self._record(Voiced(hold.number, speaker, round(seconds(samples), 3)))
+        return speaker
 
     async def _heard(self, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
         """What was said in a hold's WAV, primed with `prompt`, the vocabulary.

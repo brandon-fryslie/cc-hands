@@ -134,13 +134,21 @@ class Other:
 @dataclass(frozen=True)
 class Untold:
     """A hold the voice opened that could not be told apart, and is taken as the user's, as every hold was before hands
-    told voices apart: no voiceprint has been taught yet, or too little of the hold was voice to judge."""
+    told voices apart: no voiceprint has been taught yet."""
 
-    why: Literal["no voiceprint", "too short"]
+    why: Literal["no voiceprint"]
+
+
+@dataclass(frozen=True)
+class Untellable:
+    """A hold whose voice could not be told for `error`: its words are given as the user's, as an Untold hold's are, and
+    the failure is an error in the log rather than the words lost."""
+
+    error: str
 
 
 # Whose voice a hold was in (hands.voice.speakers).
-Speaker = ByHand | Matched | Other | Untold
+Speaker = ByHand | Matched | Other | Untold | Untellable
 
 
 @dataclass(frozen=True)
@@ -322,7 +330,7 @@ def level(entry: Entry) -> Level:
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | Exported(error=str()):
+        case Failure() | TypingFailed() | Exported(error=str()) | Voiced(speaker=Untellable()):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)

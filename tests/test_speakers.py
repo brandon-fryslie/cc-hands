@@ -3,9 +3,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hands.sessions.audit import ByHand, Matched, Other, Untold
+from hands.sessions.audit import ByHand, Matched, Other, Speaker, Untellable, Untold
 from hands.voice import speakers
-from hands.voice.speakers import RATE, Speakers, spoken_as
+from hands.voice.speakers import Speakers, spoken_as
+from hands.voice.transcription import RATE
 
 
 class Voices(Speakers):
@@ -31,11 +32,12 @@ def test_a_voice_is_untold_until_the_users_hand_has_taught_the_voiceprint(tmp_pa
     assert heard.told(voice(2), "engaged conversation") == Other(0.0)
 
 
-def test_a_hold_too_short_to_judge_neither_teaches_nor_is_told(tmp_path: Path) -> None:
+def test_a_hold_too_short_to_teach_is_still_told(tmp_path: Path) -> None:
     heard = Voices(tmp_path)
     assert heard.told(voice(2, 0.5), "held key") == ByHand(taught=False)
     assert heard.told(voice(1), "phone button") == ByHand(taught=True)
-    assert heard.told(voice(2, 0.5), "engaged conversation") == Untold("too short")
+    # Someone else's short "yes" is theirs, not the user's.
+    assert heard.told(voice(2, 0.3), "engaged conversation") == Other(0.0)
 
 
 def test_the_voiceprint_is_kept_across_runs(tmp_path: Path) -> None:
@@ -43,6 +45,6 @@ def test_the_voiceprint_is_kept_across_runs(tmp_path: Path) -> None:
     assert Voices(tmp_path).told(voice(2), "engaged conversation") == Other(0.0)
 
 
-@pytest.mark.parametrize(("speaker", "given"), [(Other(0.1), "[someone else in the room] hi"), (Matched(0.9), "hi"), (ByHand(True), "hi"), (Untold("too short"), "hi")])
-def test_only_someone_elses_words_are_marked(speaker: Other | Matched | ByHand | Untold, given: str) -> None:
+@pytest.mark.parametrize(("speaker", "given"), [(Other(0.1), "[someone else in the room] hi"), (Matched(0.9), "hi"), (ByHand(True), "hi"), (Untold("no voiceprint"), "hi"), (Untellable("OSError"), "hi")])
+def test_only_someone_elses_words_are_marked(speaker: Speaker, given: str) -> None:
     assert spoken_as("hi", speaker) == given
