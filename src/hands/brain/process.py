@@ -332,7 +332,7 @@ def unanswered(config_dir: Path) -> str | None:
     them in the brain's own .claude.json. A config directory made by anything else, `claude auth status` among them, has
     none of them. Its API key is the one its settings.json sets: hands' never reaches it (FOREIGN_LOGINS)."""
     try:
-        open_ = firstrun.unanswered(config_dir / ".claude.json", _cwd(config_dir).resolve(), firstrun.api_key(config_dir / "settings.json", {}))
+        open_ = firstrun.unanswered(firstrun.recorded(config_dir / ".claude.json"), _cwd(config_dir).resolve(), firstrun.api_key(config_dir / "settings.json", {}))
     except Rejected as error:
         return str(error)
     return None if open_ is None else open_.why

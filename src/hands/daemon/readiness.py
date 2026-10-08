@@ -223,7 +223,8 @@ def plugin_listed(raw: str) -> Finding:
 @dataclass(frozen=True)
 class FirstRun:
     """What the person's own Claude Code would ask before its input in the folder `hands smoke` starts its session in,
-    and whether it holds a login, which a Claude Code done with its onboarding does not ask for again."""
+    and whether it holds a login it would use: its account's, which a Claude Code done with its onboarding does not ask
+    for again, or an API key it was told to use."""
 
     claude: Path  # the real claude, past any hands shim, that was asked
     unanswered: firstrun.Unanswered | None
@@ -242,16 +243,20 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
         asked = firstrun.persons(environment, home.smoke, config_dir(environment, home.smoke))
     except Rejected as error:
         return Unknown(f"cannot tell what Claude Code would ask first: {error}")
+    # `auth status` takes any API key in its environment for a login, one it was told not to use among them (2.1.294), so
+    # the account's login is asked of it without one, and a key is a login only where its first run approved it.
+    unkeyed = {name: value for name, value in environment.items() if name != firstrun.API_KEY}
     try:
-        status = subprocess.run([claude, "auth", "status"], env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
+        status = subprocess.run([claude, "auth", "status"], env=unkeyed, stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
     except (OSError, subprocess.TimeoutExpired) as error:
         return Unknown(f"cannot ask {claude} whether it is logged in: {error}")
     try:
         # It exits 1 when logged out, saying so in its JSON as when logged in (2.1.289).
-        logged_in = Payload.parse(status.stdout).flag("loggedIn")
+        said = Payload.parse(status.stdout)
+        account = said.flag("loggedIn") and said.optional_text("authMethod") != "api_key"
     except Rejected as error:
         return Unknown(f"`{claude} auth status` answered {status.stdout[:200]!r} {status.stderr[:200]!r}, not its status: {error}")
-    return FirstRun(claude, asked, logged_in)
+    return FirstRun(claude, asked.unanswered, account or asked.keyed)
 
 
 def first_run(home: Home, environment: Mapping[str, str]) -> Finding:

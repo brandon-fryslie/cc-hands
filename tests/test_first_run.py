@@ -1,7 +1,8 @@
 """`hands first-run`, run at a terminal as install.sh runs it: what the person's own Claude Code asks only once is said
 before Claude Code shows it, asked in the folder `hands smoke` starts its session in, and not asked again once answered.
 
-`claude` is a stand-in that records each call, says whether it is logged in from a file beside its calls, and, started
+`claude` is a stand-in that records each call, says whether it is logged in from a file beside its calls, or, as Claude
+Code does, logged in on any API key in its environment, approved or not, and, started
 with no arguments, shows its first screen and reads the answer from the terminal as Claude Code does: y answers every
 question and logs in, writing what Claude Code records; anything else quits before the last question.
 """
@@ -29,7 +30,9 @@ CLAUDE = r"""#!/bin/bash
 echo "claude $* in $(pwd -P)" >>"$ROOT/calls"
 case "$1 $2" in
   "auth status")
-    if [ -e "$ROOT/logged-in" ]; then echo '{"loggedIn": true}'; else echo '{"loggedIn": false}'; exit 1; fi ;;
+    if [ -n "$ANTHROPIC_API_KEY" ]; then echo '{"loggedIn": true, "authMethod": "api_key"}'
+    elif [ -e "$ROOT/logged-in" ]; then echo '{"loggedIn": true, "authMethod": "claude.ai"}'
+    else echo '{"loggedIn": false}'; exit 1; fi ;;
   "auth login")
     [ ! -e "$ROOT/login-fails" ] || exit 1
     touch "$ROOT/logged-in" ;;
@@ -94,9 +97,9 @@ def at_a_terminal(root: Path, typed_ahead: bytes, answer: bytes, key: str | None
     return exit, shown.decode().replace("\r\n", "\n")
 
 
-def answered_before(root: Path, smoke: Path) -> None:
-    """A Claude Code through its first run in smoke, and logged in."""
-    (root / "config" / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(smoke): {"hasTrustDialogAccepted": True}}}))
+def answered_before(root: Path, smoke: Path, keys: dict[str, list[str]] | None = None) -> None:
+    """A Claude Code through its first run in smoke, with these answers on API keys, and logged in."""
+    (root / "config" / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(smoke): {"hasTrustDialogAccepted": True}}, "customApiKeyResponses": keys or {}}))
     (root / "logged-in").touch()
 
 
@@ -193,7 +196,7 @@ def test_a_state_or_settings_hands_cannot_read_is_rejected_not_taken_for_a_first
     state = tmp_path / ".claude.json"
     state.mkdir()
     with pytest.raises(Rejected, match=f"^{state} unreadable: "):
-        firstrun.unanswered(state, tmp_path, None)
+        firstrun.recorded(state)
     settings = tmp_path / "settings.json"
     settings.mkdir()
     with pytest.raises(Rejected, match=f"^{settings} unreadable: "):
@@ -204,3 +207,23 @@ def test_the_state_is_in_the_config_directory_claude_config_dir_names_else_besid
     config = tmp_path / "cwd" / "relative"
     assert firstrun.state_of({"CLAUDE_CONFIG_DIR": "relative", "HOME": str(tmp_path)}, config) == config / ".claude.json"
     assert firstrun.state_of({"HOME": str(tmp_path)}, tmp_path / ".claude") == tmp_path / ".claude.json"
+
+
+KEY = "sk-ant-api03-0123456789abcdefghijklmn"
+
+
+def test_an_api_key_it_was_told_not_to_use_is_no_login_so_it_logs_in_with_its_own(root: Path) -> None:
+    answered_before(root, home(root).smoke.resolve(), {"approved": [], "rejected": [KEY[-20:]]})
+    (root / "logged-in").unlink()
+    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key=KEY)
+    assert exit == 0, shown
+    assert "FIRST SCREEN" not in shown and "Claude Code now logs in with its own login" in shown
+    assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status", "claude auth status", "claude auth login", "claude auth status"]
+
+
+def test_an_api_key_it_was_told_to_use_is_its_login_and_nothing_is_asked(root: Path) -> None:
+    answered_before(root, home(root).smoke.resolve(), {"approved": [KEY[-20:]], "rejected": []})
+    (root / "logged-in").unlink()
+    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key=KEY)
+    assert exit == 0, shown
+    assert "FIRST SCREEN" not in shown and "now logs in" not in shown

@@ -37,31 +37,61 @@ class Unanswered:
         return "; ".join(self.asks)
 
 
-def unanswered(state: Path, cwd: Path, key: Key | None) -> Unanswered | None:
-    """Whether a Claude Code with the .claude.json `state`, started in `cwd` with `key`, would open on one of its first-run
-    questions; None when it would not. `cwd` is trusted when it or a directory above it is. Raises Rejected when `state` is
-    there but cannot be read, which no first run mends."""
-    onboarding = ("its onboarding unfinished", "a theme and a login")
-    trust = (f"{cwd} untrusted", f"whether to trust {cwd}")
-    use = [] if key is None else [(f"the API key {key.source} sets unanswered", f"whether to use the API key {key.source} sets")]
+@dataclass(frozen=True)
+class Recorded:
+    """What a .claude.json records of Claude Code's first run: the directories it was told to trust, and the API keys it
+    was told to use and not to, by their last 20 characters."""
+
+    finished: bool
+    trusted: frozenset[str]
+    approved: frozenset[str]
+    rejected: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Blank:
+    """A .claude.json that records nothing of a first run: there is none, or one Claude Code's first run writes over."""
+
+    why: str
+
+
+def recorded(state: Path) -> Recorded | Blank:
+    """What the .claude.json `state` records; raises Rejected when it is there but cannot be read, which no first run mends."""
     raw = _read(state)
     if raw is None:
-        return Unanswered(f"no {state}", tuple(asks for _, asks in (onboarding, trust, *use)))
+        return Blank(f"no {state}")
     try:
         said = Payload.parse(raw)
         projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
-        trusted = any(Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted") for place in map(str, (cwd, *cwd.parents)) if place in projects)
+        trusted = frozenset(place for place in projects if Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted"))
         responses = Payload.of(said.fields.get("customApiKeyResponses", {}), "its API key answers")
-        answered = {*responses.optional_items("approved"), *responses.optional_items("rejected")}
-        finished = said.optional_flag("hasCompletedOnboarding")
+        return Recorded(said.optional_flag("hasCompletedOnboarding"), trusted, frozenset(map(str, responses.optional_items("approved"))), frozenset(map(str, responses.optional_items("rejected"))))
     except Rejected as error:
         # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot parse.
-        return Unanswered(f"{state} unreadable: {error}", tuple(asks for _, asks in (onboarding, trust, *use)))
-    # [LAW:dataflow-not-control-flow] each question is open or not by its own record; the run asks every open one.
-    open_ = [question for question, done in ((onboarding, finished), (trust, trusted), *((question, key.value[-20:] in answered) for question in use if key)) if not done]
-    if not open_:
-        return None
-    return Unanswered("; ".join(why for why, _ in open_), tuple(asks for _, asks in open_))
+        return Blank(f"{state} unreadable: {error}")
+
+
+def unanswered(answers: Recorded | Blank, cwd: Path, key: Key | None) -> Unanswered | None:
+    """Whether a Claude Code with these answers, started in `cwd` with `key`, would open on one of its first-run questions;
+    None when it would not. `cwd` is trusted when it or a directory above it is."""
+    onboarding = ("its onboarding unfinished", "a theme and a login")
+    trust = (f"{cwd} untrusted", f"whether to trust {cwd}")
+    use = [] if key is None else [(f"the API key {key.source} sets unanswered", f"whether to use the API key {key.source} sets")]
+    match answers:
+        case Blank(why=why):
+            return Unanswered(why, tuple(asks for _, asks in (onboarding, trust, *use)))
+        case Recorded(finished=finished, trusted=trusted_places, approved=approved, rejected=rejected):
+            trusted = any(str(place) in trusted_places for place in (cwd, *cwd.parents))
+            # [LAW:dataflow-not-control-flow] each question is open or not by its own record; the run asks every open one.
+            open_ = [question for question, done in ((onboarding, finished), (trust, trusted), *((question, key.value[-20:] in approved | rejected) for question in use if key)) if not done]
+            if not open_:
+                return None
+            return Unanswered("; ".join(why for why, _ in open_), tuple(asks for _, asks in open_))
+
+
+def approved(answers: Recorded | Blank, key: Key | None) -> bool:
+    """Whether Claude Code would use `key`: its first run was told to."""
+    return key is not None and isinstance(answers, Recorded) and key.value[-20:] in answers.approved
 
 
 def api_key(settings: Path, environment: Mapping[str, str]) -> Key | None:
@@ -82,10 +112,21 @@ def state_of(environment: Mapping[str, str], config_dir: Path) -> Path:
     return (config_dir if environment.get("CLAUDE_CONFIG_DIR") else Path(environment.get("HOME") or Path.home())) / ".claude.json"
 
 
-def persons(environment: Mapping[str, str], cwd: Path, config_dir: Path) -> Unanswered | None:
+@dataclass(frozen=True)
+class Persons:
+    """What the person's own Claude Code would ask first, and whether it has an API key it was told to use, which is a
+    login of its own."""
+
+    unanswered: Unanswered | None
+    keyed: bool
+
+
+def persons(environment: Mapping[str, str], cwd: Path, config_dir: Path) -> Persons:
     """What the person's own Claude Code, run with this environment under `config_dir`, would ask first in `cwd`; raises
     Rejected when its settings.json or .claude.json is there but cannot be read, which no first run mends."""
-    return unanswered(state_of(environment, config_dir), cwd.resolve(), api_key(config_dir / "settings.json", environment))
+    answers = recorded(state_of(environment, config_dir))
+    key = api_key(config_dir / "settings.json", environment)
+    return Persons(unanswered(answers, cwd.resolve(), key), approved(answers, key))
 
 
 def _read(path: Path) -> bytes | None:
