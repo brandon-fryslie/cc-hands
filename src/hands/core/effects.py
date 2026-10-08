@@ -8,7 +8,7 @@ from typing import Literal
 from hands.core.events import SessionEvent
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, RequestId, SessionId
+from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, Question, RequestId, SessionId
 from hands.core.tmux import Pane
 from hands.core.turn import AgentId, AgentTask
 
@@ -170,7 +170,15 @@ class Expired:
     on: Blocker
 
 
-Announcement = DeadlineNear | Expired
+@dataclass(frozen=True)
+class WentOn:
+    """Nobody answered a question in time, so Claude Code went on without an answer."""
+
+    session: SessionId
+    on: Question
+
+
+Announcement = DeadlineNear | Expired | WentOn
 
 
 @dataclass(frozen=True)

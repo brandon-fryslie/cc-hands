@@ -9,7 +9,7 @@ from pathlib import PurePath
 from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell, WentOn
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
 from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
@@ -152,7 +152,7 @@ async def relay(
 
 def _teller(heard: Heard) -> SessionId:
     match heard:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
+        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session) | WentOn(session=session)) | Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
             return session
 
 
@@ -328,6 +328,8 @@ def announcement_text(announcement: Announcement, names: Names) -> str:
         case Expired(session=session, on=on):
             # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
             return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on)}."
+        case WentOn(session=session, on=on):
+            return f"Nobody answered {names(session)} about {_what(on)} in time, so it went on without an answer."
 
 
 def answer_readback(outcome: Outcome, names: Names) -> str:

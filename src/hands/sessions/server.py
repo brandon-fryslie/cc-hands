@@ -36,7 +36,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
             # The shim prints this reply, so the session that sent the hook shows why.
             fail(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
-        annotate(hook=said.name, session=said.session)
+        annotate(hook=said.name, session=said.session, question_timeout=said.asked)
         match said.joining:
             case Attached() as joining:
                 await sessions.apply(joining)

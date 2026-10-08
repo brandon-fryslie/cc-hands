@@ -27,6 +27,7 @@ from hands.core.effects import (
     Snapshot,
     Summarise,
     Unregistered,
+    WentOn,
     Withdraw,
 )
 from hands.core.events import Abandoned, Attached, CarriedOut, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
@@ -34,6 +35,7 @@ from hands.core import progress
 from hands.core.reducer import EXPIRED_MESSAGE, UNTOLD, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
+    AutoContinued,
     Dialog,
     Gone,
     Held,
@@ -82,14 +84,14 @@ NEXT = PromptId("p2")
 IDLE = Idle(status.Idle(), Stamp(900), after=None)
 BUSY = Running(Busy(), Stamp(1000), idled=Stamp(1000))
 AT_DIALOG = Running(Waiting("permission prompt"), Stamp(1100), idled=Stamp(1000))
-HELD = Held(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
+HELD = Held(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False, continues=None)
 
 LIVE: list[SessionState] = [Unreported(), IDLE, BUSY, AT_DIALOG]
 SESSION_EVENTS: list[SessionEvent] = [
     Prompted(ONE.id, at=5.0, mode=None, prompt=TURN),
     Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST),
     Closed(ONE.id, TURN, "Done."),
-    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None),
+    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None, timeout=None),
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
     Ended(ONE.id, "prompt_input_exit"),
     StatusReported(ONE.id, Report(Busy(), Stamp(1000)), at=5.0),
@@ -103,7 +105,7 @@ HEARD: list[SessionEvent] = [
     Taken(ONE.id, NEXT, Stamp(5000), at=5.0),
     Interrupted(ONE.id, TURN, at=5.0),
     Continued(ONE.id, was=TURN, now=NEXT),
-    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None),
+    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None, timeout=None),
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
     Progressed(ONE.id, (TURN,), (progress.Doing(progress.RUNNING, "run the test suite"),), at=5.0),
 ]
@@ -198,7 +200,7 @@ def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: Ses
 @pytest.mark.parametrize("before", LIVE)
 def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState) -> None:
     """Held whatever the status last read: a session that joins on its request has had none read yet."""
-    event = PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None)
+    event = PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None, timeout=None)
     assert reduce(holding(before), event) == (holding(before, dialog=replace(HELD, request=RequestId("r1"), deadline=5.0 + TIMEOUT)), [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
 
 
@@ -274,8 +276,8 @@ def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until
 
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:
     edit = Permission(tool="Edit", input={"file_path": "a.py"})
-    after, effects = reduce(holding(AT_DIALOG, dialog=HELD), PermissionRequested(ONE.id, at=7.0, request=RequestId("r1"), on=edit, mode=None))
-    assert after == holding(AT_DIALOG, dialog=Held(on=edit, request=RequestId("r1"), deadline=7.0 + TIMEOUT, warned=False))
+    after, effects = reduce(holding(AT_DIALOG, dialog=HELD), PermissionRequested(ONE.id, at=7.0, request=RequestId("r1"), on=edit, mode=None, timeout=None))
+    assert after == holding(AT_DIALOG, dialog=Held(on=edit, request=RequestId("r1"), deadline=7.0 + TIMEOUT, warned=False, continues=None))
     assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw()), Narrate(Asking(ONE.id, RequestId("r1"), edit))]
 
 
@@ -299,7 +301,7 @@ def test_at_the_deadline_the_request_is_denied_and_said_to_be(warned: bool) -> N
 
 def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> None:
     state = holding(BUSY)
-    state, asked = reduce(state, PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None))
+    state, asked = reduce(state, PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None, timeout=None))
     heard: list[Effect] = [*asked]
     for second in range(1, int(TIMEOUT) + 5):
         state, effects = reduce(state, Tick(at=float(second)))
@@ -312,8 +314,43 @@ def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> N
     ]
 
 
+QUESTION = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), {"questions": []})
+
+
+@pytest.mark.parametrize(
+    ("timeout", "warned"),
+    [
+        # Claude Code goes on from the question first, so it is warned of before then; hands' own deadline stands.
+        (TIMEOUT / 2, TIMEOUT / 2 - WARNING_LEAD_SECONDS),
+        # The hook's deadline comes first, as it does for a question Claude Code waits on as long as it takes.
+        (TIMEOUT * 10, TIMEOUT - WARNING_LEAD_SECONDS),
+        (None, TIMEOUT - WARNING_LEAD_SECONDS),
+    ],
+)
+def test_a_question_is_warned_of_before_the_sooner_of_its_own_timeout_and_the_hooks(timeout: float | None, warned: float) -> None:
+    state, _ = reduce(holding(BUSY), PermissionRequested(ONE.id, at=0.0, request=RequestId("q"), on=QUESTION, mode=None, timeout=timeout))
+    heard: list[tuple[float, Effect]] = []
+    for second in range(1, int(TIMEOUT) + 5):
+        state, effects = reduce(state, Tick(at=float(second)))
+        heard += [(float(second), effect) for effect in effects]
+    # A touch at the dialog restarts Claude Code's timer, so only Claude Code says when it went on; hands' hook ends on its own deadline.
+    assert heard == [
+        (warned, Speak(DeadlineNear(ONE.id, RequestId("q"), QUESTION, remaining=WARNING_LEAD_SECONDS))),
+        (TIMEOUT, Reply(ONE.id, RequestId("q"), Withdraw())),
+        (TIMEOUT, Speak(Expired(ONE.id, QUESTION))),
+    ]
+    assert state == holding(BUSY, dialog=LetGo(QUESTION))
+
+
+@pytest.mark.parametrize("dialog", [Held(on=QUESTION, request=RequestId("q"), deadline=TIMEOUT, warned=True, continues=TIMEOUT / 2), LetGo(QUESTION)])
+def test_a_question_claude_code_went_on_from_unanswered_is_said_to_have(dialog: Dialog) -> None:
+    after, effects = reduce(holding(AT_DIALOG, dialog=dialog), ToolFinished(ONE.id, at=TIMEOUT / 2, call=AutoContinued(QUESTION.asked), mode=None))
+    assert after == holding(AT_DIALOG)
+    assert effects[-1:] == [Speak(WentOn(ONE.id, QUESTION))]
+
+
 def test_a_request_heard_again_keeps_its_deadline_and_is_warned_of_once() -> None:
-    asked = PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None)
+    asked = PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None, timeout=None)
     state, _ = reduce(holding(AT_DIALOG), asked)
     state, warned = reduce(state, Tick(at=51.0))
     again, effects = reduce(state, replace(asked, at=52.0))
@@ -340,7 +377,7 @@ SAID_TWICE_FROM: list[Registry] = [
     [
         *HEARD,
         *SESSION_EVENTS,
-        PermissionRequested(ONE.id, at=5.0, request=HELD.request, on=BASH, mode=None),
+        PermissionRequested(ONE.id, at=5.0, request=HELD.request, on=BASH, mode=None, timeout=None),
         Died(ONE),
         Ended(ONE.id, "other"),
         said(status.Idle()),
@@ -434,12 +471,12 @@ def test_a_question_answered_at_the_keyboard_comes_back_with_its_answers_and_sti
     asked = {"questions": [{"question": "Which?", "options": [{"label": "this"}]}]}
     question = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), asked)
     answered = Question(question.asked, {**asked, "answers": {"Which?": "this"}})
-    waiting = Held(on=question, request=RequestId("r0"), deadline=65.0, warned=False)
+    waiting = Held(on=question, request=RequestId("r0"), deadline=65.0, warned=False, continues=None)
     after, effects = reduce(holding(AT_DIALOG, dialog=waiting), ToolFinished(ONE.id, at=20.0, call=answered, mode=None))
     assert (after, effects) == (holding(AT_DIALOG), [Reply(ONE.id, RequestId("r0"), Withdraw())])
 
 
-@pytest.mark.parametrize("dialog", [Held(on=Plan("the plan"), request=RequestId("r0"), deadline=65.0, warned=False), LetGo(Plan("the plan"))])
+@pytest.mark.parametrize("dialog", [Held(on=Plan("the plan"), request=RequestId("r0"), deadline=65.0, warned=False, continues=None), LetGo(Plan("the plan"))])
 def test_a_plan_approved_at_the_keyboard_releases_the_wait(dialog: Dialog) -> None:
     after, _ = reduce(holding(AT_DIALOG, dialog=dialog), ToolFinished(ONE.id, at=20.0, call=PlanApproved(), mode=None))
     assert after == holding(AT_DIALOG)
@@ -541,7 +578,7 @@ def test_a_session_at_its_prompt_prompted_again_marks_the_repository_its_turn_st
 REPORTING: list[SessionEvent] = [
     Prompted(ONE.id, at=5.0, mode="plan", prompt=TURN),
     Stopped(ONE.id, None, mode="plan", prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST),
-    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="plan"),
+    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="plan", timeout=None),
     ToolFinished(ONE.id, at=5.0, call=BASH, mode="plan"),
 ]
 
@@ -568,7 +605,7 @@ def test_a_mode_reported_for_the_first_time_is_set() -> None:
 
 
 def test_a_request_asked_in_a_new_mode_is_narrated_and_sets_the_mode() -> None:
-    after, effects = reduce(moded(BUSY, "default"), PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="acceptEdits"))
+    after, effects = reduce(moded(BUSY, "default"), PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode="acceptEdits", timeout=None))
     assert (live(after).mode, effects) == ("acceptEdits", [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
 
 
@@ -721,7 +758,7 @@ def test_a_prompt_that_cannot_be_told_from_one_queued_into_the_open_turn_is_queu
 
 
 @pytest.mark.parametrize("event", [
-    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None),
+    PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None, timeout=None),
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
 ])
 def test_only_a_prompt_or_a_record_moves_the_turn(event: SessionEvent) -> None:

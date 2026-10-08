@@ -602,7 +602,7 @@ async def test_a_tick_that_calls_for_a_deadline_is_one_event_with_the_deny_and_w
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
-    asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None)
+    asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None, timeout=None)
     hook = asyncio.create_task(sessions.ask(asked))
     await asyncio.sleep(0)
     recorded.clear()
@@ -628,7 +628,7 @@ async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> 
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
-    asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None)
+    asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None, timeout=None)
     hook = asyncio.create_task(sessions.ask(asked))
     await asyncio.sleep(0)
     recorded.clear()

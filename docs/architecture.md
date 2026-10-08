@@ -149,6 +149,7 @@ class Held:
     request: RequestId                    # the shim call waiting for a reply
     deadline: Instant                     # derived from the hook config's timeout
     warned: bool                          # the deadline warning has been spoken
+    continues: Instant | None             # when Claude Code goes on from a question by itself, if it does
 
 # Everything Claude Code stops for arrives through the same PermissionRequest hook.
 Blocker = Permission | Question | Plan
@@ -302,6 +303,21 @@ The deadline itself comes from one number. `hands.sessions.hookconfig` declares 
 waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
 earlier, so the deny reaches Claude Code before Claude Code kills the hook
 `[LAW:single-enforcer]`.
+
+A question can end sooner. Claude Code's `askUserQuestionTimeout` (`60s`, `5m`, `10m`, or
+`never`, the default) is idle time: it runs beside the hook from the request, restarts on
+any touch at the dialog, and when it runs out Claude Code goes on with whatever answers
+are selected. When a `PermissionRequest` for `AskUserQuestion` arrives,
+`hands.sessions.questiontimeout` reads the setting as 2.1.289 does: the session's
+`--settings` (found in its `claude` process's arguments), then the user's `settings.json`
+in the session's config directory unless `--setting-sources` leaves user settings out.
+Managed policy outranks both and is not read. The warning is spoken 10 seconds before the
+sooner of that timeout and the hook's deadline, so a `60s` question is warned of at 50
+seconds. Only Claude Code knows when it actually went on: its `PostToolUse` carries
+`afkTimeoutMs` in the tool input, and that is when hands says the question went on
+without an answer. The hook's deadline still stands as hands' own. The hook's event
+carries what was read (`question_timeout`: seconds, the settings that set them, and any
+settings left unread).
 
 Claude Code queues messages submitted while a turn is running and shows them with
 "Press up to edit queued messages". Measured on 2.1.270: text pasted into a working

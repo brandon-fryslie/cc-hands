@@ -59,10 +59,10 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
         StatusReported(untitled.id, Report(Idle(), Stamp(1)), at=1.0),
         Joined(blocked, "startup"),
         StatusReported(blocked.id, Report(Waiting("permission prompt"), Stamp(1)), at=2.0),
-        PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default"),
+        PermissionRequested(blocked.id, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default", timeout=None),
         Joined(asking, "startup"),
         StatusReported(asking.id, Report(Waiting("input needed"), Stamp(1)), at=3.0),
-        PermissionRequested(asking.id, at=3.0, request=RequestId("q"), on=Question((), {}), mode=None),
+        PermissionRequested(asking.id, at=3.0, request=RequestId("q"), on=Question((), {}), mode=None, timeout=None),
         Joined(ended, "startup"),
         Ended(ended.id, "prompt_input_exit"),
     ):
@@ -85,7 +85,7 @@ async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiti
     """Its status is not read yet, and what it waits on is what its hook asked."""
     lagging = membership(tmp_path, "lagging")
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
+    for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default", timeout=None)):
         await sessions.apply(event)
     assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
 

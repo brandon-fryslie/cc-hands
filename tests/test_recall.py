@@ -51,7 +51,7 @@ def applied(event: Event, *effects: Reply) -> WideEvent:
 
 
 def asked(request: str, on: Blocker) -> WideEvent:
-    return applied(PermissionRequested(BILLING, 1.0, RequestId(request), on, "default"))
+    return applied(PermissionRequested(BILLING, 1.0, RequestId(request), on, "default", None))
 
 
 def answered(request: str, reply: HookReply) -> WideEvent:
