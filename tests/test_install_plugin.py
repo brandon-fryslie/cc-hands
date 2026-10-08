@@ -25,8 +25,10 @@ from hands.sessions.hookconfig import MARKETPLACE, PLUGIN_ID
 CLAUDE = r"""#!/bin/bash
 echo "claude $*" >>"$ROOT/calls"
 case "$1 $2" in
-  "plugin list") cat "$ROOT/listed" 2>/dev/null || echo "[]" ;;
-  "plugin marketplace") ;;
+  "plugin list")
+    [ ! -e "$ROOT/list-fails" ] || { echo "cannot list" >&2; exit 3; }
+    cat "$ROOT/listed" 2>/dev/null || echo "[]" ;;
+  "plugin marketplace") [ ! -e "$ROOT/add-fails" ] || exit 4 ;;
   "plugin install")
     printf 'Run this command now? [y/N] '
     read -r answer
@@ -103,7 +105,7 @@ def test_the_accept_prompt_is_announced_and_a_key_typed_before_it_is_not_taken_a
     assert calls(root) == [list_call, f"claude plugin marketplace add {MARKETPLACE}", f"claude plugin install --scope user {PLUGIN_ID}", list_call]
     # [LAW:nothing-unseen] the install's event: what was found before, what the install exited with, what was there after.
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("ok", {"before": "missing", "marketplace_add_exit": 0, "install_exit": 0, "installed": True})
+    assert (event["outcome"], event["facts"]) == ("ok", {"before": "missing", "marketplace_add_exit": 0, "install_exit": 0, "after": "ready"})
 
 
 def test_declining_the_accept_prompt_fails_naming_the_plugin_as_not_installed(root: Path) -> None:
@@ -111,7 +113,7 @@ def test_declining_the_accept_prompt_fails_naming_the_plugin_as_not_installed(ro
     assert exit == 1
     assert f"hands install-plugin: the plugin {PLUGIN_ID} is not installed" in shown
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("failed", {"before": "missing", "marketplace_add_exit": 0, "install_exit": 1, "installed": False})
+    assert (event["outcome"], event["facts"]) == ("failed", {"before": "missing", "marketplace_add_exit": 0, "install_exit": 1, "after": "missing"})
 
 
 def test_a_plugin_already_installed_is_not_asked_for_again(root: Path) -> None:
@@ -122,3 +124,22 @@ def test_a_plugin_already_installed_is_not_asked_for_again(root: Path) -> None:
     assert calls(root) == ["claude plugin list --json"]
     [event] = events(root)
     assert (event["outcome"], event["facts"]) == ("ok", {"before": "ready"})
+
+
+def test_a_marketplace_that_cannot_be_added_fails_before_anything_is_asked(root: Path) -> None:
+    (root / "add-fails").touch()
+    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
+    assert exit == 1
+    assert f"`claude plugin marketplace add {MARKETPLACE}` failed (4)" in shown and "[y/N]" not in shown
+    [event] = events(root)
+    assert (event["outcome"], event["facts"]) == ("failed", {"before": "missing", "marketplace_add_exit": 4})
+
+
+def test_a_claude_that_cannot_list_its_plugins_installs_nothing(root: Path) -> None:
+    (root / "list-fails").touch()
+    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
+    assert exit == 2
+    assert "`claude plugin list` failed (3)" in shown and "cannot list" in shown
+    assert calls(root) == ["claude plugin list --json"]
+    [event] = events(root)
+    assert (event["outcome"], event["facts"]) == ("failed", {"before": "unknown"})

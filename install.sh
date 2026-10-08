@@ -103,13 +103,24 @@ lines=()
 on_login_path "$HOMEBREW_PREFIX/bin" || lines+=("eval \"\$($HOMEBREW_PREFIX/bin/brew shellenv)\"")
 on_login_path "$HOME/.local/bin" || lines+=("export PATH=\"\$HOME/.local/bin:\$PATH\"")
 [ "$bin" = "$HOME/.local/bin" ] || on_login_path "$bin" || lines+=("export PATH=\"$bin:\$PATH\"")
-# The shim runs the claude after it on PATH, so it must be the claude a new terminal finds, not only on its PATH: its line
-# goes last, which puts it first.
-[ "$(PATH=$login_path command -v claude)" = "$shims/claude" ] || lines+=("export PATH=\"$shims:\$PATH\"")
 if [ ${#lines[@]} -gt 0 ]; then
   [ -n "$profile" ] || fail "your shell, $SHELL, is not zsh or bash; add these lines to its login profile and open a new terminal: ${lines[*]}"
   printf '%s\n' "${lines[@]}" >>"$profile"
   say "added to $profile, for your login shell's PATH: ${lines[*]}"
+fi
+# The shim runs the claude after it on PATH, so it must be the claude a new terminal finds, not only on its PATH. A new
+# terminal's shell is interactive too, and zsh then reads ~/.zshrc after the profile, where a PATH line can put another
+# claude back in front: the shim's line goes last in the file read last.
+case $(basename "$SHELL") in
+  zsh) rc=$HOME/.zshrc ;;
+  *) rc=$profile ;;
+esac
+terminal_path=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" -ilc 'printf "\n%s" "$PATH"' </dev/null | tail -n 1)
+if [ "$(PATH=$terminal_path command -v claude)" != "$shims/claude" ]; then
+  line="export PATH=\"$shims:\$PATH\""
+  [ -n "$rc" ] || fail "your shell, $SHELL, is not zsh or bash; add this line last to the file it reads at start and open a new terminal: $line"
+  printf '%s\n' "$line" >>"$rc"
+  say "added to $rc, so a new terminal's claude is hands': $line"
 fi
 
 # Last, so that declining it leaves every step before it done.

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from hands.daemon import readiness
+from hands.sessions.hookconfig import MARKETPLACE
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.sh"
@@ -102,8 +103,8 @@ class Sandbox:
         return self.log.read_text().splitlines()
 
     def login_finds(self, command: str, shell: str = "/bin/zsh") -> str:
-        """Where a new terminal's login shell finds `command`, or the empty string."""
-        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, "-lc", f"command -v {command}"], capture_output=True, text=True)
+        """Where a new terminal's shell, interactive and a login shell, finds `command`, or the empty string."""
+        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, "-ilc", f"command -v {command}"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
         return found.stdout.strip().splitlines()[-1] if found.stdout.strip() else ""
 
 
@@ -156,6 +157,18 @@ def test_a_second_run_installs_nothing_and_leaves_the_profile_byte_for_byte(sand
     assert not [call for call in calls if "installer" in call or " install " in f"{call} " or call.startswith("sudo")], calls
     assert (sandbox.home / ".zprofile").read_bytes() == profile
     assert (sandbox.home / ".local/bin/hands").read_bytes() == hands
+
+
+def test_a_zshrc_that_puts_another_claude_first_is_answered_in_the_zshrc(sandbox: Sandbox) -> None:
+    # As Claude Code's own installer suggests: ~/.local/bin, where its claude is, put first by ~/.zshrc, which a new
+    # terminal reads after the profile.
+    (sandbox.home / ".zshrc").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+    ran = sandbox.run()
+    assert ran.returncode == 0, ran.stderr
+    assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
+    rc = (sandbox.home / ".zshrc").read_bytes()
+    assert sandbox.run().returncode == 0
+    assert (sandbox.home / ".zshrc").read_bytes() == rc
 
 
 def test_a_run_stopped_part_way_is_finished_by_running_it_again(sandbox: Sandbox) -> None:
@@ -256,3 +269,7 @@ def test_a_shim_behind_the_native_claude_on_the_login_path_is_put_first(sandbox:
     (sandbox.home / ".zprofile").write_text('export PATH="$HOME/.hands/bin:$PATH"\nexport PATH="$HOME/.local/bin:$PATH"\n')
     assert sandbox.run().returncode == 0
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
+
+
+def test_the_releases_it_installs_and_the_marketplace_hands_adds_are_one_repository() -> None:
+    assert f"REPO={MARKETPLACE}\n" in INSTALL.read_text()

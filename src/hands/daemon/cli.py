@@ -756,7 +756,7 @@ def install_plugin(record: audit.Record) -> int:
         installed = subprocess.run(["claude", "plugin", "install", "--scope", "user", PLUGIN_ID])
         wide.annotate(install_exit=installed.returncode)
         after = readiness.plugin(path)
-        wide.annotate(installed=isinstance(after, readiness.Ready))
+        wide.annotate(after=type(after).__name__.lower())
         match after:
             case readiness.Ready(said=said):
                 print(said)

@@ -86,20 +86,20 @@ def test_a_plugin_enabled_at_any_scope_is_ready() -> None:
     assert isinstance(readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False), listed(PLUGIN_ID, True)])), Ready)
 
 
-def test_a_disabled_plugin_is_missing_and_says_how_to_enable_it() -> None:
+def test_a_disabled_plugin_is_missing_and_says_how_to_install_it() -> None:
     found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False)]))
-    assert isinstance(found, Missing) and f"claude plugin enable --scope user {PLUGIN_ID}" in found.said
+    assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
     found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", True)]))
-    assert isinstance(found, Missing) and f"claude plugin install {PLUGIN_ID}" in found.said
+    assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_an_install_for_one_project_is_not_one_for_every_session() -> None:
     project = {**listed(PLUGIN_ID, True, "local"), "projectPath": "/code/cc-hands"}
     found = readiness.plugin_listed(json.dumps([project]))
-    assert isinstance(found, Missing) and f"`claude plugin install {PLUGIN_ID}`" in found.said
+    assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_another_plugin_listed_unreadably_says_nothing_of_hands() -> None:

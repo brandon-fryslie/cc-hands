@@ -236,8 +236,7 @@ which writes the plugin, its hooks run by that hands' own Python, and prints whe
 Claude Code shows you that command and asks you to accept it at install.
 
 ```
-claude plugin marketplace add brandon-fryslie/cc-hands   # once; a checkout's path works too
-claude plugin install hands@cc-hands              # accept `hands plugin`; hooks on, in every new session
+hands install-plugin                              # the one command runs this; accept `hands plugin`; hooks on, in every new session
 claude plugin disable hands@cc-hands              # hooks off, still installed
 claude plugin enable hands@cc-hands               # hooks back on
 claude plugin uninstall hands@cc-hands            # hooks gone
