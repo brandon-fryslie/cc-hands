@@ -61,7 +61,9 @@ echo "hands $*" >>"${LOG:-/dev/null}"
 case "$1" in
   --version) echo "hands @VERSION@" ;;
   install-fritter) mkdir -p "$HOME/.hands/bin" && printf '#!/bin/sh\n' >"$HOME/.hands/bin/claude" && chmod +x "$HOME/.hands/bin/claude" ;;
-  install-plugin) [ ! -e "$STUBS/plugin-declined" ] ;;
+  install-plugin)
+    [ ! -e "$STUBS/plugin-declined" ] || exit 1
+    [ ! -e "$STUBS/claude-unaskable" ] || exit 2 ;;
 esac
 """
 # sudo -v is where the password is asked; the run's output marks the moment. The keeper's sudo -n -v finds nothing cached.
@@ -104,8 +106,8 @@ class Sandbox:
 
     def login_finds(self, command: str, shell: str = "/bin/zsh") -> str:
         """Where a new terminal's shell, interactive and a login shell, finds `command`, or the empty string."""
-        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, "-ilc", f"command -v {command}"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
-        return found.stdout.strip().splitlines()[-1] if found.stdout.strip() else ""
+        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, "-ilc", f'printf "\\n@found@%s\\n" "$(command -v {command})"'], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        return [line.removeprefix("@found@") for line in found.stdout.splitlines() if line.startswith("@found@")][-1]
 
 
 def executable(path: Path, text: str) -> None:
@@ -262,6 +264,29 @@ def test_declining_the_plugin_fails_saying_a_second_run_asks_again_with_every_st
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
     (sandbox.root / "stubs" / "plugin-declined").unlink()
     assert sandbox.run().returncode == 0
+
+
+def test_a_claude_that_cannot_be_asked_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "claude-unaskable").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "asks again" not in ran.stderr
+
+
+def test_a_shell_whose_startup_files_end_it_without_a_terminal_stops_the_run_saying_so(sandbox: Sandbox) -> None:
+    # As a ~/.zshrc that starts tmux, which with no terminal exits 1, and the shell with it.
+    (sandbox.home / ".zshrc").write_text("exit 1\n")
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "/bin/zsh -ilc, run with no terminal, exited 1" in ran.stderr
+    assert "hands install-plugin" not in sandbox.calls()
+
+
+def test_what_a_logout_file_prints_is_not_taken_for_the_path(sandbox: Sandbox) -> None:
+    (sandbox.home / ".zlogout").write_text("echo bye\n")
+    assert sandbox.run().returncode == 0
+    assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
+    profile = (sandbox.home / ".zprofile").read_bytes()
+    assert sandbox.run().returncode == 0
+    assert (sandbox.home / ".zprofile").read_bytes() == profile
 
 
 def test_a_shim_behind_the_native_claude_on_the_login_path_is_put_first(sandbox: Sandbox) -> None:

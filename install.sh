@@ -95,9 +95,18 @@ case $(basename "$SHELL") in
     for name in .profile .bash_login .bash_profile; do [ ! -e "$HOME/$name" ] || profile=$HOME/$name; done ;;
   *) profile= ;;
 esac
-# A new terminal's login shell starts from launchd's PATH, not this run's, which already has every directory. Its PATH is
-# the last line it prints, after whatever the profile itself prints.
-login_path=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" -lc 'printf "\n%s" "$PATH"' </dev/null | tail -n 1)
+# The PATH the person's shell, started with these flags, ends its startup files with. It starts from launchd's PATH, as a
+# new terminal's does, not this run's, which already has every directory, and its PATH is the line marked as it, among
+# whatever its startup files and a login shell's logout file print.
+shell_path() {
+  local printed
+  printed=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" "$1" 'printf "\n@hands-path@%s\n" "$PATH"' </dev/null) ||
+    fail "your shell, $SHELL $1, run with no terminal, exited $? before it said its PATH, so which commands a new terminal finds is unknown: its startup files end a shell that has no terminal"
+  printed=$(printf '%s\n' "$printed" | sed -n 's/^@hands-path@//p')
+  [ -n "$printed" ] || fail "your shell, $SHELL $1, run with no terminal, ended without saying its PATH, so which commands a new terminal finds is unknown"
+  printf '%s' "$printed"
+}
+login_path=$(shell_path -lc)
 on_login_path() { case ":$login_path:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
 lines=()
 on_login_path "$HOMEBREW_PREFIX/bin" || lines+=("eval \"\$($HOMEBREW_PREFIX/bin/brew shellenv)\"")
@@ -115,7 +124,7 @@ case $(basename "$SHELL") in
   zsh) rc=$HOME/.zshrc ;;
   *) rc=$profile ;;
 esac
-terminal_path=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" -ilc 'printf "\n%s" "$PATH"' </dev/null | tail -n 1)
+terminal_path=$(shell_path -ilc)
 if [ "$(PATH=$terminal_path command -v claude)" != "$shims/claude" ]; then
   line="export PATH=\"$shims:\$PATH\""
   [ -n "$rc" ] || fail "your shell, $SHELL, is not zsh or bash; add this line last to the file it reads at start and open a new terminal: $line"
@@ -124,7 +133,13 @@ if [ "$(PATH=$terminal_path command -v claude)" != "$shims/claude" ]; then
 fi
 
 # Last, so that declining it leaves every step before it done.
-hands install-plugin || fail "hands' Claude Code plugin is not installed, so no session joins hands; running this command again asks again"
+plugin=0
+hands install-plugin || plugin=$?
+case $plugin in
+  0) ;;
+  1) fail "hands' Claude Code plugin is not installed, so no session joins hands; running this command again asks again" ;;
+  *) fail "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked, as said above" ;;
+esac
 
 say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed; this terminal is now a login shell that finds them"
 exec "$SHELL" -l

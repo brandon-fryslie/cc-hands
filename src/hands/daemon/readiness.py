@@ -29,7 +29,7 @@ from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
 from hands.sessions import heartbeat, liveness, wrapper
-from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.hookconfig import MARKETPLACE, MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
@@ -149,11 +149,30 @@ def daemon(home: Home, now: datetime) -> Finding:
 
 def plugin(path: str) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has hands' plugin installed and enabled."""
+    match listing(path, "plugin", f"whether the plugin {PLUGIN_ID} is installed"):
+        case Unknown() as unknown:
+            return unknown
+        case str() as listed:
+            return plugin_listed(listed)
+
+
+def marketplace(path: str) -> Finding:
+    """Whether Claude Code, as `claude` on this PATH runs it, has the marketplace hands' plugin is installed from, from
+    whichever source the person added it: this repository on GitHub, or a checkout of it."""
+    match listing(path, "plugin marketplace", f"whether the marketplace {MARKETPLACE_NAME} is added"):
+        case Unknown() as unknown:
+            return unknown
+        case str() as listed:
+            return marketplace_listed(listed)
+
+
+def listing(path: str, command: str, unknown: str) -> str | Unknown:
+    """What `claude <command> list --json` prints, as `claude` on this PATH runs it."""
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
     # Not a session to the shim, since nothing here is a terminal, so the shim runs the real claude.
     try:
         listed = subprocess.run(
-            ["claude", "plugin", "list", "--json"],
+            ["claude", *command.split(), "list", "--json"],
             env={**os.environ, "PATH": path},
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -162,10 +181,21 @@ def plugin(path: str) -> Finding:
         )
     # A ValueError is output that is not text.
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        return Unknown(f"cannot ask `claude plugin list` whether the plugin {PLUGIN_ID} is installed: {error}")
+        return Unknown(f"cannot ask `claude {command} list` {unknown}: {error}")
     if listed.returncode != 0:
-        return Unknown(f"`claude plugin list` failed ({listed.returncode}), so whether the plugin {PLUGIN_ID} is installed is unknown: {listed.stderr.strip()}")
-    return plugin_listed(listed.stdout)
+        return Unknown(f"`claude {command} list` failed ({listed.returncode}), so {unknown} is unknown: {listed.stderr.strip()}")
+    return listed.stdout
+
+
+def marketplace_listed(raw: str) -> Finding:
+    """What `claude plugin marketplace list --json` says of the marketplace hands' plugin is installed from."""
+    try:
+        names = {entry.text("name") for entry in Payload.parse_list(raw.encode(), "each marketplace")}
+    except Rejected as error:
+        return Unknown(f"`claude plugin marketplace list --json` printed what hands cannot read: {error}")
+    if MARKETPLACE_NAME in names:
+        return Ready(f"the marketplace {MARKETPLACE_NAME} is added")
+    return Missing(f"the marketplace {MARKETPLACE_NAME} is not added: `claude plugin marketplace add {MARKETPLACE}`")
 
 
 def plugin_listed(raw: str) -> Finding:
