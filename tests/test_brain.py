@@ -1272,7 +1272,7 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     assert main(["--home", str(tmp_path), "login"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     account_kept_out(brain)
-    assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": "its onboarding unfinished", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
+    assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": f"its onboarding unfinished; {(brain / 'cwd').resolve()} untrusted", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
 def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_to_trust_runs_its_first_run(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:

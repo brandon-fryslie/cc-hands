@@ -215,3 +215,25 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     assert facts["model"] == transcription.MODEL
     assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
+
+
+def test_a_claude_code_that_would_open_on_a_first_run_question_stops_the_run_at_joined_before_any_session_starts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = Home(tmp_path / "home")
+    now = datetime.now(UTC)
+    home.root.mkdir()
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, ()))
+    # A claude logged in, under a config that never went through its first run; started with anything else, it says so.
+    claude = tmp_path / "bin" / "claude"
+    claude.parent.mkdir()
+    claude.write_text(f"#!/bin/sh\n[ \"$1 $2\" = 'auth status' ] && echo '{{\"loggedIn\": true}}' && exit 0\ntouch {tmp_path / 'started'}\n")
+    claude.chmod(0o755)
+    (tmp_path / "config").mkdir()
+    monkeypatch.setenv("PATH", f"{claude.parent}:/usr/bin:/bin")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert main(["--home", str(home.root), "smoke"]) == 1
+    last = capsys.readouterr().out.splitlines()[-1]
+    assert last.startswith("FAILED joined: Claude Code would first ask a theme and a login, whether to trust") and last.endswith("`hands first-run` answers them at this terminal")
+    assert not (tmp_path / "started").exists()

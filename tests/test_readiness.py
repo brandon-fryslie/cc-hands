@@ -65,8 +65,14 @@ def executable(path: Path, text: str) -> Path:
 
 
 def claude_listing(root: Path, plugins: object) -> str:
-    """A PATH whose `claude plugin list --json` prints plugins."""
-    executable(root / "real" / "claude", f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(plugins)}\nEOF\n")
+    """A PATH whose `claude plugin list --json` prints plugins, and whose `claude auth status` says it is logged in unless
+    the file logged-out is beside it."""
+    executable(
+        root / "real" / "claude",
+        f"#!/bin/sh\nif [ \"$1 $2\" = 'auth status' ]; then\n"
+        f"  if [ -e \"$(dirname \"$0\")/logged-out\" ]; then echo '{{\"loggedIn\": false}}'; exit 1; fi\n"
+        f"  echo '{{\"loggedIn\": true}}'; exit 0\nfi\ncat <<'EOF'\n{json.dumps(plugins)}\nEOF\n",
+    )
     return f"{root / 'real'}:/usr/bin:/bin"
 
 
@@ -832,7 +838,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 # hands check
 
 
-STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "backend", "grant", "running", "sessions"]
+STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "first-run", "backend", "grant", "running", "sessions"]
 
 
 def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
@@ -851,6 +857,7 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
     hands_printing(root, f"hands {version('hands')}")
     monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: True)
+    answered(root, home, monkeypatch)
 
     # The fake claude is a script, whose sessions cannot be told; take it for a native one that runs nowhere.
     def native(_claude: Path | None) -> Path:
@@ -858,6 +865,15 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
 
     monkeypatch.setattr(readiness, "claude_code", native)
     return home
+
+
+def answered(root: Path, home: Home, monkeypatch: pytest.MonkeyPatch, trusted: bool = True) -> None:
+    """The person's Claude Code, in a config of the test's own, through its onboarding, the smoke folder trusted unless not `trusted`."""
+    config = root / "config"
+    config.mkdir(exist_ok=True)
+    (config / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(home.smoke.resolve()): {"hasTrustDialogAccepted": trusted}}}))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
@@ -895,6 +911,14 @@ def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(readiness, "resolve", refused)
 
 
+def untrusted(root: Path, home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    answered(root, home, monkeypatch, trusted=False)
+
+
+def person_logged_out(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    (root / "real" / "logged-out").touch()
+
+
 def ungranted(_root: Path, home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
     # A running hands has the grant of the app it runs in, so the grant is missing only where hands is not running.
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
@@ -911,11 +935,13 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
         (no_hands, {"hands"}),
         (unshimmed, {"shim"}),
         (no_plugin, {"plugin"}),
+        (untrusted, {"first-run"}),
+        (person_logged_out, {"first-run"}),
         (logged_out, {"backend"}),
         (ungranted, {"grant", "running"}),
         (not_running, {"running"}),
     ],
-    ids=["hands", "shim", "plugin", "backend", "grant", "running"],
+    ids=["hands", "shim", "plugin", "untrusted", "person-logged-out", "backend", "grant", "running"],
 )
 def test_a_home_missing_steps_names_those_steps_and_exits_1(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, steps: set[str]

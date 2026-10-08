@@ -4,7 +4,7 @@
 
 The steps, in the README's order: what its one install command puts in, which is Claude Code, PortAudio, which the
 microphone opens through, and the installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
-the plugin that joins sessions to hands; the brain with its login; the Input
+the plugin that joins sessions to hands; Claude Code's own first run and login, so a session it starts takes what is typed; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
@@ -28,7 +28,7 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
-from hands.sessions import heartbeat, liveness, wrapper
+from hands.sessions import firstrun, heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import MARKETPLACE, MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
@@ -65,12 +65,13 @@ VERSION_TIMEOUT_SECONDS = 30.0
 INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"`'
 
 
-def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
-    """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, the grant of the app this runs in;
+def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
+    """Every step, in the README's order. `environment` is the one sessions are started from; `granted`, the grant of the app this runs in;
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
+    path = environment.get("PATH", "")
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, hears(granted, running), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), first_run(home, environment), reached, hears(granted, running), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -216,6 +217,49 @@ def plugin_listed(raw: str) -> Finding:
         f"the plugin {PLUGIN_ID} is not installed for every session, so only the sessions of a project it is installed in "
         f"join hands: `hands install-plugin`, then /reload-plugins in each running session"
     )
+
+
+@dataclass(frozen=True)
+class FirstRun:
+    """What the person's own Claude Code would ask before its input in the folder `hands smoke` starts its session in,
+    and whether it holds a login, which a Claude Code done with its onboarding does not ask for again."""
+
+    claude: Path  # the real claude, past any hands shim, that was asked
+    unanswered: firstrun.Unanswered | None
+    logged_in: bool
+
+
+def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Unknown:
+    """What `claude` on this environment's PATH, past any hands shim, would ask first in `home.smoke`."""
+    claude = wrapper.real_claude(environment.get("PATH", ""))
+    if claude is None:
+        return Unknown("there is no Claude Code on this PATH to ask whether it has been through its first run")
+    try:
+        asked = firstrun.persons(environment, home.smoke, config_dir(environment, home.smoke))
+    except Rejected as error:
+        return Unknown(f"cannot tell what Claude Code would ask first: {error}")
+    try:
+        status = subprocess.run([claude, "auth", "status"], env=dict(environment), stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return Unknown(f"cannot ask {claude} whether it is logged in: {error}")
+    try:
+        # It exits 1 when logged out, saying so in its JSON as when logged in (2.1.289).
+        logged_in = Payload.parse(status.stdout).flag("loggedIn")
+    except Rejected as error:
+        return Unknown(f"`{claude} auth status` answered {status.stdout[:200]!r} {status.stderr[:200]!r}, not its status: {error}")
+    return FirstRun(claude, asked, logged_in)
+
+
+def first_run(home: Home, environment: Mapping[str, str]) -> Finding:
+    """Whether the person's own Claude Code is logged in and would take what `hands smoke` types into its session."""
+    match first_run_state(home, environment):
+        case Unknown() as unknown:
+            return unknown
+        case FirstRun(unanswered=None, logged_in=True):
+            return Ready(f"Claude Code is logged in and asks nothing first in {home.smoke}, where `hands smoke` starts its session")
+        case FirstRun(unanswered=asked, logged_in=logged_in):
+            owed = ([] if asked is None else [f"would first ask {', '.join(asked.asks)} ({asked.why})"]) + ([] if logged_in else ["has no login"])
+            return Missing(f"Claude Code {' and '.join(owed)}, so the session `hands smoke` starts in {home.smoke} would wait on it: `hands first-run` answers them at this terminal")
 
 
 def shim(home: Home, path: str) -> Finding:
