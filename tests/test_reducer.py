@@ -112,10 +112,10 @@ HEARD: list[SessionEvent] = [
 
 
 def registry(*sessions: Known) -> Registry:
-    return Registry(permission_deadline=TIMEOUT, sessions={s.membership.id: s for s in sessions}, drafts={})
+    return Registry(permission_deadline=TIMEOUT, sessions={s.membership.id: s for s in sessions}, drafts={}, drives={})
 
 
-GONE = Registry(permission_deadline=TIMEOUT, sessions={ONE.id: Gone(ONE)}, drafts={})
+GONE = Registry(permission_deadline=TIMEOUT, sessions={ONE.id: Gone(ONE)}, drafts={}, drives={})
 
 
 def live(registry: Registry) -> Session:

@@ -158,6 +158,8 @@ async def test_every_tool_that_acts_on_a_session_takes_the_focus_for_one_left_un
         "stage_draft", "amend_draft", "discard_draft", "send_draft", "send_command", "interrupt_session", "read_screen", "set_overlay",
     }  # fmt: skip
     assert all(str(given[name].properties["session"]["description"]).endswith("Empty for the focused session.") for name in defaulted)
+    # A driven turn leaves the focus where the user put it, so a drive always names its session.
+    assert all(given[name].required[0] == "session" for name in ("drive_session", "stop_driving", "drive_send"))
     # focus_session's own empty means "focus none", never "the focus".
     assert given["focus_session"].required == ("session",)
     with pytest.raises(TypeError, match="stay_silent takes no session"):

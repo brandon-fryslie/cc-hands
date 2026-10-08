@@ -110,7 +110,7 @@ class Live:
         heard = list(statuses.read([self.member.id], lambda _: self.session))
         assert {reported.session for reported in heard} <= {self.member.id}
         for reported in heard:
-            match reduce(Registry(60.0, {self.member.id: self.session}, {}), reported)[0].sessions[self.member.id]:
+            match reduce(Registry(60.0, {self.member.id: self.session}, {}, {}), reported)[0].sessions[self.member.id]:
                 case Session() as session:
                     self.session = session
                 case Gone():

@@ -1553,6 +1553,26 @@ audit record before it types, and a `TypingFailed` with the same effect when the
 fails, so "did it send something I didn't approve", and "did it arrive", are answered by
 one file.
 
+**Drives** are the user's standing order for a session, given once for many prompts
+(`hands.core.drive`): `drive_session` holds it in the registry beside the drafts, its one
+home, and the session's end drops it. While it holds, `delivery` hands each turn the
+session finishes to the brain as `Steering`, whatever quiet, the overlay, or finished
+turns are set to, so a drive never stalls on a setting meant for the ear; those settings
+still decide whether the brain says anything of it. The turn is taken in hands' lane like
+any telling, and `speech.Handed` says what for: `ToAct` leaves the user's focus where it
+is, `ToAsk` (a driven turn that asks the user something) moves it and tells the brain to
+stop and ask, and the `voice.turn` event's asker carries it. The brain answers with
+`drive_send`, which types the next prompt through the same Type effect as a draft, or
+with `stop_driving`. However its turn ends, answered, failed, or barged in on, the stage
+then hands the drive back (`HandedBack`): a drive still exactly as it was handed ends,
+said aloud, so no drive is held with nobody driving it. A send that fails to type is not
+counted, and a turn that cannot be read ends the drive aloud.
+`drive.decide` is the one place a prompt reaches a session without the user's "send
+it": it refuses any session with no drive, never touches a staged draft, refuses a
+session at a dialog (`reach.prompter`, shared with drafts and commands), and ends the
+drive on the send that spends its cap of `SENDS` prompts. Giving the order again keeps
+the count, so only a drive's end starts it over.
+
 ## The summary store
 
 A project's backlog is too large to read raw into a spoken conversation: 132 open links
@@ -1607,6 +1627,8 @@ interrupt_session(session?)
 send_command(session?, command, args?)
 stage_draft(session?, text)      amend_draft(session?, text)
 discard_draft(session?)          send_draft(session?)
+drive_session(session?, order)   stop_driving(session?)
+drive_send(session?, text)
 answer_permission(request, decision, message?)
 answer_question(request, answers)
 find_path(session?, query)

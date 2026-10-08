@@ -11,13 +11,14 @@ from typing import Literal, get_args
 from loguru import logger
 
 from hands.core import drafts, keyboard
+from hands.core import drive as driving
 from hands.core.drafts import DraftOutcome, DraftRequest
 from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Tell, Type, Typed, Holding, Overtaken, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.session import Drive, Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.audit import Record, Typing, TypingFailed
@@ -78,7 +79,7 @@ class Sessions:
         names: Names | None = None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
-        self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
+        self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={}, drives={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
         # [LAW:one-source-of-truth] the wall clock Claude Code stamps its statuses and records with: a Stop is heard on
@@ -280,6 +281,34 @@ class Sessions:
                 return await self._type(effect)
             case outcome:
                 return outcome
+
+    async def drive(self, request: driving.DriveRequest) -> driving.DriveOutcome:
+        """Apply a drive request. A send under a drive is typed into its session, and the outcome is whether that was done."""
+        match request:
+            case driving.DriveSend(session=session, text=text):
+                decidable: driving.Decidable = driving.DriveSending(session, text, await self._pane(session))
+            case driving.StartDrive() | driving.StopDrive() | driving.HandedBack():
+                decidable = request
+        before = self._registry
+        self._registry, decided = driving.decide(before, decidable)
+        match decided:
+            case driving.Send(type=effect, drive=sent):
+                typed = await self._type(effect)
+                match typed:
+                    case NotTyped():
+                        unsent = driving.Unsent(effect.session, sent, before.drives[effect.session])
+                        self._registry, _ = driving.decide(self._registry, unsent)
+                    case Typed():
+                        pass
+                return typed
+            case driving.LastSend(type=effect, drive=spent):
+                return driving.DriveSpent(await self._type(effect), spent)
+            case outcome:
+                return outcome
+
+    def driven(self, session: SessionId) -> Drive | None:
+        """The standing order the user gave for the session, as it is now; None where they gave none."""
+        return self._registry.drives.get(session)
 
     async def keyboard(self, request: KeyboardRequest) -> KeyboardOutcome:
         """Apply a command or an interrupt. It is typed into its session, and the outcome is whether that was done."""

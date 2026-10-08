@@ -9,6 +9,8 @@ here: it needs an answer, and one held unsaid would wait out its deadline and be
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.core.session import Drive
+
 # How the user asked to hear a session's finished turns. "watched": each turn it finishes is told as it finishes.
 # "normal": its turns are told as finished turns are set to be. "muted": told only when the user asks.
 Overlay = Literal["normal", "watched", "muted"]
@@ -71,12 +73,32 @@ class Withheld:
     why: Literal["off", "muted", "quiet"]
 
 
-Delivery = Spoken | Withheld
+@dataclass(frozen=True)
+class Steering:
+    """Handed to the brain to act on, under the user's standing order for the session (hands.core.drive): what is set
+    for the ear does not hold back the turn a drive waits on, and `ear` is what of it the user is still told."""
+
+    drive: Drive
+    ear: Spoken | Withheld
 
 
-def delivery(attention: Attention, overlay: Overlay) -> Delivery:
-    """How a finished turn reaches the user: never unasked from a muted session or while quiet; a watched session's as
-    finished turns are set to be told, and all of it when they are off; any other's as they are set."""
+Delivery = Spoken | Withheld | Steering
+
+
+def delivery(attention: Attention, overlay: Overlay, drive: Drive | None) -> Delivery:
+    """How a finished turn reaches the user: a driven session's to the brain, whatever is set, with what of it they are
+    told as they set it; any other's as they set it."""
+    ear = _ear(attention, overlay)
+    match drive:
+        case None:
+            return ear
+        case Drive():
+            return Steering(drive, ear)
+
+
+def _ear(attention: Attention, overlay: Overlay) -> Spoken | Withheld:
+    """What of a finished turn the user is told: never unasked from a muted session or while quiet; a watched session's
+    as finished turns are set to be told, and all of it when they are off; any other's as they are set."""
     # [LAW:dataflow-not-control-flow] a table over the settings, every combination a row the type checker holds to.
     match attention.quiet, overlay, attention.finished:
         case _, "muted", _:

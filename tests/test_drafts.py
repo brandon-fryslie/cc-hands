@@ -59,11 +59,11 @@ SHELLING = Idle(Shell(), Stamp(1), after=None)
 
 
 def registry(state: SessionState = IDLE, drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None)}, drafts=drafts or {})
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None)}, drafts=drafts or {}, drives={})
 
 
 def gone(drafts: dict[SessionId, Staged] | None = None, member: Membership = ONE) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Gone(member)}, drafts=drafts or {})
+    return Registry(permission_deadline=60.0, sessions={ONE.id: Gone(member)}, drafts=drafts or {}, drives={})
 
 
 def staged(state: SessionState = IDLE) -> Registry:
@@ -107,6 +107,7 @@ def test_a_discard_touches_only_its_own_session() -> None:
         permission_deadline=60.0,
         sessions={ONE.id: Session(ONE, IDLE, mode=None), TWO.id: Session(TWO, IDLE, mode=None)},
         drafts={ONE.id: FIX, TWO.id: BETTER},
+        drives={},
     )
     after, _ = decide(both, DiscardDraft(TWO.id))
     assert after.drafts == {ONE.id: FIX}

@@ -365,11 +365,22 @@ class Staged:
 
 
 @dataclass(frozen=True)
+class Drive:
+    """The user's standing order for a session: what to keep it at, in their words, and how many prompts hands has sent
+    it under the order (hands.core.drive)."""
+
+    order: str
+    sends: int
+
+
+@dataclass(frozen=True)
 class Registry:
     permission_deadline: float  # seconds from a permission request to its default deny
     sessions: Mapping[SessionId, Known]
     # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
     drafts: Mapping[SessionId, Staged]
+    # [LAW:one-source-of-truth] the one home of every standing order: a session with no entry is not driven.
+    drives: Mapping[SessionId, Drive]
 
     def put(self, session: Known) -> Self:
         return replace(self, sessions={**self.sessions, session.membership.id: session})
@@ -379,6 +390,12 @@ class Registry:
 
     def unstage(self, session: SessionId) -> Self:
         return replace(self, drafts={id: draft for id, draft in self.drafts.items() if id != session})
+
+    def drive(self, session: SessionId, drive: Drive) -> Self:
+        return replace(self, drives={**self.drives, session: drive})
+
+    def undrive(self, session: SessionId) -> Self:
+        return replace(self, drives={id: drive for id, drive in self.drives.items() if id != session})
 
     def live(self) -> list[Session]:
         return [session for session in self.sessions.values() if isinstance(session, Session)]

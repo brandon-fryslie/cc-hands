@@ -164,7 +164,8 @@ def _end(registry: Registry, was: Session, membership: Membership, said: list[Ef
     """The session is over, however that was heard: the hook it was held on is let go, and a turn ended and not told yet
     is told before the session is said to be gone, since it happened first."""
     _, telling = _told(membership.id, was.turn, None)
-    return registry.put(Gone(membership)), [*_dialogs(membership.id, was.dialog, None), *telling, *_unsettled(membership.id, was.unnamed), *said]
+    # A standing order ends with its session: one started again is a new session, and the user says again to drive it.
+    return registry.put(Gone(membership)).undrive(membership.id), [*_dialogs(membership.id, was.dialog, None), *telling, *_unsettled(membership.id, was.unnamed), *said]
 
 
 def _unsettled(session: SessionId, held: Iterable[Unnamed]) -> list[Effect]:

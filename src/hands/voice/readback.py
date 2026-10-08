@@ -10,6 +10,7 @@ import re
 from collections.abc import Iterable, Mapping
 
 from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftStaged, NothingStaged
+from hands.core.drive import SENDS, DriveDropped, DriveOutcome, DriveSpent, DriveStopped, DriveWentOn, Driving, NotDriven
 from hands.core.effects import Command, Key, NotTyped, Text, Typed
 from hands.core.keyboard import InBackground, KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
@@ -49,6 +50,40 @@ def readback(outcome: DraftOutcome, name: str) -> str:
             return f"{_unreachable(unwrapped, name)} The draft is still staged."
         case AtItsDialog():
             return f"{name} is waiting at a dialog, which would take the draft as its answer. The draft is still staged."
+
+
+def drive_readback(outcome: DriveOutcome, name: str) -> str:
+    """One reply for what came of a drive request; `name` is how the user knows the session. A prompt sent under a
+    drive is said in the brain's one sentence, never read back whole: the user gave their word for it when they gave the
+    order."""
+    match outcome:
+        case Driving(drive=drive, replaced=None):
+            return f"Driving {name}: {drive.order}. I'll send it up to {SENDS} prompts."
+        case Driving(drive=drive):
+            return f"Driving {name} on a new order, replacing the last one: {drive.order}."
+        case DriveStopped(drive=drive):
+            return f"Stopped driving {name}, after {counted(drive.sends, 'prompt')} sent."
+        case DriveDropped():
+            return f"I stopped driving {name}: its last turn came and went with no prompt sent."
+        case DriveWentOn():
+            return f"{name} is still being driven."
+        case NotDriven():
+            return f"{name} is not being driven, so nothing was sent: what is sent to it waits for the user's word."
+        case DriveSpent(typed=typed, drive=drive):
+            # The drive ended with this send whether or not it went: the order's sends were spent on deciding it.
+            return f"{drive_readback(typed, name)} That was the last of the {SENDS} prompts the order allows, so I've stopped driving it: {drive.order}."
+        case UnknownSession(session=session):
+            return f"There is no session {session}."
+        case SessionEnded():
+            return f"{name} has ended, so it cannot be driven."
+        case Typed():
+            return f"Sent it to {name}."
+        case NotTyped(reason=reason):
+            return f"The prompt was not sent to {name}: {reason}."
+        case Unwrapped() as unwrapped:
+            return _unreachable(unwrapped, name)
+        case AtItsDialog():
+            return f"{name} is waiting at a dialog, which is the user's to answer, so nothing was sent."
 
 
 def keyboard_readback(outcome: KeyboardOutcome, name: str) -> str:

@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 
 from hands.core.effects import Fritter, Writer
-from hands.core.session import Membership, SessionId
+from hands.core.session import Membership, Running, Session, SessionId
+from hands.core.status import Waiting
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 
 
@@ -61,3 +62,18 @@ def writer(membership: Membership, pane: Keyboard) -> Writer | Unwrapped:
             return typed
         case Behind() | NotInTmux() | PaneUnread() as missing:
             return Unwrapped(membership.id, missing)
+
+
+def prompter(session: Session, pane: Keyboard) -> Writer | Unwrapped | AtItsDialog:
+    """What types a prompt into the session, or why nothing may: a session waiting at a dialog would take it as the answer
+    to what it asked, which is the user's to answer.
+
+    [LAW:single-enforcer] the one place it is decided whether a prompt or a command may be typed into a session now.
+    """
+    match (session.state, writer(session.membership, pane)):
+        case (_, Unwrapped() as unwrapped):
+            return unwrapped
+        case (Running(status=Waiting()), _):
+            return AtItsDialog(session.membership.id)
+        case (_, Fritter() | Pane() as by):
+            return by

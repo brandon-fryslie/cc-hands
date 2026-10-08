@@ -41,7 +41,7 @@ IDLE = Idle(status.Idle(), Stamp(1), after=None)
 
 
 def registry(*sessions: Session) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={s.membership.id: s for s in sessions}, drafts={})
+    return Registry(permission_deadline=60.0, sessions={s.membership.id: s for s in sessions}, drafts={}, drives={})
 
 
 @pytest.mark.parametrize("decision", [Allow(), Deny("use git clean instead")])

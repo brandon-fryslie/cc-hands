@@ -9,12 +9,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.core.attention import Amount
+from hands.core.attention import Amount, Steering
 from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Speak, WentOn
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Held, Opened, PromptId, RequestId, Session, SessionId, ids
+from hands.core.session import Drive, Held, Opened, PromptId, RequestId, Session, SessionId, ids
 from hands.core.turn import AgentId, AgentTask
 
 
@@ -47,14 +47,26 @@ class Finished:
 
     session: SessionId
     news: tuple[News, ...]
-    amount: Amount
+    # As much of them as is set for the ear, or the drive they are handed to the brain to act on.
+    telling: Amount | Steering
+
+
+def steered(telling: Amount | Steering) -> Drive | None:
+    """The standing order finished turns are handed to the brain under; None when they are told to the user."""
+    match telling:
+        case "brief" | "full":
+            return None
+        case Steering(drive=drive):
+            return drive
 
 
 @dataclass(frozen=True)
 class Unread:
-    """A session finished a turn whose transcript could not be read: said as a system fact is, with no model."""
+    """A session finished a turn whose transcript could not be read: said as a system fact is, with no model. `stopped`
+    is the drive that ended with it, since the brain was never handed the turn it waited on."""
 
     session: SessionId
+    stopped: Drive | None
 
 
 @dataclass(frozen=True)
@@ -225,8 +237,8 @@ def _folded(pending: Sequence[Coalesced]) -> list[Coalesced]:
 def _joined(before: Pending, each: Finished | Working) -> Pending:
     """`each` folded into the telling of its kind that came before it in its slot."""
     match before, each:
-        case Finished(news=earlier), Finished(session=session, news=news, amount=amount):
-            return Finished(session, (*earlier, *news), amount)
+        case Finished(news=earlier), Finished(session=session, news=news, telling=telling):
+            return Finished(session, (*earlier, *news), telling)
         case Working(of=frozenset() as was, doings=earlier), Working(session=session, of=frozenset() as turn, doings=doings):
             return Working(session, was | turn, (*earlier, *doings))
         case Working(of=AgentTask() as agent, doings=earlier), Working(session=session, doings=doings):
