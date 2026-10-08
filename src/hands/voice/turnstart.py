@@ -5,7 +5,8 @@ from the moment they speak (`hands.voice.floor`). Starting is not cutting. The c
 start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
 the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
 heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once Whisper pushes words for
-it, Pipecat's transcription start. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
+it, Pipecat's transcription start: the first it hears in a hold still open (`InterimWords`), or the hold's own words as it
+closes, where it heard none before. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
 be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
 land while the turn's own words and their note are on their way, so those are uninterruptible
 (`hands.voice.turnstop.Words`, `hands.voice.beside.Note`): an interruption stops hands, never the user. And it lands just
@@ -25,7 +26,7 @@ from pipecat.turns.user_start import BaseUserTurnStartStrategy
 
 from hands.sessions.audit import Record, TurnStart, UserTurn
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import TurnOpened, Words
+from hands.voice.turnstop import InterimWords, TurnOpened, Words
 
 
 class CutWritten(SystemFrame):
@@ -71,10 +72,10 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
             case TurnOpened(hold=hold), _Open() as turn:
                 # A hold pressed while Whisper is still on the last joins its turn, and cuts as its own edge says.
                 await self._cut_where(turn_start(hold.opener), turn)
-            case Words(), _Open() as turn:
-                # Words, in whichever hold, are someone speaking.
+            case Words() | InterimWords(), _Open() as turn:
+                # Words, in whichever hold, heard while it was open or as it closed, are someone speaking.
                 await self._cut(turn)
-            case Words(), None:
+            case Words() | InterimWords(), None:
                 # [LAW:no-silent-failure] a turn ends only once Whisper is done with every hold, behind each one's words.
                 raise RuntimeError("Whisper heard words outside any user turn")
             case CutWritten(), _:

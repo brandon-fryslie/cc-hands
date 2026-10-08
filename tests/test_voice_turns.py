@@ -40,7 +40,7 @@ from conftest import running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
-from hands.sessions.wide import Fact
+from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
 from hands.voice.floor import Floor
@@ -463,6 +463,59 @@ async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_i
         assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
         assert await rig.everything_sent(holds=1) == ["wait, not yet"]
         assert user_turns(rig)[0] == ("on words", True)
+
+
+# A second of the user speaking, in 20 ms frames: twice what a hold still open gathers before Whisper hears it again.
+SPEAKING: list[Captured] = ["down"] * 50
+
+
+def overheard(rig: Rig) -> list[Fact]:
+    """What came of each hearing of a hold still open, in order."""
+    return [entry.facts["heard"] for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "whisper.overheard"]
+
+
+async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while_the_user_is_still_speaking(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # As the audit log had it (hands-voice-o6o): engaged conversation, hands reading a reply, and the user speaking over
+    # it for seconds; hands was cut off only once end-of-turn detection closed the hold and Whisper heard it whole.
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.texts.put("wait, not")
+        await rig.until(line.done)
+        # Cut while the hold is still open: the user has not stopped speaking.
+        assert (line.result(), rig.out.released) == (False, 0)
+        assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
+        await rig.hold([*SPEAKING, "listening"], by="engaged conversation")
+        await rig.texts.put("wait, not yet, read me the diff first")
+        # What was heard while the hold was open only cut; the hold heard whole is what is sent.
+        assert await rig.everything_sent(holds=1) == ["wait, not yet, read me the diff first"]
+        assert user_turns(rig)[0] == ("on words", True)
+        assert overheard(rig) == ["words"]
+
+
+async def test_a_hold_the_voice_opened_heard_while_open_cuts_nothing_off_where_whisper_hears_no_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Hands' own reply heard back through the canceller, or a cough, for as long as a user's sentence.
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.until(lambda: len(rig.heard) == 1)
+        await rig.texts.put("")
+        await rig.until(lambda: overheard(rig) == ["nothing"])
+        await rig.hold(["listening"], by="engaged conversation")
+        await rig.texts.put("")
+        await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+
+
+async def test_a_hold_the_voice_opened_dropped_while_it_is_heard_open_cuts_nothing_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.until(lambda: len(rig.heard) == 1)
+        # Thrown away while Whisper hears it: it is resolved at once, and what Whisper heard in it is no one's.
+        await rig.hold(["dropped"], by="engaged conversation")
+        await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        await rig.texts.put("stop")
+        await rig.until(lambda: overheard(rig) == ["moot"])
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+        assert await rig.everything_sent(holds=1) == []
 
 
 async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_ends_once_every_hold_resolves(rig: Rig) -> None:
