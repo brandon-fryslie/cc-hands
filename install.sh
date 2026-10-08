@@ -41,7 +41,9 @@ else
   # however it ends, a failed or interrupted install included, and is stopped here when Homebrew is in.
   while kill -0 $$ 2>/dev/null && sudo -n -v 2>/dev/null; do sleep 60; done &
   keeper=$!
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  # [LAW:no-silent-failure] fetched in an assignment, which set -e stops on, not as an argument, which it does not.
+  homebrew_installer=$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)
+  NONINTERACTIVE=1 /bin/bash -c "$homebrew_installer"
   kill "$keeper" 2>/dev/null || true
 fi
 

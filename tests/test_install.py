@@ -24,6 +24,7 @@ case "$*" in
   *claude.ai/install.sh*)
     printf '%s\n' 'echo "claude installer" >>"$LOG"' 'mkdir -p "$HOME/.local/bin"' 'printf "#!/bin/sh\n" >"$HOME/.local/bin/claude"' 'chmod +x "$HOME/.local/bin/claude"' ;;
   *Homebrew/install*)
+    [ ! -e "$STUBS/homebrew-unreachable" ] || exit 22
     printf '%s\n' 'echo "homebrew installer NONINTERACTIVE=$NONINTERACTIVE" >>"$LOG"' 'mkdir -p "$HOMEBREW_PREFIX/bin"' 'cp "$STUBS/brew.real" "$HOMEBREW_PREFIX/bin/brew"' ;;
   *releases/latest*)
     printf '%s' "https://github.com/brandon-fryslie/cc-hands/releases/tag/$RELEASE" ;;
@@ -221,3 +222,10 @@ def test_the_newest_release_is_held_to_the_tag_rule_a_release_is_built_under() -
     release = rule.findall((REPO / ".github/workflows/release.yml").read_text())
     install = rule.findall(INSTALL.read_text())
     assert len(release) == 1 and install == release
+
+
+def test_a_homebrew_installer_that_cannot_be_fetched_stops_the_run_there(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "homebrew-unreachable").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 22 and "with Homebrew" not in ran.stdout
+    assert not any(call.startswith("brew ") for call in sandbox.calls())
