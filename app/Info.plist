@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.brandon-fryslie.hands</string>
+	<key>CFBundleName</key>
+	<string>hands</string>
+	<key>CFBundleExecutable</key>
+	<string>hands</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<!-- The oldest macOS hands runs on: mlx, which transcribes speech, has wheels for macOS 14 and newer. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>hands hears what you say while you hold the talk key, and types it into your Claude Code sessions.</string>
+</dict>
+</plist>

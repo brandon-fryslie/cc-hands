@@ -70,11 +70,11 @@ is not, what does it; it exits 0 only when every step is done.
    hands login
    ```
 
-7. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
-   key from other apps: System Settings > Privacy & Security > Input Monitoring, then
+7. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
+   you have one, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-8. hands itself, in that terminal; then hold Right Shift in any app to talk. Its first
+8. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
    start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
 
    ```
@@ -387,20 +387,22 @@ uv run hands phone                      # the addresses a phone opens the talk p
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
-make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
+make check                              # pytest, pyright, fritter's Go tests, and a type check of hands.app's launcher; fails when any of them fails
+make app                                # build/hands.app, which runs `hands run` from the user's login shell and holds hands' Microphone and Input Monitoring grants itself; signed with this Mac's Developer ID; its log is ~/Library/Logs/hands/hands.log
+make notarized-app                      # the same, notarized by Apple and stapled, so Gatekeeper opens it on any Mac; HANDS_NOTARY_PROFILE names the notarytool keychain profile
 ```
 
 `hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)
 and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
+brain's login; the Input Monitoring grant of the app it runs in; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 says the same lines as it starts, the brain as it reached it. An up daemon is not a
 working hands: `hands status` says only whether the daemon is running.
 
-`hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &
+`hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
 
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four

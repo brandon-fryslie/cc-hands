@@ -230,6 +230,12 @@ def test_the_grant_is_ready_when_given_and_missing_with_where_to_give_it_when_no
     assert isinstance(missing, Missing) and "Privacy & Security > Input Monitoring" in missing.said
 
 
+def test_a_running_hands_has_the_grant_of_the_app_it_runs_in_though_this_one_has_none() -> None:
+    # hands.app holds the grant; the terminal a check runs in does not.
+    held = readiness.hears(False, Ready("hands is running: pid 7"))
+    assert isinstance(held, Ready) and "hands is running, so it started with the Input Monitoring grant of the app it runs in" in held.said
+
+
 # The running sessions
 
 
@@ -889,8 +895,10 @@ def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(readiness, "resolve", refused)
 
 
-def ungranted(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+def ungranted(_root: Path, home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A running hands has the grant of the app it runs in, so the grant is missing only where hands is not running.
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
+    home.status.unlink()
 
 
 def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
@@ -898,20 +906,27 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.parametrize(
-    ("undo", "step"),
-    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
+    ("undo", "steps"),
+    [
+        (no_hands, {"hands"}),
+        (unshimmed, {"shim"}),
+        (no_plugin, {"plugin"}),
+        (logged_out, {"backend"}),
+        (ungranted, {"grant", "running"}),
+        (not_running, {"running"}),
+    ],
     ids=["hands", "shim", "plugin", "backend", "grant", "running"],
 )
-def test_a_home_missing_one_step_names_that_step_and_exits_1(
-    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, step: str
+def test_a_home_missing_steps_names_those_steps_and_exits_1(
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, steps: set[str]
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), step: "missing"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), **dict.fromkeys(steps, "missing")}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
-    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each == step else "Ready" for each in STEPS]
+    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each in steps else "Ready" for each in STEPS]
 
 
 def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
@@ -920,6 +935,6 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     home = set_up(root, fritter, monkeypatch, "unreadable")
     assert main(["--home", str(home.root), "check"]) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown"}
-    monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
+    ungranted(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown", "grant": "missing"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown", "grant": "missing", "running": "missing"}
