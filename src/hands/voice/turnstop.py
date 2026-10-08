@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pipecat.frames.frames import (
     DataFrame,
     Frame,
+    InterimTranscriptionFrame,
     TranscriptionFrame,
     UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
@@ -56,6 +57,12 @@ class HoldDiscarded(VADUserStoppedSpeakingFrame):
 class Words(TranscriptionFrame, UninterruptibleFrame):
     """What Whisper heard said in a hold. The user's own, so no interruption drops it: one can land while the turn's words
     are still on their way to it, since a turn the voice opened cuts hands off only once they are heard."""
+
+
+class InterimWords(InterimTranscriptionFrame, UninterruptibleFrame):
+    """Words Whisper heard in a hold still open, Pipecat's interim transcription: someone is speaking, so a turn the voice
+    opened cuts hands off on them while the user speaks, not once they stop. Never sent: the hold's Words, heard whole as
+    it closes, are what the turn says. The user's own, as Words are, so no interruption drops it."""
 
 
 @dataclass(kw_only=True)

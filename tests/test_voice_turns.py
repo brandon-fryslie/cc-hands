@@ -40,7 +40,7 @@ from conftest import running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
-from hands.sessions.wide import Fact
+from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
 from hands.voice.conversation import cue_receipt
 from hands.voice.floor import Floor
@@ -245,7 +245,7 @@ async def rigged(
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+    async def transcribe(_self: Whisper, hold: int, levels: Levels, audio: bytes, _prompt: str | None) -> HoldHeard:
         # The hold as uploaded, a WAV: its samples are what the microphone heard.
         with wave.open(BytesIO(audio)) as uploaded:
             heard.append(uploaded.readframes(uploaded.getnframes()))
@@ -465,6 +465,134 @@ async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_i
         assert user_turns(rig)[0] == ("on words", True)
 
 
+# A second of the user speaking, in 20 ms frames: twice what a hold still open gathers before Whisper hears it again.
+SPEAKING: list[Captured] = ["down"] * 50
+
+
+def hearings(rig: Rig) -> list[WideEvent]:
+    """The event of each hearing of a hold still open, in order."""
+    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "whisper.overheard"]
+
+
+def overheard(rig: Rig) -> list[Fact]:
+    """What came of each hearing of a hold still open, in order."""
+    return [event.facts["heard"] for event in hearings(rig)]
+
+
+async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while_the_user_is_still_speaking(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # As the audit log had it (hands-voice-o6o): engaged conversation, hands reading a reply, and the user speaking over
+    # it for seconds; hands was cut off only once end-of-turn detection closed the hold and Whisper heard it whole.
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.texts.put("wait, not")
+        await rig.until(line.done)
+        # Cut while the hold is still open: the user has not stopped speaking.
+        assert (line.result(), rig.out.released) == (False, 0)
+        assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
+        await rig.hold([*SPEAKING, "listening"], by="engaged conversation")
+        await rig.texts.put("wait, not yet, read me the diff first")
+        # What was heard while the hold was open only cut; the hold heard whole is what is sent.
+        assert await rig.everything_sent(holds=1) == ["wait, not yet, read me the diff first"]
+        assert user_turns(rig)[0] == ("on words", True)
+        assert overheard(rig) == ["words"]
+        # What cut hands off is on the hearing's event, to be looked into where the hold heard whole says nothing.
+        [hearing] = hearings(rig)
+        assert isinstance(heard := hearing.facts["hearing"], HoldHeard) and (hearing.facts["hold"], heard.said) == (1, "wait, not")
+
+
+async def test_a_hold_the_voice_opened_heard_while_open_cuts_nothing_off_where_whisper_hears_no_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Hands' own reply heard back through the canceller, or a cough, for as long as a user's sentence.
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.until(lambda: len(rig.heard) == 1)
+        await rig.texts.put("")
+        await rig.until(lambda: overheard(rig) == ["nothing"])
+        await rig.hold(["listening"], by="engaged conversation")
+        await rig.texts.put("")
+        await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+
+
+async def test_a_hold_the_voice_opened_dropped_while_it_is_heard_open_cuts_nothing_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.until(lambda: len(rig.heard) == 1)
+        # Thrown away while Whisper hears it: what Whisper heard in it is no one's, and it is resolved behind that hearing.
+        await rig.hold(["dropped"], by="engaged conversation")
+        await rig.until(lambda: rig.out.released == 1)
+        assert rig.out.resolved == []
+        await rig.texts.put("stop")
+        await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        assert overheard(rig) == ["moot"]
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+        assert await rig.everything_sent(holds=1) == []
+
+
+# Half a second of a hold, in 20 ms frames of sound: what it gathers before Whisper hears it again.
+HOP: list[Captured] = ["down"] * 25
+# A 20 ms frame of sound that is not digital silence, so the silence Whisper's segments are padded with comes off it.
+SOUND = b"\x01\x01" * 320
+
+
+async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time_primed_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Hands' echo, or a cough, keeping a hold open: each hearing costs the same however long the hold has been open.
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        read: list[None] = []
+
+        async def counted() -> None:
+            read.append(None)
+
+        rig.stt._prompt = counted  # pyright: ignore[reportPrivateUsage]
+        await rig.hold(["listening", "arming", *HOP], sound=SOUND, by="engaged conversation")
+        for hearings_so_far in (1, 2, 3):
+            await rig.until(lambda: len(rig.heard) == hearings_so_far)
+            await rig.texts.put("")
+            await rig.until(lambda: len(overheard(rig)) == hearings_so_far)
+            await rig.hold(HOP, sound=SOUND, by="engaged conversation")
+        await rig.until(lambda: len(rig.heard) == 4)
+        await rig.texts.put("")
+        await rig.until(lambda: len(overheard(rig)) == 4)
+        await rig.hold(["listening"], sound=SOUND, by="engaged conversation")
+        await rig.texts.put("")
+        await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        # What the desk heard before the hold and a hop, then two hops each, however much the hold has gathered; and the hold
+        # heard whole as it closes.
+        assert [len(audio.rstrip(b"\x00")) // len(SOUND) for audio in rig.heard] == [27, 50, 50, 50, 102]
+        assert [event.facts["seconds"] for event in hearings(rig)] == [0.54, 1.0, 1.0, 1.0]
+        assert overheard(rig) == ["nothing"] * 4
+        # The vocabulary is read once for the hearings of the hold while it was open, and once for it heard whole.
+        assert len(read) == 2
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+
+
+async def test_a_hold_the_voice_opened_whisper_could_not_hear_while_open_cuts_on_the_words_it_is_heard_whole_with(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        heard = vars(Whisper)["_heard"]
+
+        async def refused_open(self: Whisper, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
+            match hearings(rig), self._opened.overhearing:  # pyright: ignore[reportPrivateUsage]
+                case [], "queued":
+                    raise ConnectionError("LowTalker is not serving")
+                case _:
+                    return await heard(self, hold, levels, audio, prompt)
+
+        monkeypatch.setattr(Whisper, "_heard", refused_open)
+        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
+        await rig.until(lambda: len(hearings(rig)) == 1)
+        [failed] = hearings(rig)
+        assert (failed.outcome, failed.error, failed.facts["hold"]) == ("failed", "Whisper could not hear hold 1 while it was open: ConnectionError: LowTalker is not serving", 1)
+        # Not heard again while it is open; heard whole as it closes, and cut on its words then.
+        await rig.hold([*SPEAKING, "listening"], by="engaged conversation")
+        await rig.texts.put("wait, not yet")
+        await rig.until(line.done)
+        assert line.result() is False
+        assert cut == [CutOff("The parser is fixed.", 1)]
+        await rig.until(lambda: user_turns(rig) == [("on words", True)])
+        assert len(hearings(rig)) == 1
+
+
 async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_ends_once_every_hold_resolves(rig: Rig) -> None:
     await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
     await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
@@ -642,7 +770,7 @@ async def test_a_hold_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(ri
 
 
 async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def refused(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+    async def refused(_self: Whisper, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
         raise ConnectionError("LowTalker is not serving")
 
     monkeypatch.setattr(Whisper, "_heard", refused)
@@ -652,7 +780,7 @@ async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_
 
 
 async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_turn(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def hung(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+    async def hung(_self: Whisper, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
         await asyncio.Event().wait()
         raise AssertionError("a transcription that never returns returned")
 

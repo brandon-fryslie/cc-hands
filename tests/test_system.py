@@ -319,7 +319,7 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
 async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
     said: list[str | None | Exception] = []
 
-    async def transcribe(_self: Whisper, hold: int, levels: Levels, _audio: bytes) -> HoldHeard:
+    async def transcribe(_self: Whisper, hold: int, levels: Levels, _audio: bytes, _prompt: str | None) -> HoldHeard:
         match said.pop():
             case Exception() as error:
                 raise error
