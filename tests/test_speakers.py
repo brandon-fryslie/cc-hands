@@ -233,3 +233,10 @@ def test_a_room_that_failed_to_save_is_not_the_one_told_by(tmp_path: Path, monke
 def test_the_room_is_private(tmp_path: Path) -> None:
     Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)
     assert (tmp_path / speakers.ROOM).stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("room", ['[{"voice": 1, "name": "x] y", "print": [1, 0, 0]}]', '[{"voice": 1, "name": 7, "print": [1, 0, 0]}]', '[{"voice": 1, "name": null, "print": [1, 0, 0]}, {"voice": 1, "name": null, "print": [0, 1, 0]}]'])
+def test_a_room_whose_names_or_numbers_are_none_fails_naming_it(tmp_path: Path, room: str) -> None:
+    (tmp_path / speakers.ROOM).write_text(room)
+    with pytest.raises(ValueError, match=str(tmp_path / speakers.ROOM)):
+        Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)

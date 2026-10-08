@@ -214,11 +214,7 @@ class Room:
 
     def named(self, voice: int, name: str) -> None:
         """Give the voice numbered `voice` the name `name`, kept with its print."""
-        # [LAW:parse-dont-validate] a name is what goes inside spoken_as's brackets: one that closes them would put a
-        # guest's words outside, where they read as the owner's.
-        name = name.strip()
-        if not name or any(mark in name for mark in "[]"):
-            raise ValueError(f"{name!r} is not a name: a name has words in it and no brackets")
+        name = _name(name)
         with self._lock:
             known = self._loaded()
             if voice not in (guest.voice for guest in known):
@@ -245,12 +241,25 @@ def _room(path: Path) -> list[_Known]:
     if not path.exists():
         return []
     try:
-        known = [_Known(int(guest["voice"]), guest["name"], np.array(guest["print"], dtype=np.float32)) for guest in json.loads(path.read_text())]
+        known = [
+            _Known(int(guest["voice"]), None if guest["name"] is None else _name(guest["name"]), np.array(guest["print"], dtype=np.float32))
+            for guest in json.loads(path.read_text())
+        ]
     except (ValueError, KeyError, TypeError) as error:
         raise ValueError(f"{path} is not a room of voices ({error}): delete it, and the others in the room are heard anew") from error
+    if len({guest.voice for guest in known}) != len(known):
+        raise ValueError(f"{path} numbers two voices alike: delete it, and the others in the room are heard anew")
     if any(guest.print_.ndim != 1 or not np.isfinite(guest.print_).all() or not np.linalg.norm(guest.print_) for guest in known):
         raise ValueError(f"{path} holds a voice that is no voiceprint: delete it, and the others in the room are heard anew")
     return known
+
+
+def _name(said: object) -> str:
+    """The name in `said`, which goes inside spoken_as's brackets: one that closed them would put a guest's words
+    outside, where they read as the owner's [LAW:parse-dont-validate]."""
+    if not isinstance(said, str) or not said.strip() or any(mark in said for mark in "[]"):
+        raise ValueError(f"{said!r} is not a name: a name has words in it and no brackets")
+    return said.strip()
 
 
 def teller(directory: Path, room: Room, record: Record) -> Callable[[bytes, Hold], Speaker]:
