@@ -12,7 +12,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
 
-from conftest import events
+from conftest import by_hand, events
 from hands.sessions.audit import Entry, HoldHeard, Levels, Unsaid
 from hands.voice import transcription
 from hands.voice.turnstop import Hold, TurnResolved
@@ -77,7 +77,7 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
     """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first hold pays for
     no load only if the one done at construction asked for exactly what a hold's transcription asks for."""
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(None), record=recorded.append)
+    whisper = Whisper(prompt=primed(None), told=by_hand, record=recorded.append)
     await transcribe(whisper, 1, SILENCE)
 
     [(_, loaded), (_, held)] = model.asked
@@ -89,7 +89,7 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
 
 async def test_whisper_settings_say_the_model_and_language_its_holds_transcribe_with(model: Model) -> None:
     """Pipecat checks a service's settings at its start and logs an error for any it was never given."""
-    whisper = Whisper(prompt=primed(None), record=lambda _: None)
+    whisper = Whisper(prompt=primed(None), told=by_hand, record=lambda _: None)
     errors: list[str] = []
     sink = logger.add(errors.append, level="ERROR", filter="pipecat")
     try:
@@ -103,7 +103,7 @@ async def test_whisper_settings_say_the_model_and_language_its_holds_transcribe_
 
 
 async def test_each_hold_is_transcribed_from_its_samples_primed_with_the_vocabulary_as_it_is_then(model: Model) -> None:
-    whisper = Whisper(prompt=primed("authMiddleware", None, "sessionStore"), record=lambda _: None)
+    whisper = Whisper(prompt=primed("authMiddleware", None, "sessionStore"), told=by_hand, record=lambda _: None)
     samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
 
     for hold in (1, 2, 3):
@@ -126,7 +126,7 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
         [(" Okay.", 0.38, -1.11)],
     ]
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(*["authMiddleware"] * 5), record=recorded.append)
+    whisper = Whisper(prompt=primed(*["authMiddleware"] * 5), told=by_hand, record=recorded.append)
 
     said = [frame.text for hold in range(1, 6) for frame in await transcribe(whisper, hold, SILENCE) if isinstance(frame, TranscriptionFrame)]
 
@@ -144,7 +144,7 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
 async def test_a_hold_the_model_fails_is_said_as_an_error_and_whisper_transcribes_the_next(model: Model) -> None:
     model.answers += [[], RuntimeError("Metal ran out of memory"), [("Okay.", 0.38, -0.5)]]
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(None, None), record=recorded.append)
+    whisper = Whisper(prompt=primed(None, None), told=by_hand, record=recorded.append)
 
     failed = await transcribe(whisper, 7, SILENCE)
     [error] = [frame for frame in failed if isinstance(frame, ErrorFrame)]
@@ -161,7 +161,7 @@ async def test_a_hold_the_model_fails_is_said_as_an_error_and_whisper_transcribe
 
 async def test_a_hold_at_a_rate_whisper_does_not_hear_is_said_as_an_error_and_never_transcribed(model: Model) -> None:
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(None), record=recorded.append)
+    whisper = Whisper(prompt=primed(None), told=by_hand, record=recorded.append)
     loaded = len(model.asked)
 
     failed = await transcribe(whisper, 3, wav(b"\x00\x00" * 48_000, rate=48_000))

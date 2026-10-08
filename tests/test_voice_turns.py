@@ -36,9 +36,10 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import running, unprimed
+from conftest import by_hand, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, TurnStart, Unsaid, UserTurn
+from hands.sessions.audit import ByHand, CutOff, Entry, HoldHeard, Levels, Other, TurnStart, Unsaid, UserTurn, Voiced
+from hands.sessions.audit import Speaker as Voice
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
@@ -170,6 +171,8 @@ class Rig:
     told: list[Mark] = field(default_factory=list[Mark])
     # The context both sides of the conversation write.
     context: LLMContext = field(default_factory=LLMContext)
+    # Whose voice each hold with words in it is told to be, oldest first; the user's hand, once none are left.
+    speakers: list[Voice] = field(default_factory=list[Voice])
 
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
@@ -232,6 +235,11 @@ async def rigged(
     """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
+    speakers: list[Voice] = []
+
+    def voiced(_samples: bytes, _opener: object) -> Voice:
+        return speakers.pop(0) if speakers else ByHand(taught=False)
+
     voice = built.build_voice(
         built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
         llm=llm,
@@ -239,6 +247,7 @@ async def rigged(
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict),
         prompt=unprimed,
+        told=voiced,
         record=recorded.append,
     )
     out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
@@ -259,13 +268,21 @@ async def rigged(
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context)
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context, speakers=speakers)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
     await rig.hold(["down", "down", "up"])
     await rig.texts.put("what time is it")
     assert await rig.everything_sent(holds=1) == ["what time is it"]
+
+
+async def test_words_in_someone_elses_voice_reach_the_model_as_theirs(rig: Rig) -> None:
+    rig.speakers.append(Other(similarity=0.12))
+    await rig.hold(["down", "down", "up"], by="engaged conversation")
+    await rig.texts.put("should we split the ticket")
+    assert await rig.everything_sent(holds=1) == ["[someone else in the room] should we split the ticket"]
+    assert [(entry.hold, entry.speaker) for entry in rig.recorded if isinstance(entry, Voiced)][0] == (1, Other(similarity=0.12))
 
 
 def holds_heard(rig: Rig) -> list[HoldHeard]:
@@ -965,6 +982,6 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
-    whisper = Whisper(prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(prompt=unprimed, told=by_hand, record=lambda _: None)
     with pytest.raises(TypeError, match="carries no key"):
         await whisper.process_audio_frame(InputAudioRawFrame(b"\x00\x00", 16000, 1), FrameDirection.DOWNSTREAM)

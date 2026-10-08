@@ -20,7 +20,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.tests.utils import run_test
 
-from conftest import unprimed
+from conftest import by_hand, unprimed
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
@@ -361,6 +361,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda id: id, dict),
         prompt=unprimed,
+        told=by_hand,
         record=lambda _: None,
     )
     filters = given["text_filters"]

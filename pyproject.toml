@@ -19,6 +19,8 @@ dependencies = [
     "segno>=1.6",
     "livekit>=1.1.20,<2",
     "openwakeword>=0.6,<0.7",
+    "sherpa-onnx>=1.13,<2",  # hands.voice.speakers tells voices apart with its speaker embedding
+    "sherpa-onnx-core>=1.13,<2",  # its native libraries, ONNX Runtime among them, which uv does not lock with it
     "tomlkit>=0.15.1",  # hands.daemon.config sets the model chosen by voice in config.toml, every other line kept
 ]
 

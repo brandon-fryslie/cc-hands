@@ -109,6 +109,50 @@ class HoldHeard:
 
 
 @dataclass(frozen=True)
+class ByHand:
+    """A hold the user's hand opened, at the key, a button, or the phone: theirs, whoever else is in the room. `taught`
+    says its voice was long enough to teach the user's voiceprint."""
+
+    taught: bool
+
+
+@dataclass(frozen=True)
+class Matched:
+    """A hold the voice opened, whose voice is the user's: as like their voiceprint as `similarity`, by cosine."""
+
+    similarity: float
+
+
+@dataclass(frozen=True)
+class Other:
+    """A hold the voice opened, whose voice is someone else's in the room: only as like the user's voiceprint as
+    `similarity`, by cosine."""
+
+    similarity: float
+
+
+@dataclass(frozen=True)
+class Untold:
+    """A hold the voice opened that could not be told apart, and is taken as the user's, as every hold was before hands
+    told voices apart: no voiceprint has been taught yet, or too little of the hold was voice to judge."""
+
+    why: Literal["no voiceprint", "too short"]
+
+
+# Whose voice a hold was in (hands.voice.speakers).
+Speaker = ByHand | Matched | Other | Untold
+
+
+@dataclass(frozen=True)
+class Voiced:
+    """Whose voice one hold with words in it was in, and how many seconds of it were heard to say so."""
+
+    hold: int
+    speaker: Speaker
+    seconds: float
+
+
+@dataclass(frozen=True)
 class Primed:
     """The words Whisper was primed with for one hold, oldest first, the prompt tokens they come to, and how long reading
     them took. `focus` is the session whose repository was read, None where no running session is focused; `failed`
@@ -254,6 +298,7 @@ Entry = (
     | Exchanged
     | Transcribed
     | HoldHeard
+    | Voiced
     | Primed
     | Replied
     | CutOff
@@ -289,7 +334,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
+            | Transcribed() | HoldHeard() | Voiced() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

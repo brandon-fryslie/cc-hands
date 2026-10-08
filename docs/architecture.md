@@ -1632,6 +1632,13 @@ surface above is the whole surface `[LAW:no-mode-explosion]`.
 it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
 which opens the mic without a hand, does.
 
+**Two people in the room.** Each hold with words in it is told by voice (`hands.voice.speakers`): a hold the
+user's hand opened is theirs and teaches their voiceprint, kept in the home's `speakers` directory, and one
+the voice opened is the user's or someone else's by its CAM++ embedding's cosine to that print (0.5). Someone
+else's words reach the brain behind `[someone else in the room]`, and the prompt makes hands the third person
+at the table: silent unless spoken to, and moving a session only on the user's word. Each telling is a
+`Voiced` line with its similarity, which is what the threshold is tuned by.
+
 **The prompt.** The brain's prompt is `voice/intermediary_instruction.py`. It says when to
 reach for a tool, and the tool's docstring says how to use what comes back; it names only
 tools the model is given, so each planned tool's ticket adds its own line. A quoted wrong
