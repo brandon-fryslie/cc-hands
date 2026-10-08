@@ -194,7 +194,7 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
         asked: list[None] = []
         monkeypatch.setattr(talkkey, "granted", lambda: False)
         monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
-        assert cli.main(["--home", str(root), *run]) == 1
+        assert cli.main(["--home", str(root), *run]) == 3
         assert f"hands is already running on {root}, as pid {holder.pid}" in capsys.readouterr().err
         assert asked == []
         assert home.status.read_bytes() == live

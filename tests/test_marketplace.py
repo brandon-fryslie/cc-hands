@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.daemon.cli import main
+from hands.daemon.cli import CRASHED, main
 from hands.sessions.audit import segment
 from hands.sessions.hookconfig import LAUNCHER
 from hands.sessions.home import Home
@@ -84,8 +84,7 @@ def test_a_render_that_fails_leaves_nothing_staged(tmp_path: Path, monkeypatch: 
 def test_a_render_that_fails_is_a_failed_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     monkeypatch.setattr(Path, "rename", full_disk)
-    with pytest.raises(OSError, match="No space left"):
-        main(["--home", str(home.root), "plugin"])
+    assert main(["--home", str(home.root), "plugin"]) == CRASHED
     [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "plugin.render"]
     assert (event["event"], event["outcome"], event["error"]) == ("plugin.render", "failed", "OSError: [Errno 28] No space left on device")
     assert event["facts"] == {"interpreter": sys.executable, "packaged": str(PACKAGED)}

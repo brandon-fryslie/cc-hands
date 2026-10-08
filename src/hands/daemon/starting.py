@@ -32,7 +32,17 @@ LAST_BEAT: dict[Ending, heartbeat.PipelineState] = {"quit": "stopped", "restart"
 
 
 class CannotStart(Exception):
-    """A start hands will not make: a setting, a key, or a grant it cannot start without. The message is the reason."""
+    """A start hands will not make: a setting, a key, or a grant it cannot start without. The message is the reason, and
+    `exit` the code `hands run` exits with."""
+
+    exit = 1
+
+
+class Held(CannotStart):
+    """A start another hands refuses by holding the home: `hands run` exits 3, so what started it can tell a hands already
+    running from every other refusal."""
+
+    exit = 3
 
 
 class Start:

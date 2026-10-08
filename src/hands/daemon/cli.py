@@ -11,6 +11,7 @@ import sys
 import termios
 import threading
 import time
+import traceback
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from functools import partial
@@ -24,7 +25,7 @@ from hands.daemon import indicator, readiness
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Held, Start, again, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, firstrun, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -143,12 +144,16 @@ def show_phone(home: Home) -> int:
     return 0
 
 
+# sysexits' EX_SOFTWARE: an internal software error.
+CRASHED = 70
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hands")
+    parser = argparse.ArgumentParser(prog="hands", epilog=f"A command other than run that crashes prints its traceback and exits {CRASHED}, an exit no command gives its own meaning.")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
-    running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
+    running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it; exits 0 when it is quit, 3 when a hands already runs on the home, and 1 when it cannot start for any other reason, which it says")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
@@ -225,13 +230,13 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
         except CannotStart as cannot:
             run_start.ended(audit_log.record, cannot)
             refuse(cannot, held)
-            return 1
+            return cannot.exit
         try:
             ending, shown = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
         except CannotStart as cannot:
             # The run's launch ended the start, failed with this reason, on the edge the settings chose.
             refuse(cannot, heart)
-            return 1
+            return cannot.exit
         match ending:
             case "quit":
                 return 0
@@ -251,13 +256,19 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
     collector, or on a config.toml the daemon has yet to accept.
     """
     record = audit_log_of(home).record
-    with wide.unit("hands.command", record):
-        # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
-        wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        code = dispatch(home, arguments, record)
-        wide.annotate(exit_code=code)
-        if code != 0:
-            wide.fail(f"exited {code}")
+    try:
+        with wide.unit("hands.command", record):
+            # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
+            wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
+            code = dispatch(home, arguments, record)
+            wide.annotate(exit_code=code)
+            if code != 0:
+                wide.fail(f"exited {code}")
+    except Exception:
+        # [LAW:no-silent-failure] Python exits 1 on a crash, which a command's caller reads as that command's own 1, as
+        # install.sh reads "asked, and not given": a crash exits its own code, its traceback said, and the event has it.
+        traceback.print_exc()
+        return CRASHED
     return code
 
 
@@ -368,7 +379,7 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
 
 
 def hold(home: Home) -> None:
-    """Lock the home for the rest of this process, or CannotStart, naming the daemon that holds it.
+    """Lock the home for the rest of this process, or Held, naming the daemon that holds it.
 
     [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
     written: a second run refused here leaves the heartbeat, the socket, and the indicator to the daemon running.
@@ -392,7 +403,7 @@ def hold(home: Home) -> None:
             pid = holder(descriptor)
             if pid is not None:
                 os.close(descriptor)
-                raise CannotStart(f"hands is already running on {home.root}, as pid {pid}") from error
+                raise Held(f"hands is already running on {home.root}, as pid {pid}") from error
 
 
 def inherited(path: Path) -> int | None:

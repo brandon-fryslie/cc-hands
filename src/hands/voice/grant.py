@@ -9,6 +9,7 @@ a process the app starts after that has the grant, while one already running whe
 So the wait asks a new process each time, and the app is never quit, which would end this command with it.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.sessions import audit, wide
+from hands.sessions import audit, terminals, wide
 from hands.voice import talkkey
 
 # System Settings > Privacy & Security > Input Monitoring.
@@ -64,7 +65,7 @@ class Mac:
 
 
 def on_this_mac() -> Mac:
-    return Mac(responsible=talkkey.responsible, granted=granted_anew, ask=talkkey.ask, show=show_pane, sleep=time.sleep, now=time.monotonic)
+    return Mac(responsible=lambda: terminals.responsible(os.getpid()), granted=granted_anew, ask=talkkey.ask, show=show_pane, sleep=time.sleep, now=time.monotonic)
 
 
 def show_pane() -> None:
@@ -73,7 +74,15 @@ def show_pane() -> None:
 
 def granted_anew() -> bool:
     """Whether a process started now has the grant: this one's answer is the one it had when it first asked."""
-    return subprocess.run([sys.executable, "-c", "from hands.voice.talkkey import granted; raise SystemExit(0 if granted() else 1)"]).returncode == 0
+    # [LAW:no-silent-failure] the answer is what the new process prints, so one that crashed is an error, never a no.
+    answer = subprocess.run([sys.executable, "-c", "from hands.voice.talkkey import granted; print(granted())"], stdout=subprocess.PIPE, text=True, check=True).stdout
+    match answer:
+        case "True\n":
+            return True
+        case "False\n":
+            return False
+        case _:
+            raise ValueError(f"a new process asked whether it has the Input Monitoring grant answered {answer!r}")
 
 
 def give(mac: Mac, record: audit.Record) -> int:

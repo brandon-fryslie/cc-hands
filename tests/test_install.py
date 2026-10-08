@@ -57,7 +57,8 @@ esac
 """
 # The hands uv installs: its shim is a claude in ~/.hands/bin, Claude Code's first run is finished and the brain logged in
 # unless the person quits them, its plugin is installed unless the person declines, the grant is given unless the person
-# lets the wait run out, and its run, which says the claude its PATH finds, quits as q quits it.
+# lets the wait run out, and its run, which says the claude its PATH finds, quits as q quits it, or is refused as a
+# hands already running refuses it.
 HANDS = r"""#!/bin/bash
 echo "hands $*" >>"${LOG:-/dev/null}"
 case "$1" in
@@ -74,10 +75,11 @@ case "$1" in
     [ ! -e "$STUBS/claude-unaskable" ] || exit 2 ;;
   grant)
     [ ! -e "$STUBS/grant-not-given" ] || exit 1
-    [ ! -e "$STUBS/grant-over-ssh" ] || exit 2 ;;
-  status) [ -e "$STUBS/running" ] || exit 1 ;;
+    [ ! -e "$STUBS/grant-over-ssh" ] || exit 2
+    [ ! -e "$STUBS/grant-crashed" ] || { echo "Traceback (most recent call last):" >&2; exit 70; } ;;
   run)
     echo "hands run finds claude $(command -v claude)" >>"${LOG:-/dev/null}"
+    [ ! -e "$STUBS/running" ] || { echo "hands: hands is already running" >&2; exit 3; }
     [ ! -e "$STUBS/run-refused" ] || exit 1 ;;
 esac
 """
@@ -364,16 +366,16 @@ def test_the_releases_it_installs_and_the_marketplace_hands_adds_are_one_reposit
     assert f"REPO={MARKETPLACE}\n" in INSTALL.read_text()
 
 
-def test_a_grant_not_given_in_time_stops_the_run_before_hands_runs_saying_a_second_run_waits_again(sandbox: Sandbox) -> None:
+def test_a_grant_not_given_in_time_stops_the_run_before_hands_runs_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "grant-not-given").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "without the Input Monitoring grant" in ran.stderr and "running this command again waits again" in ran.stderr
+    assert ran.returncode == 1 and "without the Input Monitoring grant" in ran.stderr and "running this command again asks again" in ran.stderr
     assert "hands run" not in sandbox.calls()
     (sandbox.root / "stubs" / "grant-not-given").unlink()
     assert sandbox.run().returncode == 0 and "hands run" in sandbox.calls()
 
 
-def test_a_grant_that_cannot_be_given_here_fails_without_saying_a_second_run_waits_again(sandbox: Sandbox) -> None:
+def test_a_grant_that_cannot_be_given_here_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "grant-over-ssh").touch()
     ran = sandbox.run()
     assert ran.returncode == 1 and "cannot be given here" in ran.stderr and "again" not in ran.stderr
@@ -385,7 +387,14 @@ def test_a_second_run_beside_a_hands_that_runs_starts_no_second_one(sandbox: San
     (sandbox.root / "stubs" / "running").touch()
     again = sandbox.run()
     assert again.returncode == 0, again.stderr
-    assert "hands is running already" in again.stdout and "hands run" not in sandbox.calls()
+    assert "hands is already running" in again.stderr and "hands is running already, so this run starts no second one" in again.stdout
+
+
+def test_a_step_that_crashed_is_told_as_its_failure_not_as_a_question_to_ask_again(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "grant-crashed").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "hands grant failed, exiting 70, as said above" in ran.stderr and "again" not in ran.stderr
+    assert "hands run" not in sandbox.calls()
 
 
 def test_a_hands_that_will_not_run_fails_the_run_saying_so(sandbox: Sandbox) -> None:

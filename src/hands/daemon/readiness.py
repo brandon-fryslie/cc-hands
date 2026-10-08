@@ -319,7 +319,8 @@ def grant(granted: bool) -> Ready | Missing:
         return Ready("the app this runs in has the Input Monitoring grant, so hands run here hears the talk key (Right Shift)")
     return Missing(
         "the app this runs in has no Input Monitoring grant, so hands run here cannot hear the talk key (Right Shift). Grant it "
-        "to that app, hands.app or the terminal's, with `hands grant`, or in System Settings > Privacy & Security > Input Monitoring"
+        "to that app, hands.app or the terminal's, in System Settings > Privacy & Security > Input Monitoring; `hands grant`, run in a "
+        "terminal, gives it to that terminal"
     )
 
 

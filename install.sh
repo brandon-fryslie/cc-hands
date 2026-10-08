@@ -140,51 +140,44 @@ if [ "$(terminal_claude)" != "$shims/claude" ]; then
   [ "$(terminal_claude)" = "$shims/claude" ] || fail "a new terminal's claude is $(terminal_claude), not hands' $shims/claude, though $rc has $line: a startup file read after it puts another claude first; put that line after this one"
 fi
 
+# A step only the person can finish, as `hands <command>` asks it at this terminal: 1 is asked and not given, which a
+# second run of this command asks again; 2 is that it could not be asked here, as the command says; any other exit is the
+# command's own failure, as it says. Each is said as what is not done ($2), or why it cannot be done here ($3).
+step() {
+  local code=0
+  hands "$1" || code=$?
+  case $code in
+    0) ;;
+    1) fail "$2; running this command again asks again" ;;
+    2) fail "$3, as said above" ;;
+    *) fail "$2: hands $1 failed, exiting $code, as said above" ;;
+  esac
+}
+
 # Claude Code's first-run questions and its login, asked once here, so the session `hands smoke` starts waits on none of them.
-first_run=0
-hands first-run || first_run=$?
-case $first_run in
-  0) ;;
-  1) fail "Claude Code's first run is not finished, so the session \`hands smoke\` starts would wait on its questions; running this command again asks again" ;;
-  *) fail "Claude Code's first run is not finished: Claude Code could not be asked, as said above" ;;
-esac
-
+step first-run "Claude Code's first run is not finished, so the session \`hands smoke\` starts would wait on its questions" \
+  "Claude Code's first run is not finished: Claude Code could not be asked"
 # The brain's login, which only the person can make: a brain that holds one keeps it, and nothing is asked.
-login=0
-hands login || login=$?
-case $login in
-  0) ;;
-  1) fail "the brain is not logged in, so hands has no model to talk with; running this command again asks again" ;;
-  *) fail "the brain is not logged in, so hands has no model to talk with: Claude Code could not be asked, as said above" ;;
-esac
-
+step login "the brain is not logged in, so hands has no model to talk with" \
+  "the brain is not logged in, so hands has no model to talk with: Claude Code could not be asked"
 # After the steps Claude Code asks for, so that declining it leaves every step before it done.
-plugin=0
-hands install-plugin || plugin=$?
-case $plugin in
-  0) ;;
-  1) fail "hands' Claude Code plugin is not installed, so no session joins hands; running this command again asks again" ;;
-  *) fail "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked, as said above" ;;
-esac
-
+step install-plugin "hands' Claude Code plugin is not installed, so no session joins hands" \
+  "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked"
 # The talk key's Input Monitoring grant, which only the person can give, to the app this runs in: hands waits for it.
-grant=0
-hands grant || grant=$?
-case $grant in
-  0) ;;
-  1) fail "hands cannot hear the talk key without the Input Monitoring grant; running this command again waits again" ;;
-  *) fail "hands cannot hear the talk key: the Input Monitoring grant cannot be given here, as said above" ;;
-esac
+step grant "hands cannot hear the talk key without the Input Monitoring grant" \
+  "hands cannot hear the talk key: the Input Monitoring grant cannot be given here"
 
-installed="Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, Claude Code has been through its first run, the brain is logged in, and the app this runs in has the Input Monitoring grant"
-# A hands already running is left to run, as a second run of this command finds it: `hands run` would refuse a second.
-if hands status >/dev/null; then
-  say "done: $installed; hands is running already"
-  exec "$SHELL" -l
-fi
-say "done: $installed; hands now runs in this terminal, on a new terminal's PATH. Hold Right Shift in any app to talk; q here quits hands and leaves this terminal a login shell that finds them"
-# [LAW:one-source-of-truth] hands starts its sessions from the PATH a new terminal has, as `hands check` there judges it.
+say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, Claude Code has been through its first run, the brain is logged in, and the app this runs in has the Input Monitoring grant"
+# [LAW:one-source-of-truth] hands starts its sessions from the PATH a new terminal has, as `hands check` there judges it,
+# and it is the hands this run installed, whatever that PATH finds first.
+run_path=$(shell_path "$terminal") || fail "your shell, $SHELL $terminal, run with no terminal, ended without saying its PATH, so hands cannot start its sessions from a new terminal's"
+say "starting hands in this terminal: hold Right Shift in any app to talk; q here quits it and leaves this terminal a login shell that finds them"
 ran=0
-PATH=$(shell_path "$terminal") hands run || ran=$?
-[ "$ran" -eq 0 ] || fail "hands stopped, exiting $ran, as said above; running this command again starts it again"
+PATH=$run_path "$bin/hands" run || ran=$?
+case $ran in
+  0) ;;
+  # [LAW:single-enforcer] whether a hands runs already is the home's lock's to say: `hands run` exits 3 for it.
+  3) say "hands is running already, so this run starts no second one; this terminal is now a login shell that finds them" ;;
+  *) fail "hands stopped, exiting $ran, as said above; running this command again starts it again" ;;
+esac
 exec "$SHELL" -l

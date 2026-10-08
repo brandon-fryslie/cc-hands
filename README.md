@@ -364,8 +364,9 @@ Polar refuses, revoked when a subscription ends or expired, does not start hands
 Polar cannot be reached, the app starts hands for 14 days after Polar last said the key was live. The check sends Polar
 the key and the organization's id, nothing else.
 
-`hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (`hands grant`, or System Settings > Privacy &
-Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
+`hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (System Settings > Privacy &
+Security > Input Monitoring, or, for a terminal, `hands grant` run in it) to hear Right Shift from other apps; without it, it names
+the grant and exits.
 
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four
 real turns, lifted whole out of real transcripts, and checks that the facts are there, that

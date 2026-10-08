@@ -1,13 +1,17 @@
 """`hands grant` against a stand-in macOS on a virtual clock: which app the grant goes to, what is said before the wait,
 how the wait ends, and the event each run emits."""
 
+import os
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.voice import grant
+from hands.sessions import terminals
+from hands.voice import grant, talkkey
 from hands.voice.grant import App, NoApp
 
 TERMINAL = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
@@ -91,3 +95,33 @@ def test_over_ssh_no_app_holds_hands_so_it_exits_2_at_once_asking_nothing(capsys
     assert code == 2 and stand_in.asked == [] and stand_in.clock == 0
     assert "/usr/libexec/sshd-session, which is no app" in capsys.readouterr().err
     assert event.outcome == "failed" and event.facts["grantee"] == NoApp("/usr/libexec/sshd-session")
+
+
+def test_a_new_process_has_the_grant_this_one_has_when_neither_was_given_it_since() -> None:
+    # The same responsible app, so the same answer: the import the new process makes is the one this test makes.
+    assert grant.granted_anew() == talkkey.granted()
+
+
+@pytest.mark.parametrize(
+    ("child", "raised"),
+    [
+        ("echo 'ModuleNotFoundError: No module named Quartz' >&2; exit 1", subprocess.CalledProcessError),
+        ("echo maybe", ValueError),
+    ],
+)
+def test_a_new_process_that_crashed_or_answered_neither_is_an_error_never_a_no(child: str, raised: type[Exception], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    python = tmp_path / "python"
+    python.write_text(f"#!/bin/sh\n{child}\n")
+    python.chmod(0o755)
+    monkeypatch.setattr(grant.sys, "executable", str(python))
+    with pytest.raises(raised):
+        grant.granted_anew()
+
+
+def test_the_process_responsible_for_this_one_is_an_executable_on_disk() -> None:
+    assert Path(terminals.responsible(os.getpid())).is_file()
+
+
+def test_a_pid_with_no_process_has_no_responsible_executable_and_says_so() -> None:
+    with pytest.raises(OSError, match="the process responsible for pid 99999"):
+        terminals.responsible(99999)
