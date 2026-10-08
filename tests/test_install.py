@@ -55,8 +55,8 @@ case "$1 $2" in
     chmod +x "$HOME/.local/bin/hands" ;;
 esac
 """
-# The hands uv installs: its shim is a claude in ~/.hands/bin, Claude Code's first run is finished unless the person
-# quits it, and its plugin is installed unless the person declines.
+# The hands uv installs: its shim is a claude in ~/.hands/bin, Claude Code's first run is finished and the brain logged in
+# unless the person quits them, and its plugin is installed unless the person declines.
 HANDS = r"""#!/bin/bash
 echo "hands $*" >>"${LOG:-/dev/null}"
 case "$1" in
@@ -65,6 +65,7 @@ case "$1" in
   first-run)
     [ ! -e "$STUBS/first-run-unfinished" ] || exit 1
     [ ! -e "$STUBS/first-run-unaskable" ] || exit 2 ;;
+  login) [ ! -e "$STUBS/login-unfinished" ] || exit 1 ;;
   install-plugin)
     [ ! -e "$STUBS/plugin-declined" ] || exit 1
     [ ! -e "$STUBS/claude-unaskable" ] || exit 2 ;;
@@ -140,7 +141,7 @@ def test_a_bare_mac_gets_claude_code_portaudio_uv_and_the_newest_hands(sandbox: 
     assert "brew install portaudio" in calls and "brew install uv" in calls
     release = "https://github.com/brandon-fryslie/cc-hands/releases/download/v9.9.9"
     assert f"uv tool install --reinstall --python 3.12 --constraints {release}/constraints.txt {release}/hands-9.9.9-py3-none-macosx_12_0_arm64.whl" in calls
-    assert calls.index("hands install-fritter") < calls.index("hands first-run") < calls.index("hands install-plugin")
+    assert calls.index("hands install-fritter") < calls.index("hands first-run") < calls.index("hands login") < calls.index("hands install-plugin")
     # A new terminal finds each of them without the person touching a profile, and its claude is hands' shim.
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
     assert sandbox.login_finds("hands") == str(sandbox.home / ".local/bin/hands")
@@ -276,6 +277,15 @@ def test_a_first_run_left_unfinished_stops_the_run_before_the_plugin_saying_a_se
     assert ran.returncode == 1 and "Claude Code's first run is not finished" in ran.stderr and "running this command again asks again" in ran.stderr
     assert "hands install-plugin" not in sandbox.calls()
     (sandbox.root / "stubs" / "first-run-unfinished").unlink()
+    assert sandbox.run().returncode == 0
+
+
+def test_a_brain_left_logged_out_stops_the_run_before_the_plugin_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "login-unfinished").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "the brain is not logged in" in ran.stderr and "running this command again asks again" in ran.stderr
+    assert "hands install-plugin" not in sandbox.calls()
+    (sandbox.root / "stubs" / "login-unfinished").unlink()
     assert sandbox.run().returncode == 0
 
 

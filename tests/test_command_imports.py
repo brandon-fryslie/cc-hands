@@ -23,10 +23,10 @@ async def untailed():
     from hands.voice.phoneaddress import Untailed
     return Untailed("a stand-in for Tailscale")
 
-def logged_in(config_dir, base_url, inherited, method):
+def logged_in(config_dir, base_url, inherited, method, starting):
     from hands.brain.process import Login
     from hands.voice.backends import Account
-    return Login(Account("claude.ai", "someone@example.com"), None)
+    return Login(Account("claude.ai", "someone@example.com"), None, ran=True)
 
 home, command, out = sys.argv[1:]
 if command == "log":

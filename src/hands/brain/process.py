@@ -321,27 +321,30 @@ def brain_claude(inherited: Mapping[str, str]) -> Path:
 
 @dataclass(frozen=True)
 class Login:
-    """What `hands login` left the brain holding: its account, and why it took Claude Code's first run, if it did."""
+    """What `hands login` left the brain holding: its account, why it took Claude Code's first run, if it did, and whether
+    it ran Claude Code at all, which it does not for a brain that holds a login and was asked for none in particular."""
 
     account: Account
     first_run: str | None
+    ran: bool
 
 
-def unanswered(config_dir: Path) -> str | None:
-    """Why the brain would start on one of Claude Code's first screens, or None when it would not, as Claude Code records
+def unanswered(config_dir: Path) -> firstrun.Unanswered | None:
+    """What the brain would start on of Claude Code's first screens, or None when it would not, as Claude Code records
     them in the brain's own .claude.json. A config directory made by anything else, `claude auth status` among them, has
     none of them. Its API key is the one its settings.json sets: hands' never reaches it (FOREIGN_LOGINS)."""
+    cwd = _cwd(config_dir).resolve()
     try:
-        open_ = firstrun.unanswered(firstrun.recorded(config_dir / ".claude.json"), _cwd(config_dir).resolve(), firstrun.api_key(config_dir / "settings.json", {}))
+        return firstrun.unanswered(firstrun.recorded(config_dir / ".claude.json"), cwd, firstrun.api_key(config_dir / "settings.json", {}))
     except Rejected as error:
-        return str(error)
-    return None if open_ is None else open_.why
+        # Claude Code's own first run is what writes its state, so one hands cannot read is a first run with all to ask.
+        return firstrun.unanswered(firstrun.Blank(str(error)), cwd, None)
 
 
 def answered(config_dir: Path) -> None:
     """Raises Unstartable, naming the command that answers them, while the brain would start on Claude Code's first screens."""
-    if (why := unanswered(config_dir)) is not None:
-        raise Unstartable(f"the brain has not been through Claude Code's first screens ({why}): `hands login` answers them")
+    if (open_ := unanswered(config_dir)) is not None:
+        raise Unstartable(f"the brain has not been through Claude Code's first screens ({open_.why}): `hands login` answers them")
 
 
 # The logins `claude auth login` makes, each named by its own flag: a Claude plan, or an Anthropic Console key.
@@ -349,23 +352,40 @@ type Method = Literal["claudeai", "console"]
 
 # [LAW:one-source-of-truth] the authMethod `claude auth status` says of each login once it is made (2.1.289).
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
+# What Claude Code's first-run login screen calls each.
+AUTH_PICKED: dict[Method, str] = {"claudeai": "a Claude plan", "console": "an Anthropic Console account"}
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
+def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method | None, starting: Callable[[str], None]) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
     A config directory whose first screens are unanswered gets Claude Code's first run, its screens, its login among
     them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
     keyboard. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
-    offers every login, it is the one to pick. Raises LoginFailed when the brain holds another after."""
+    offers every login, it is the one to pick. With none asked for, a brain through its first run that holds a login keeps
+    it, and Claude Code is not run; one that holds none gets Claude Code's own default, a Claude plan, and the first run's
+    login screen takes whichever the person picks. `starting` is told what Claude Code is about to ask, just before it
+    asks. Raises LoginFailed when the brain holds another login than the one asked for after."""
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
     account_kept_out(config_dir)
     first_run = unanswered(config_dir)
+    if method is None and first_run is None:
+        try:
+            return Login(logged_in(config_dir, base_url, inherited), None, ran=False)
+        except NotLoggedIn:
+            pass
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
-    argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
+    if first_run is None:
+        # Claude Code's own default, with none asked for (2.1.289).
+        made: Method = method or "claudeai"
+        argv, ran = ["auth", "login", f"--{made}"], "`claude auth login` for the brain"
+        starting(f"Claude Code now logs the brain in with its own login: it opens your browser, or prints a link to open, for {AUTH_PICKED[made]}")
+    else:
+        argv, ran = ["--setting-sources", "user"], "the brain's first run of Claude Code"
+        starting(f"Claude Code now starts as the brain, hands' own Claude Code, in {workdir(config_dir)}, and asks what it asks only once: {first_run.listed}. Its login screen offers a Claude plan or an Anthropic Console account: pick {AUTH_PICKED[method] if method else 'either'}. Answer each, then type /exit")
     signed = subprocess.run([brain_claude(inherited), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
@@ -374,9 +394,9 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     held = logged_in(config_dir, base_url, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.
-    if held.method != AUTH_METHODS[method]:
+    if method is not None and held.method != AUTH_METHODS[method]:
         raise LoginFailed(f"the brain holds {held}, not the {AUTH_METHODS[method]} login asked for")
-    return Login(held, first_run)
+    return Login(held, None if first_run is None else first_run.why, ran=True)
 
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.

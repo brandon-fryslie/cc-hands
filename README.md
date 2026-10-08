@@ -25,24 +25,19 @@ is not, what does it; it exits 0 only when every step is done.
    Then Claude Code starts in `~/.hands/smoke`, the folder the smoke test runs in, to ask what it asks only once: a
    theme, your login, whether to trust that folder, and, with `ANTHROPIC_API_KEY` set, whether to use that key (no
    keeps it on your login). The command names each before Claude Code shows it: answer them and type `/exit`. Claude
-   Code that has answered them already asks nothing, and one with no login logs in with its own login. Last, Claude
+   Code that has answered them already asks nothing, and one with no login logs in with its own login. Then the brain,
+   the Claude Code of hands' own that hands talks through, starts the same way in its own folder, `~/.hands/brain`: answer
+   its questions, log it in on a Claude plan or an Anthropic Console account, whichever you pick on its login screen, and
+   type `/exit`. A brain that holds a login already asks nothing. Last, Claude
    Code shows the command `hands plugin` and asks whether to run it, which the command says just before: answer y. It
    puts each on your login shell's `PATH`, hands' `claude` first, and leaves the terminal in a fresh login shell,
    where they are found.
 
-2. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
-   plan or, with `--console`, an Anthropic Console key. It runs Claude Code's first screens in
-   the brain's own directory, `~/.hands/brain`: answer them, log in, and `/exit`.
-
-   ```
-   hands login
-   ```
-
-3. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
+2. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
    you have one, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-4. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
+3. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
    start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
 
    ```
@@ -50,7 +45,7 @@ is not, what does it; it exits 0 only when every step is done.
    hands check        # in another terminal: every line ok
    ```
 
-5. The smoke test, in another terminal while hands runs. It calls hands as the phone's
+4. The smoke test, in another terminal while hands runs. It calls hands as the phone's
    page does and takes three spoken turns in macOS's voice: it asks hands to have a
    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
    asks what the session said. Each part of the pipeline gets an `ok` line, and the run
@@ -176,9 +171,10 @@ A restart resumes the brain's conversation rather than starting it over; to star
 before starting hands.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
 there; then, on a brain Claude Code has not finished its first run on, it runs that first run in the directory the brain
-runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,
-it logs the brain in again, or onto another account: a Claude plan, or with `hands login --console` an Anthropic Console
-key. Either way it says which account the brain holds after, and how it is logged in.
+runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it and
+holds a login, it asks nothing; `hands login --claudeai` logs it in again, or onto another account, on a Claude plan, and
+`hands login --console` with an Anthropic Console key. Either way it says which account the brain holds after, and how
+it is logged in.
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.
