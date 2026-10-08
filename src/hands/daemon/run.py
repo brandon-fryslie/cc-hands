@@ -75,7 +75,7 @@ from hands.daemon.backend import backend
 from hands.voice.naming import NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.utterance import Utterances
-from hands.voice.speakers import teller
+from hands.voice.speakers import Room, teller
 from hands.voice.speech import relay
 from hands.voice.working import Playing, keep_playing
 from hands.voice.summary import Summariser, aside
@@ -283,7 +283,9 @@ async def run(
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
         if config is not None:
-            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
+            # [LAW:one-source-of-truth] one room of voices, told by the speaker model and named by the brain.
+            room = Room(home.speakers, record)
+            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), room, environment, lambda: quiet_cues.owe(WORKING))]
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
             # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
             # no longer does.
@@ -296,7 +298,7 @@ async def run(
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, teller(home.speakers, record), record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, teller(home.speakers, room, record), record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start)

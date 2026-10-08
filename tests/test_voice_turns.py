@@ -287,11 +287,11 @@ async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
 
 
 async def test_words_in_someone_elses_voice_reach_the_model_as_theirs(rig: Rig) -> None:
-    rig.speakers.append(Other(similarity=0.12))
+    rig.speakers.append(Other(similarity=0.12, guest=None))
     await rig.hold(["down", "down", "up"], by="engaged conversation")
     await rig.texts.put("should we split the ticket")
     assert await rig.everything_sent(holds=1) == ["[someone else in the room: should we split the ticket]"]
-    assert [(entry.hold, entry.speaker) for entry in rig.recorded if isinstance(entry, Voiced)][0] == (1, Other(similarity=0.12))
+    assert [(entry.hold, entry.speaker) for entry in rig.recorded if isinstance(entry, Voiced)][0] == (1, Other(similarity=0.12, guest=None))
 
 
 async def test_words_whose_voice_could_not_be_told_still_reach_the_model(rig: Rig) -> None:

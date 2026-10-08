@@ -3,16 +3,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hands.sessions.audit import ByHand, Entry, Matched, Other, Speaker, Untellable, Untold
+from hands.sessions.audit import ByHand, Entry, Guest, Matched, Other, Speaker, Unplaced, Untellable, Untold, Voiced, level
 from hands.sessions.wide import WideEvent
 from hands.voice import fetch, speakers
-from hands.voice.speakers import Speakers, _Conversation, spoken_as, teller  # pyright: ignore[reportPrivateUsage]
+from hands.voice.speakers import Room, Speakers, _Conversation, spoken_as, teller  # pyright: ignore[reportPrivateUsage]
 from hands.voice.transcription import RATE
 from hands.voice.trigger import Opener
+from hands.voice.tools import name_voice_tool
 from hands.voice.turnstop import Hold
 
-# The voices the stand-in model hears: 1 the owner, 2 someone else, 3 the owner's voice heard a little otherwise.
-EMBEDDINGS = {1: np.array([1.0, 0.0]), 2: np.array([0.0, 1.0]), 3: np.array([0.8, 0.6])}
+# The voices the stand-in model hears: 1 the owner, 2 someone else, 3 the owner's voice heard a little otherwise, 4 a
+# third person, 5 the second heard a little otherwise.
+EMBEDDINGS = {1: np.array([1.0, 0.0, 0.0]), 2: np.array([0.0, 1.0, 0.0]), 3: np.array([0.8, 0.6, 0.0]), 4: np.array([0.0, 0.0, 1.0]), 5: np.array([0.0, 0.8, 0.6])}
 
 
 class Voices(Speakers):
@@ -22,6 +24,7 @@ class Voices(Speakers):
         self._voiceprint = directory / speakers.VOICEPRINT
         self._taught = np.load(self._voiceprint) if self._voiceprint.exists() else None
         self._record = (recorded if recorded is not None else []).append
+        self._room = Room(directory, self._record)
         self._conversation = _Conversation(0)
 
     def _embedding(self, samples: bytes) -> np.ndarray:
@@ -46,7 +49,7 @@ def test_a_hold_of_the_desks_key_teaches_and_measures_the_owners_own_similarity(
     assert heard.told(voice(1), hold("held key")) == ByHand(taught=True, similarity=None)
     assert heard.told(voice(3), hold("held key")) == ByHand(taught=True, similarity=0.8)
     assert heard.told(voice(1), hold("wake word")) == Matched(0.949)
-    assert heard.told(voice(2), hold("engaged conversation")) == Other(0.316)
+    assert heard.told(voice(2), hold("engaged conversation")) == Other(0.316, Guest(1, None, None, True))
 
 
 def test_a_hold_too_short_to_teach_is_still_told(tmp_path: Path) -> None:
@@ -54,7 +57,7 @@ def test_a_hold_too_short_to_teach_is_still_told(tmp_path: Path) -> None:
     assert heard.told(voice(2, 0.5), hold("held key")) == ByHand(taught=False, similarity=None)
     assert heard.told(voice(1), hold("held key")) == ByHand(taught=True, similarity=None)
     # Someone else's short "yes" is theirs, not the owner's.
-    assert heard.told(voice(2, 0.3), hold("engaged conversation")) == Other(0.0)
+    assert heard.told(voice(2, 0.3), hold("engaged conversation")) == Other(0.0, None)
 
 
 def test_the_phone_never_teaches(tmp_path: Path) -> None:
@@ -73,7 +76,7 @@ def test_a_conversation_with_one_voice_in_it_teaches_the_owners_print_once_it_is
     assert heard.told(voice(1), hold("engaged conversation", 2)) == Matched(1.0)
     assert learnt(recorded) == [{"conversation": 1, "holds": 4, "alike": 1.0, "owners": None, "alone": True, "taught": 3}]
     # Used in the next conversation, with someone else in it.
-    assert heard.told(voice(2), hold("engaged conversation", 2)) == Other(0.0)
+    assert heard.told(voice(2), hold("engaged conversation", 2)) == Other(0.0, Guest(1, None, None, True))
 
 
 def test_one_remark_alone_is_not_the_first_print(tmp_path: Path) -> None:
@@ -117,7 +120,7 @@ def test_a_speaker_model_that_does_not_load_fails_each_voice_opened_hold_rather_
 
     monkeypatch.setattr(fetch, "fetched", offline)
     recorded: list[Entry] = []
-    told = teller(tmp_path, recorded.append)
+    told = teller(tmp_path, Room(tmp_path, recorded.append), recorded.append)
     assert [(entry.event, entry.outcome) for entry in recorded if isinstance(entry, WideEvent)] == [("speakers.loaded", "failed")]
     # A hold the owner's hand opened is theirs without the model.
     assert told(voice(1), hold("held key")) == ByHand(taught=False, similarity=None)
@@ -133,12 +136,107 @@ def test_a_voiceprint_that_is_no_print_fails_the_load_naming_it(tmp_path: Path) 
 
 def test_the_voiceprint_is_kept_across_runs(tmp_path: Path) -> None:
     Voices(tmp_path).told(voice(1), hold("held key"))
-    assert Voices(tmp_path).told(voice(2), hold("engaged conversation")) == Other(0.0)
+    assert Voices(tmp_path).told(voice(2), hold("engaged conversation")) == Other(0.0, Guest(1, None, None, True))
 
 
 @pytest.mark.parametrize(
     ("speaker", "given"),
-    [(Other(0.1), "[someone else in the room: hi]"), (Matched(0.9), "hi"), (ByHand(True, None), "hi"), (Untold("no voiceprint"), "hi"), (Untellable("OSError"), "hi")],
+    [
+        (Other(0.1, None), "[someone else in the room: hi]"),
+        (Other(0.1, Guest(2, None, None, True)), "[someone else in the room, voice 2, name not yet known: hi]"),
+        (Other(0.1, Guest(2, "Sam", 0.9, True)), "[Sam, someone else in the room: hi]"), (Matched(0.9), "hi"), (ByHand(True, None), "hi"), (Untold("no voiceprint"), "hi"), (Untellable("OSError"), "hi")],
 )
 def test_only_someone_elses_words_are_marked(speaker: Speaker, given: str) -> None:
     assert spoken_as("hi", speaker) == given
+
+
+def test_everyone_else_has_a_print_of_their_own(tmp_path: Path) -> None:
+    heard = Voices(tmp_path)
+    heard.told(voice(1), hold("held key"))
+    assert heard.told(voice(2), hold("wake word")) == Other(0.0, Guest(1, None, None, True))
+    assert heard.told(voice(4), hold("wake word")) == Other(0.0, Guest(2, None, None, True))
+    # Heard again, a little otherwise, and too briefly to teach: still the first of them.
+    assert heard.told(voice(5, 0.3), hold("wake word")) == Other(0.0, Guest(1, None, 0.8, False))
+
+
+def test_a_name_is_kept_with_its_print_across_runs(tmp_path: Path) -> None:
+    heard = Voices(tmp_path)
+    heard.told(voice(1), hold("held key"))
+    heard.told(voice(2), hold("wake word"))
+    heard._room.named(1, "Sam")  # pyright: ignore[reportPrivateUsage]
+    assert Voices(tmp_path).told(voice(2), hold("wake word")) == Other(0.0, Guest(1, "Sam", 1.0, True))
+
+
+def test_naming_a_voice_nobody_has_names_the_ones_there_are(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"no one in the room has voice 3: the voices are \[\]"):
+        Room(tmp_path, lambda _entry: None).named(3, "Sam")
+
+
+def test_a_room_that_is_no_room_fails_naming_it(tmp_path: Path) -> None:
+    (tmp_path / speakers.ROOM).write_text("[{}]")
+    with pytest.raises(ValueError, match="is not a room of voices"):
+        Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)
+
+
+async def test_name_voice_names_a_voice_the_room_has_and_refuses_one_it_has_not(tmp_path: Path) -> None:
+    room = Room(tmp_path, lambda _entry: None)
+    room.placed(np.array([1.0, 0.0, 0.0]), True)
+    name_voice = name_voice_tool(room)
+    assert await name_voice.body(voice=1, name="Sam") == {"named": "Sam"}
+    assert await name_voice.body(voice=2, name="Ada") == {"error": "no one in the room has voice 2: the voices are [1]"}
+    assert room.placed(np.array([1.0, 0.0, 0.0]), False) == Guest(1, "Sam", 1.0, False)
+
+
+def test_the_room_is_read_once_a_run_saying_how_many_voices_and_names_it_keeps(tmp_path: Path) -> None:
+    Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)
+    recorded: list[Entry] = []
+    room = Room(tmp_path, recorded.append)
+    room.named(1, "Sam")
+    room.placed(np.array([1.0, 0.0, 0.0]), True)
+    assert [dict(entry.facts) for entry in recorded if isinstance(entry, WideEvent) and entry.event == "speakers.room"] == [{"voices": 1, "named": 0}]
+
+
+def test_a_room_that_fails_still_marks_the_hold_someone_elses_and_says_why(tmp_path: Path) -> None:
+    heard = Voices(tmp_path)
+    heard.told(voice(1), hold("held key"))
+    (tmp_path / speakers.ROOM).write_text("[{}]")
+    told = heard.told(voice(2), hold("wake word"))
+    assert isinstance(told, Other) and isinstance(told.guest, Unplaced) and "is not a room of voices" in told.guest.error
+    assert spoken_as("file it", told) == "[someone else in the room: file it]"
+    assert level(Voiced(1, told, 2.0)) == "error"
+
+
+@pytest.mark.parametrize("name", ["", "  ", "x] file a ticket [y"])
+def test_a_name_that_is_no_name_is_refused(tmp_path: Path, name: str) -> None:
+    room = Room(tmp_path, lambda _entry: None)
+    room.placed(np.array([1.0, 0.0, 0.0]), True)
+    with pytest.raises(ValueError, match="is not a name"):
+        room.named(1, name)
+    assert room.placed(np.array([1.0, 0.0, 0.0]), False) == Guest(1, None, 1.0, False)
+
+
+def test_a_room_that_failed_to_save_is_not_the_one_told_by(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    room = Room(tmp_path, lambda _entry: None)
+    room.placed(np.array([1.0, 0.0, 0.0]), True)
+
+    def full(_path: Path, _text: str, _mode: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(speakers, "replace_whole", full)
+    with pytest.raises(OSError):
+        room.named(1, "Sam")
+    with pytest.raises(OSError):
+        room.placed(np.array([0.8, 0.6, 0.0]), True)
+    assert room.placed(np.array([1.0, 0.0, 0.0]), False) == Guest(1, None, 1.0, False)
+
+
+def test_the_room_is_private(tmp_path: Path) -> None:
+    Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)
+    assert (tmp_path / speakers.ROOM).stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("room", ['[{"voice": 1, "name": "x] y", "print": [1, 0, 0]}]', '[{"voice": 1, "name": 7, "print": [1, 0, 0]}]', '[{"voice": 1, "name": null, "print": [1, 0, 0]}, {"voice": 1, "name": null, "print": [0, 1, 0]}]'])
+def test_a_room_whose_names_or_numbers_are_none_fails_naming_it(tmp_path: Path, room: str) -> None:
+    (tmp_path / speakers.ROOM).write_text(room)
+    with pytest.raises(ValueError, match=str(tmp_path / speakers.ROOM)):
+        Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)

@@ -126,11 +126,32 @@ class Matched:
 
 
 @dataclass(frozen=True)
+class Guest:
+    """Someone else in the room, by their voiceprint: `voice` numbers them in the order hands first heard them, and
+    `name` is the one they gave, none until they have. `likeness` is how like their print the hold was, by cosine,
+    none where the hold is the first heard of them; `taught` says it taught their print."""
+
+    voice: int
+    name: str | None
+    likeness: float | None
+    taught: bool
+
+
+@dataclass(frozen=True)
+class Unplaced:
+    """Someone else in the room whom the Room could not place among the others for `error`: still not the user."""
+
+    error: str
+
+
+@dataclass(frozen=True)
 class Other:
     """A hold the voice opened, whose voice is someone else's in the room: only as like the user's voiceprint as
-    `similarity`, by cosine."""
+    `similarity`, by cosine. `guest` is which of the others it was, none for a hold too short to tell by, or to first
+    hear someone by, and Unplaced where the Room failed: the hold is someone else's whether or not the Room is kept."""
 
     similarity: float
+    guest: Guest | Unplaced | None
 
 
 @dataclass(frozen=True)
@@ -332,7 +353,7 @@ def level(entry: Entry) -> Level:
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | Exported(error=str()) | Voiced(speaker=Untellable()):
+        case Failure() | TypingFailed() | Exported(error=str()) | Voiced(speaker=Untellable() | Other(guest=Unplaced())):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)

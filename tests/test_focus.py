@@ -8,6 +8,7 @@ from pathlib import Path
 import aiohttp
 import pytest
 
+from hands.voice.speakers import Room
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.core.effects import Input, Text, Type
 from hands.core.events import Joined
@@ -46,7 +47,7 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
 
 def tools(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and each call its event in `record`."""
-    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch, Triggers(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": str(home.root)}, acting)
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch, Triggers(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Catalogue(Missing("no credentials in tests")), Room(home.root, lambda _entry: None), {"TMUX_TMPDIR": str(home.root)}, acting)
     return {tool.name: audited(tool, record) for tool in given}
 
 
