@@ -17,12 +17,12 @@ from dataclasses import dataclass, replace
 from loguru import logger
 from pipecat.frames.frames import Frame
 
-from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Amount, Attention, Delivery, EndedRoute, Overlay, Spoken, Withheld, delivery, ended_route
+from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Amount, Attention, Delivery, EndedRoute, Overlay, Spoken, Steering, Withheld, delivery, ended_route
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import Segment, narration
 from hands.core.pending import Finished, News, Unread
-from hands.core.session import PromptId, SessionId
+from hands.core.session import Drive, PromptId, SessionId
 from hands.core.subagents import Subagent, reporting
 from hands.core.turn import Said
 from hands.sessions.delta import Changes, NoChanges
@@ -118,7 +118,7 @@ async def narrate(
         utterance = utterances.heard(story.session, story)
         match story:
             case Summarise(session=session, turn=turn, closing=closing):
-                delivered = delivery(await set_to(aloud), await _overlay(overlays, session))
+                delivered = delivery(await set_to(aloud), await _overlay(overlays, session), sessions.driven(session))
                 told = await recount(tails, session, turn, closing, utterance, await read.taken(session), delivered, recounts)
             case SessionGone(session=session):
                 recounts.gone(session)
@@ -189,7 +189,7 @@ async def recount(
     # with the telling until the session's next turn, for the user to open.
     await tails.spoken(told)
     recounts.put(session, turn, news)
-    return _delivered(delivered, lambda amount: Finished(session, (news,), amount))
+    return _delivered(delivered, lambda telling: Finished(session, (news,), telling))
 
 
 async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent, ...], tuple[str, ...]]:
@@ -209,11 +209,14 @@ async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent,
     return tuple(read), tuple(unread)
 
 
-def _delivered[T](delivered: Delivery, told: Callable[[Amount], T]) -> T | None:
-    """What is told, as much of it as is set, as the turn finishes; none when it waits to be asked for."""
+def _delivered[T](delivered: Delivery, told: Callable[[Amount | Drive], T]) -> T | None:
+    """What is told, as much of it as is set, or to the brain under the drive, as the turn finishes; none when it waits
+    to be asked for."""
     match delivered:
         case Spoken(amount=amount):
             return told(amount)
+        case Steering(drive=drive):
+            return told(drive)
         case Withheld():
             return None
 

@@ -20,14 +20,15 @@ from loguru import logger
 
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
+from hands.core.drive import SENDS, DriveSend, StartDrive, StopDrive
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.progress import Doing, said
-from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
+from hands.core.session import Blocker, Drive, Membership, CommandName, Opened, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
-from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
+from hands.core.attention import Attention, Kind, Overlay, Spoken, Steering, Withheld
 from hands.core.drilldown import drill
 from hands.core.sentences import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
@@ -52,7 +53,7 @@ from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
-from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
+from hands.voice.readback import drive_readback, identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speakers import Room
 from hands.voice.speech import answer_readback, told
@@ -136,6 +137,7 @@ def intermediary_tools(
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
+        *drive_tools(sessions),
         *keyboard_tools(sessions),
         read_screen_tool(sessions, environment),
         set_overlay_tool(sessions, overlays),
@@ -283,7 +285,8 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         one it reported when it last did something: a mode changed at its keyboard
         while it sits at its prompt is seen when it is next prompted, and one changed
         in the middle of a turn at its next tool call. `overlay` says how the user hears the turns it finishes:
-        watched, normal, or muted (set_overlay). `focus` is the id of the session the user is talking to when they name
+        watched, normal, or muted (set_overlay). `driving` is the user's standing order for a session you are driving
+        (drive_session), with how many prompts you have sent it, and null for one you are not. `focus` is the id of the session the user is talking to when they name
         none (focus_session), null when none is focused, or says why it cannot be read. `tmux` is the tmux pane a
         session runs in, as it is now: its server's `socket`, the `pane`, and the tmux `session` and `window` it is in,
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
@@ -291,12 +294,20 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         listings = sessions.live()
         panes, focus = await asyncio.gather(tmux.panes([listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
-            "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
+            "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "driving": _driving(sessions.driven(listing.session.membership.id)), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
             "focus": focus,
         }
 
     return tool(list_sessions)
 
+
+
+def _driving(drive: Drive | None) -> Mapping[str, str | int] | None:
+    match drive:
+        case Drive(order=order, sends=sends):
+            return {"order": order, "sent": sends, "allowed": SENDS}
+        case None:
+            return None
 
 
 def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool:
@@ -1240,13 +1251,15 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
             return {"error": str(error)}
         # [LAW:one-source-of-truth] the delivery the narrator computes, from what is set as it reads it, so the readback
         # says what will happen to the session's next turn.
-        return {"readback": _overlay_readback(spoken_name(sessions, id), await set_to(lambda: settings.attention(overlays.home)), overlay)}
+        return {"readback": _overlay_readback(spoken_name(sessions, id), await set_to(lambda: settings.attention(overlays.home)), overlay, sessions.driven(id))}
 
     return tool(set_overlay, completes=True)
 
 
-def _overlay_readback(name: str, attention: Attention, overlay: Overlay) -> str:
-    match delivery(attention, overlay):
+def _overlay_readback(name: str, attention: Attention, overlay: Overlay, drive: Drive | None) -> str:
+    match delivery(attention, overlay, drive):
+        case Steering(drive=driven):
+            return f"I'm driving {name} on your order, {driven.order}, so each turn it finishes comes to me to act on. Once I stop driving it, {_overlay_readback(name, attention, overlay, None)}"
         case Spoken(why=why):
             return {
                 "watched": f"I'll tell you each turn {name} finishes.",
@@ -1254,7 +1267,7 @@ def _overlay_readback(name: str, attention: Attention, overlay: Overlay) -> str:
             }[why]
         case Withheld(why="quiet"):
             # What quiet holds is told as it is set once hands talks again, so that is said too.
-            return f"For now I'm keeping quiet and holding {name}'s turns. After that, {_overlay_readback(name, replace(attention, quiet='off'), overlay)}"
+            return f"For now I'm keeping quiet and holding {name}'s turns. After that, {_overlay_readback(name, replace(attention, quiet='off'), overlay, None)}"
         case Withheld(why=why):
             return {
                 "off": f"I'll hold {name}'s turns until you ask for one.",
@@ -1328,6 +1341,55 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         tool(amend_draft, then="silence", completes=True),
         tool(discard_draft, completes=True),
         tool(send_draft, completes=True),
+    ]
+
+
+def drive_tools(sessions: Sessions) -> list[Tool]:
+    """drive_session, stop_driving, drive_send: a session kept going on the user's standing order, each prompt sent with
+    no "send it", since the order was their word for all of them."""
+
+    async def drive_session(session: str, order: str) -> Result:
+        """Drive a session on the user's standing order: from now on each turn it finishes is handed to you to act on,
+        and you send its next prompt yourself with drive_send, until the order is met or the user stops it. Call it only
+        when the user tells you to drive a session or keep one going, and never on your own judgment.
+
+        Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+            order: What the user said to keep it at and when it is done, in their words, such as "keep it fixing tests until they all pass".
+        """
+        return await _answer(sessions, session, lambda id: StartDrive(id, order), sessions.drive, _for_the_model(drive_readback))
+
+    async def stop_driving(session: str) -> Result:
+        """Stop driving a session: its turns are told as any session's are, and what is sent to it waits for the user's
+        word again. Call it when the user says to stop, or when a driven session has met the order, needs the user's
+        decision, or is going wrong.
+
+        Say the returned readback to the user.
+
+        Args:
+            session: The session's id, from list_sessions.
+        """
+        return await _answer(sessions, session, StopDrive, sessions.drive, _for_the_model(drive_readback))
+
+    async def drive_send(session: str, text: str) -> Result:
+        """Type the next prompt into a session you are driving and press Return, with no draft and no readback. It is
+        refused for any session the user has not told you to drive. Write the prompt as the prompt skill says.
+
+        Say what you sent in one short sentence, naming the session.
+
+        Args:
+            session: The session's id, the one hands said you are driving.
+            text: The prompt.
+        """
+        return await _answer(sessions, session, lambda id: DriveSend(id, _prompt_text(text, "prompt")), sessions.drive, _for_the_model(drive_readback))
+
+    # A barge-in must not cancel a send part way: a prompt half typed is one the session reads wrong.
+    return [
+        tool(drive_session, completes=True),
+        tool(stop_driving, completes=True),
+        tool(drive_send, completes=True),
     ]
 
 

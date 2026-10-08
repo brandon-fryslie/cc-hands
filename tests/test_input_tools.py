@@ -15,7 +15,7 @@ from pipecat.processors.aggregators.llm_response_universal import AssistantTurnS
 
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
-from hands.core.session import CommandName, Membership, PromptId, PromptText, RequestId, SessionId
+from hands.core.session import CommandName, Drive, Membership, PromptId, PromptText, RequestId, SessionId
 from hands.core.turn import AgentId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
@@ -25,7 +25,7 @@ from hands.sessions.wide import unit
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns, turns
 from hands.voice.tool import Result, Tool, tool
-from hands.voice.tools import audited, cued, draft_tools, keyboard_tools
+from hands.voice.tools import audited, cued, draft_tools, drive_tools, keyboard_tools
 
 
 def unrecorded(_: object) -> None:
@@ -434,3 +434,45 @@ async def test_a_cued_tool_says_hands_is_acting_as_it_is_called_and_answers_as_b
     assert await looking.body(where="up") == {"saw": "up"}
     assert happened == ["acting", "looked up"]
     assert looking.name == "look"
+
+
+async def test_a_session_not_driven_is_sent_nothing_by_drive_send(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    assert await call(drive_tools(sessions), "drive_send", session=id, text="run the tests") == {
+        "readback": "cc-hands is not being driven, so nothing was sent: what is sent to it waits for the user's word."
+    }
+    assert typed == []
+
+
+async def test_a_driven_session_is_sent_each_prompt_with_no_draft_and_the_users_draft_waits(tmp_path: Path) -> None:
+    typed: list[Type[Input]] = []
+    sessions, id = await wrapped(tmp_path, typed.append)
+    await call(draft_tools(sessions), "stage_draft", session=id, text="push it", resolutions=[])
+    tools = drive_tools(sessions)
+    assert await call(tools, "drive_session", session=id, order="keep fixing tests until they pass") == {
+        "readback": "Driving cc-hands: keep fixing tests until they pass. I'll send it up to 20 prompts and tell you what I send."
+    }
+    assert await call(tools, "drive_send", session=id, text="fix the parser test") == {"readback": "Sent it to cc-hands."}
+    assert [effect.input for effect in typed] == [Text(PromptText("fix the parser test"))]
+    assert sessions.driven(id) == Drive("keep fixing tests until they pass", 1)
+    assert await call(tools, "stop_driving", session=id) == {"readback": "Stopped driving cc-hands, after one prompt sent."}
+    assert await call(tools, "drive_send", session=id, text="again") == {
+        "readback": "cc-hands is not being driven, so nothing was sent: what is sent to it waits for the user's word."
+    }
+    # The user's own draft was never sent by the drive: it still waits for their word.
+    assert await call(draft_tools(sessions), "send_draft", session=id) == {"readback": "Sent the draft to cc-hands."}
+
+
+async def test_a_prompt_sent_under_a_drive_is_in_the_audit_log_joined_to_its_call(tmp_path: Path) -> None:
+    path = tmp_path / "audit"
+    record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
+    sessions, id = await wrapped(tmp_path, lambda _: None, record)
+    tools = [audited(tool, record) for tool in drive_tools(sessions)]
+    await call(tools, "drive_session", session=id, order="keep going")
+    await call(tools, "drive_send", session=id, text="run the tests")
+    written = [json.loads(line) for line in tail(path, 1000)[0]]
+    assert [kind(line) for line in written][-3:] == ["tool.run", "Typing", "tool.run"]
+    assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
+    assert written[-2]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "drive_send"
+    assert written[-3]["facts"]["tool"] == "drive_session" and written[-3]["facts"]["called"]["arguments"] == {"session": "s1", "order": "keep going"}

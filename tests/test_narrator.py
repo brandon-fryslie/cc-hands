@@ -15,16 +15,17 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, Prompted, Stopped
-from hands.core.session import Membership, PromptId, RequestId, SessionId
+from hands.core.drive import StartDrive
+from hands.core.session import Drive, Membership, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Failure, failures_to
 from hands.sessions.wide import WideEvent, begun
 from hands.sessions.registry import Sessions
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
-from hands.core.attention import Attention, Spoken, Withheld
+from hands.core.attention import Attention, Spoken, Steering, Withheld
 from hands.sessions.attention import attention
 from hands.sessions.tail import Tails
-from hands.core.pending import News, Pending
+from hands.core.pending import Finished, News, Pending
 from hands.voice.narrator import Recount, Recounts, narrate, recount
 from hands.voice.speech import REPLY_SHOWN, Aloud, Names, Narrated, Unprompted, frames, sent, told
 from hands.voice.utterance import Utterance, Utterances
@@ -407,3 +408,34 @@ async def test_a_turn_stopped_before_it_did_anything_is_handed_to_the_model_as_i
     )
     told = handed(await recount(tailing(transcript), SID, None, None, heard(), Delta(), Spoken("full", "finished"), Recounts()))
     assert "It said nothing. From its record, hands adds: You interrupted it. Tell the user" in told
+
+
+async def test_a_driven_sessions_turn_is_handed_to_the_brain_to_act_on_with_finished_turns_off(tmp_path: Path) -> None:
+    """Off is the default for finished turns: without the drive's row in the table the turn would wait to be asked for,
+    and the drive would stall with nobody told."""
+    transcript = tmp_path / "s1.jsonl"
+    shutil.copy(FIXTURE, transcript)
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    narrating = asyncio.create_task(narrate(sessions, Utterances(recorded.append), Tails(sessions), frames.put, Attention, Overlays(Home(tmp_path / "home")), Recounts()))
+    try:
+        await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
+        await sessions.drive(StartDrive(SID, "keep fixing tests until they pass"))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
+        queued = await asyncio.wait_for(frames.get(), 5.0)
+    finally:
+        narrating.cancel()
+    frame = said(unprompted(queued))
+    assert isinstance(frame, Narrated) and frame.driven
+    assert 'You are driving cc-hands under the user\'s standing order: "keep fixing tests until they pass". You have sent it 0 of the 20 prompts' in frame.text
+    assert f"call drive_send with session {SID}" in frame.text
+    [utterance] = cast(Unprompted, queued).utterances
+    assert utterance.facts["delivered"] == Steering(Drive("keep fixing tests until they pass", 0))
+
+
+def test_an_undriven_turn_is_not_marked_driven() -> None:
+    news = News(PromptId("p1"), "Fixed it.", "", "", (), frozenset())
+    frame = said(Finished(SID, (news,), "full"))
+    assert isinstance(frame, Narrated) and not frame.driven

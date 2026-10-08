@@ -358,7 +358,7 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
     assert rig.out.said() == ["api opened pull request 68."]
-    assert ((exchange,), "api opened pull request 68.", (), False, HandsAsked(), 0.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "api opened pull request 68.", (), False, HandsAsked(False), 0.0, None) in spoke(rig.recorded)
     # Never in Pipecat's context, where it would ride along with whatever the user says next.
     assert rig.context.get_messages() == []
 
@@ -464,8 +464,8 @@ async def test_a_narration_records_how_long_it_waited_behind_the_users_turn(rig:
     exchange, _ = rig.request()
     rig.stream(exchange, "api finished.")
     rig.brain.end()
-    await rig.until(lambda: any(turn.facts["asker"] == HandsAsked() for turn in turns(rig.recorded)))
-    assert ((exchange,), "api finished.", (), False, HandsAsked(), 2500.0, None) in spoke(rig.recorded)
+    await rig.until(lambda: any(turn.facts["asker"] == HandsAsked(False) for turn in turns(rig.recorded)))
+    assert ((exchange,), "api finished.", (), False, HandsAsked(False), 2500.0, None) in spoke(rig.recorded)
 
 
 async def test_what_hands_says_as_written_is_heard_after_the_narration_ahead_of_it(rig: Rig) -> None:
@@ -1653,3 +1653,13 @@ async def test_a_turn_that_ends_while_its_acknowledgement_still_plays_tells_it(r
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     assert (turn.facts["acknowledged"], turn.facts["acknowledged_ms"]) == ("One moment.", 2000.0)
+
+
+async def test_a_driven_turn_is_acted_on_with_the_users_focus_left_where_it_is_and_recorded_as_driven(rig: Rig) -> None:
+    await rig.worker.queue_frame(Narrated("[hands] You are driving api.", "api finished a turn, and I could not tell it.", SessionId("api"), (), driven=True))
+    await rig.until(lambda: rig.brain.asked == ["[hands] You are driving api."])
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Told api to fix the parser test.")
+    rig.brain.end()
+    await rig.until(lambda: any(turn.facts["asker"] == HandsAsked(True) for turn in turns(rig.recorded)))
+    assert rig.refocused == []

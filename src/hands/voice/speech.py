@@ -14,7 +14,8 @@ from hands.core.occurrences import route as occurrence_route, said as occurrence
 from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
+from hands.core.drive import SENDS
+from hands.core.session import AskedQuestion, Drive, Blocker, Permission, Plan, PromptId, Question, SessionId
 from hands.core.sentences import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
@@ -54,13 +55,15 @@ class Narrated(DataFrame, UninterruptibleFrame):
     its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
     hands says as written if the brain cannot take the turn: that it could not be told, never the turn's own words.
     `session` is the one whose turn or question it tells, which is told to the user as the brain takes it, and
-    `utterances` what it says of the sessions, which the brain's stage sends what it says of them with.
+    `utterances` what it says of the sessions, which the brain's stage sends what it says of them with. `driven` is a
+    turn handed to the brain under a drive, which it acts on rather than tells, so the user's focus stays where it is.
     """
 
     text: str
     unsaid: str
     session: SessionId
     utterances: tuple[Utterance, ...]
+    driven: bool = False
 
 
 @dataclass
@@ -97,6 +100,7 @@ class InOwnWords:
     text: str
     unsaid: str
     session: SessionId
+    driven: bool = False
 
 
 # How something hands tells is said. [LAW:one-type-per-behavior] `sent` is the one place that decides the frames each makes.
@@ -109,9 +113,9 @@ def sent(saying: Saying, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
         case AsWritten(spoken=spoken):
             # In hands' lane, in order with what it hands the brain: the brain's stage sends it with what tells it was heard.
             return (Aloud(spoken, utterances),)
-        case InOwnWords(text=text, unsaid=unsaid, session=session):
+        case InOwnWords(text=text, unsaid=unsaid, session=session, driven=driven):
             # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
-            return (Narrated(text, unsaid, session, utterances),)
+            return (Narrated(text, unsaid, session, utterances, driven),)
 
 
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
@@ -184,9 +188,9 @@ def frames(pending: Pending, names: Names) -> Saying:
             return AsWritten(TTSSpeakFrame(announcement_text(announcement, names)))
         case Narrate(moment=moment):
             return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session)
-        case Finished(session=session, news=news, amount=amount):
+        case Finished(session=session, news=news, telling=telling):
             name = names(session)
-            return InOwnWords(told(session, name, news, amount), f"{name} finished {_turns(news)}, and I could not tell it.", session)
+            return InOwnWords(told(session, name, news, telling), f"{name} finished {_turns(news)}, and I could not tell it.", session, isinstance(telling, Drive))
         case Unread(session=session):
             return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False))
         case SessionGone(session=session):
@@ -209,7 +213,7 @@ def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:
             return name
 
 
-def told(session: SessionId, name: str, news: Sequence[News], amount: Amount) -> str:
+def told(session: SessionId, name: str, news: Sequence[News], telling: Amount | Drive) -> str:
     """Finished turns as the model is handed them: the last thing the session said in each, what hands read of each
     that those words may not say, what it is waiting on, which the model ends by asking, and how much of it to say.
 
@@ -227,8 +231,22 @@ def told(session: SessionId, name: str, news: Sequence[News], amount: Amount) ->
     )
     return (
         f"[hands] The Claude Code session {name} (id {session}) finished {_turns(news)}. {accounts}"
-        f"{_HOW_MUCH[amount]} {ending}"
+        f"{_how(telling, name, session)} {ending}"
     )
+
+
+def _how(telling: Amount | Drive, name: str, session: SessionId) -> str:
+    """What the model is asked to do with the turns: say as much of them as is set, or act on them under the drive."""
+    match telling:
+        case "brief" | "full" as amount:
+            return _HOW_MUCH[amount]
+        case Drive(order=order, sends=sends):
+            return (
+                f"You are driving {name} under the user's standing order: \"{order}\". You have sent it {sends} of the "
+                f"{SENDS} prompts the order allows. Act on it now: call drive_send with session {session} and the next prompt "
+                "that moves it toward the order, or call stop_driving when the order is met, or when it needs the user's "
+                "decision or is going wrong. Then tell the user in one short sentence what you did, naming the session."
+            )
 
 
 def _account(news: News, shown: int) -> str:

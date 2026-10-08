@@ -9,6 +9,8 @@ here: it needs an answer, and one held unsaid would wait out its deadline and be
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.core.session import Drive
+
 # How the user asked to hear a session's finished turns. "watched": each turn it finishes is told as it finishes.
 # "normal": its turns are told as finished turns are set to be. "muted": told only when the user asks.
 Overlay = Literal["normal", "watched", "muted"]
@@ -71,25 +73,36 @@ class Withheld:
     why: Literal["off", "muted", "quiet"]
 
 
-Delivery = Spoken | Withheld
+@dataclass(frozen=True)
+class Steering:
+    """Handed to the brain to act on, under the user's standing order for the session (hands.core.drive): what is set
+    for the ear does not hold back the turn a drive waits on."""
+
+    drive: Drive
 
 
-def delivery(attention: Attention, overlay: Overlay) -> Delivery:
-    """How a finished turn reaches the user: never unasked from a muted session or while quiet; a watched session's as
-    finished turns are set to be told, and all of it when they are off; any other's as they are set."""
-    # [LAW:dataflow-not-control-flow] a table over the settings, every combination a row the type checker holds to.
-    match attention.quiet, overlay, attention.finished:
-        case _, "muted", _:
+Delivery = Spoken | Withheld | Steering
+
+
+def delivery(attention: Attention, overlay: Overlay, drive: Drive | None) -> Delivery:
+    """How a finished turn reaches the user: a driven session's to the brain, whatever is set; never unasked from a
+    muted session or while quiet; a watched session's as finished turns are set to be told, and all of it when they are
+    off; any other's as they are set."""
+    # [LAW:dataflow-not-control-flow] a table over the drive and the settings, every combination a row the type checker holds to.
+    match drive, attention.quiet, overlay, attention.finished:
+        case Drive() as driven, _, _, _:
+            return Steering(driven)
+        case None, _, "muted", _:
             return Withheld("muted")
-        case "on", _, _:
+        case None, "on", _, _:
             return Withheld("quiet")
-        case "off", "watched", "off":
+        case None, "off", "watched", "off":
             return Spoken("full", "watched")
-        case "off", "watched", ("brief" | "full") as amount:
+        case None, "off", "watched", ("brief" | "full") as amount:
             return Spoken(amount, "watched")
-        case "off", "normal", "off":
+        case None, "off", "normal", "off":
             return Withheld("off")
-        case "off", "normal", ("brief" | "full") as amount:
+        case None, "off", "normal", ("brief" | "full") as amount:
             return Spoken(amount, "finished")
 
 

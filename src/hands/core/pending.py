@@ -14,7 +14,7 @@ from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Spea
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Held, Opened, PromptId, RequestId, Session, SessionId, ids
+from hands.core.session import Drive, Held, Opened, PromptId, RequestId, Session, SessionId, ids
 from hands.core.turn import AgentId, AgentTask
 
 
@@ -47,7 +47,8 @@ class Finished:
 
     session: SessionId
     news: tuple[News, ...]
-    amount: Amount
+    # As much of them as is set for the ear, or the drive they are handed to the brain to act on.
+    telling: Amount | Drive
 
 
 @dataclass(frozen=True)
@@ -225,8 +226,8 @@ def _folded(pending: Sequence[Coalesced]) -> list[Coalesced]:
 def _joined(before: Pending, each: Finished | Working) -> Pending:
     """`each` folded into the telling of its kind that came before it in its slot."""
     match before, each:
-        case Finished(news=earlier), Finished(session=session, news=news, amount=amount):
-            return Finished(session, (*earlier, *news), amount)
+        case Finished(news=earlier), Finished(session=session, news=news, telling=telling):
+            return Finished(session, (*earlier, *news), telling)
         case Working(of=frozenset() as was, doings=earlier), Working(session=session, of=frozenset() as turn, doings=doings):
             return Working(session, was | turn, (*earlier, *doings))
         case Working(of=AgentTask() as agent, doings=earlier), Working(session=session, doings=doings):

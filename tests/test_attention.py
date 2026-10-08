@@ -89,7 +89,7 @@ def handed(told: Frame | Pending | None) -> str:
 def test_a_turn_is_told_as_finished_turns_are_set_or_the_session_watched_and_otherwise_muted_or_quiet_when_asked(
     finished: Level, quiet: Switch, overlay: Overlay, delivered: Delivery
 ) -> None:
-    assert delivery(Attention(finished=finished, quiet=quiet), overlay) == delivered
+    assert delivery(Attention(finished=finished, quiet=quiet), overlay, None) == delivered
 
 
 async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) -> None:

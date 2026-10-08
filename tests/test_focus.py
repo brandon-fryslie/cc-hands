@@ -155,7 +155,7 @@ async def test_every_tool_that_acts_on_a_session_takes_the_focus_for_one_left_un
     defaulted = {name for name, tool in given.items() if "session" in tool.properties and "session" not in tool.required}
     assert defaulted == {
         "read_session", "read_turn", "tell_turn", "expand", "read_backlog", "read_ticket",
-        "stage_draft", "amend_draft", "discard_draft", "send_draft", "send_command", "interrupt_session", "read_screen", "set_overlay",
+        "stage_draft", "amend_draft", "discard_draft", "send_draft", "drive_session", "stop_driving", "drive_send", "send_command", "interrupt_session", "read_screen", "set_overlay",
     }  # fmt: skip
     assert all(str(given[name].properties["session"]["description"]).endswith("Empty for the focused session.") for name in defaulted)
     # focus_session's own empty means "focus none", never "the focus".

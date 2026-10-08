@@ -1553,6 +1553,19 @@ audit record before it types, and a `TypingFailed` with the same effect when the
 fails, so "did it send something I didn't approve", and "did it arrive", are answered by
 one file.
 
+**Drives** are the user's standing order for a session, given once for many prompts
+(`hands.core.drive`): `drive_session` holds it in the registry beside the drafts, its one
+home, and the session's end drops it. While it holds, `delivery` hands each turn the
+session finishes to the brain as `Steering`, whatever quiet, the overlay, or finished
+turns are set to, so a drive never stalls on a setting meant for the ear; the turn is
+taken in hands' lane like any telling, without moving the user's focus, and its
+`voice.turn` event's asker says `driven`. The brain answers it with `drive_send`, which
+types the next prompt through the same Type effect as a draft, or with `stop_driving`.
+`drive.decide` is the one place a prompt reaches a session without the user's "send
+it": it refuses any session with no drive, never touches a staged draft, refuses a
+session at a dialog, which stays the user's to answer, and ends the drive on the send
+that spends its cap of `SENDS` prompts, since every send ends in a turn handed back.
+
 ## The summary store
 
 A project's backlog is too large to read raw into a spoken conversation: 132 open links
@@ -1607,6 +1620,8 @@ interrupt_session(session?)
 send_command(session?, command, args?)
 stage_draft(session?, text)      amend_draft(session?, text)
 discard_draft(session?)          send_draft(session?)
+drive_session(session?, order)   stop_driving(session?)
+drive_send(session?, text)
 answer_permission(request, decision, message?)
 answer_question(request, answers)
 find_path(session?, query)
