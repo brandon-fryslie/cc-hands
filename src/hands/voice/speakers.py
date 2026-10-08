@@ -1,13 +1,14 @@
 """Whose voice each hold is in: the user's, or someone else's in the room, so that two people can talk with hands among
 them and hands knows which of them said what.
 
-A hold the user's hand opened is theirs by how it was opened, so its voice teaches the user's voiceprint; nobody is
-asked to enrol. A hold the voice opened, in an engaged conversation or after the wake word, is told by how like that
+A hold the user's hand opened is theirs by how it was opened, and one opened at the desk's key teaches the user's
+voiceprint; nobody is asked to enrol. A hold the voice opened, in an engaged conversation or after the wake word, is told by how like that
 voiceprint it sounds. Each voice is heard as an embedding by 3D-Speaker's CAM++, trained on VoxCeleb, run on the CPU with
 ONNX Runtime through sherpa-onnx: about 55 ms a hold on an M-series Mac. Nothing here loads Pipecat.
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -71,10 +72,12 @@ class Speakers:
         """Whose voice mono 16-bit `samples` at RATE, with no padding after them, are in, a hold `opener` opened."""
         match how_opened(opener):
             case "by hand":
-                long_enough = seconds(samples) >= LEAST_SECONDS
-                if long_enough:
+                # Only the desk's microphone teaches: a hold the voice opens is heard there, and a phone's voice would
+                # sound like someone else's beside it.
+                teaches = opener == "held key" and seconds(samples) >= LEAST_SECONDS
+                if teaches:
                     self._teach(self._embedding(samples))
-                return ByHand(taught=long_enough)
+                return ByHand(taught=teaches)
             case "by voice":
                 if self._taught is None:
                     return Untold("no voiceprint")
@@ -92,6 +95,21 @@ class Speakers:
         partial = self._voiceprint.with_name(f"{VOICEPRINT}.partial.npy")
         np.save(partial, self._taught)
         partial.replace(self._voiceprint)
+
+
+def teller(directory: Path, record: Record) -> Callable[[bytes, Opener], Speaker]:
+    """What tells each hold's voice: Speakers in `directory`, or, where they could not be loaded, a teller that fails
+    every hold with why, so the words still reach the brain as an Untellable hold's do and the voice is not lost with it."""
+    try:
+        return Speakers(directory, record).told
+    except Exception as error:
+        # [LAW:no-silent-failure] the load failed on speakers.loaded, and each hold says so again in its error line.
+        unloaded = f"the speaker model did not load: {type(error).__name__}: {error}"
+
+        def failing(_samples: bytes, _opener: Opener) -> Speaker:
+            raise RuntimeError(unloaded)
+
+        return failing
 
 
 def seconds(samples: bytes) -> float:
