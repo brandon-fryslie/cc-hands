@@ -61,7 +61,8 @@ Keyboards = Callable[[Sequence[int]], list[Keyboard]]
 LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
 VERSION_TIMEOUT_SECONDS = 30.0
-INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
+# [LAW:one-source-of-truth] the README's one install command, which installs whichever of Claude Code, PortAudio and hands is missing.
+INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"`'
 
 
 def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
@@ -76,7 +77,7 @@ def claude(path: str) -> Finding:
     """Whether this PATH has a Claude Code of its own, apart from any hands shim, installed as its installer puts it."""
     match claude_code(wrapper.real_claude(path)):
         case Unfindable(said):
-            return Missing(f"no Claude Code that hands can join its sessions of: {said}. Claude Code's installer puts it in: {INSTALL_CLAUDE}")
+            return Missing(f"no Claude Code that hands can join its sessions of: {said}. The install command puts it in: {INSTALL}")
         case executable:
             return Ready(f"Claude Code is installed: {executable}")
 
@@ -86,7 +87,7 @@ def portaudio() -> Finding:
     try:
         import pyaudio
     except ImportError as error:
-        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: `brew install portaudio`, with Homebrew from https://brew.sh")
+        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: the install command puts it in: {INSTALL}")
     return Ready(f"PortAudio is there for the microphone: {pyaudio.get_portaudio_version_text()}")
 
 
@@ -97,7 +98,7 @@ def installed(path: str) -> Finding:
     if found is None:
         return Missing(
             "this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks: "
-            "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH"
+            f"the install command puts it there: {INSTALL}"
         )
     try:
         said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)

@@ -10,43 +10,21 @@ hands runs on macOS on Apple silicon. These steps take a Mac with none of it to 
 turn, in this order. `hands check` says of each one whether it is done and, of one that
 is not, what does it; it exits 0 only when every step is done.
 
-1. Claude Code, from its own installer:
+1. Claude Code, Homebrew's PortAudio, which the microphone is opened through, uv, and the newest
+   [release](https://github.com/brandon-fryslie/cc-hands/releases) of hands, with the versions it was tested
+   on, from one command in Terminal:
 
    ```
-   curl -fsSL https://claude.ai/install.sh | bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"
    ```
 
-   Then run `claude` once to answer what it asks only the first time, a theme and a
-   login, and exit it.
+   It installs whichever of them is missing and leaves the rest, so a run stopped part-way is finished by running it
+   again. On a Mac without Homebrew it says it needs your administrator password, and asks for it, to install Homebrew.
+   It puts each on your login shell's `PATH` and leaves the terminal in a fresh login shell, where they are found.
 
-2. Homebrew's PortAudio, which the microphone is opened through, and uv. A Mac without
-   [Homebrew](https://brew.sh) gets it first, with `brew` on `PATH`:
+   Then run `claude` once to answer what it asks only the first time, a theme and a login, and exit it.
 
-   ```
-   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
-   eval "$(/opt/homebrew/bin/brew shellenv)"
-   ```
-
-   Then, with Homebrew:
-
-   ```
-   brew install portaudio
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   source $HOME/.local/bin/env      # puts uv on PATH in this terminal
-   ```
-
-3. hands, from a [release](https://github.com/brandon-fryslie/cc-hands/releases), with the
-   versions it was tested on. Set `version` to the newest release's number:
-
-   ```
-   version=X.Y.Z
-   release=https://github.com/brandon-fryslie/cc-hands/releases/download/v$version
-   uv tool install --python 3.12 --constraints $release/constraints.txt $release/hands-$version-py3-none-macosx_12_0_arm64.whl
-   uv tool update-shell       # puts ~/.local/bin, where hands is, on PATH; open a new terminal after
-   ```
-
-4. The `claude` that starts every session under fritter, first on `PATH`
+2. The `claude` that starts every session under fritter, first on `PATH`
    ([Wrapping every session](#wrapping-every-session)):
 
    ```
@@ -54,7 +32,7 @@ is not, what does it; it exits 0 only when every step is done.
    echo 'export PATH="$HOME/.hands/bin:$PATH"' >> ~/.zshrc     # then open a new terminal
    ```
 
-5. The plugin, whose hooks join every session to hands. Claude Code shows you the command
+3. The plugin, whose hooks join every session to hands. Claude Code shows you the command
    `hands plugin` and asks you to accept it ([Installing the hooks](#installing-the-hooks)):
 
    ```
@@ -62,7 +40,7 @@ is not, what does it; it exits 0 only when every step is done.
    claude plugin install hands@cc-hands
    ```
 
-6. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
+4. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
    plan or, with `--console`, an Anthropic Console key. It runs Claude Code's first screens in
    the brain's own directory, `~/.hands/brain`: answer them, log in, and `/exit`.
 
@@ -70,11 +48,11 @@ is not, what does it; it exits 0 only when every step is done.
    hands login
    ```
 
-7. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
+5. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
    you have one, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-8. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
+6. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
    start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
 
    ```
@@ -82,7 +60,7 @@ is not, what does it; it exits 0 only when every step is done.
    hands check        # in another terminal: every line ok
    ```
 
-9. The smoke test, in another terminal while hands runs. It calls hands as the phone's
+7. The smoke test, in another terminal while hands runs. It calls hands as the phone's
    page does and takes three spoken turns in macOS's voice: it asks hands to have a
    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
    asks what the session said. Each part of the pipeline gets an `ok` line, and the run
