@@ -85,28 +85,28 @@ shims=${HANDS_HOME:-$HOME/.hands}/bin
 PATH="$shims:$PATH" hands install-fritter
 
 # The login shell's PATH is the one every new terminal starts with: a directory it lacks gets one line in the profile
-# it reads, and one it has is left as it is.
+# it reads, and one it has is left as it is. A new terminal's shell is interactive too, and zsh then reads ~/.zshrc after
+# the profile: rc is the file such a shell reads last.
 case $(basename "$SHELL") in
-  zsh) profile=$HOME/.zprofile ;;
+  zsh) profile=$HOME/.zprofile rc=$HOME/.zshrc ;;
   bash)
     # A bash login shell reads only the first of these that exists, so the line goes in that one; with none, a new
     # .bash_profile.
     profile=$HOME/.bash_profile
-    for name in .profile .bash_login .bash_profile; do [ ! -e "$HOME/$name" ] || profile=$HOME/$name; done ;;
-  *) profile= ;;
+    for name in .profile .bash_login .bash_profile; do [ ! -e "$HOME/$name" ] || profile=$HOME/$name; done
+    rc=$profile ;;
+  *) profile= rc= ;;
 esac
 # The PATH the person's shell, started with these flags, ends its startup files with. It starts from launchd's PATH, as a
 # new terminal's does, not this run's, which already has every directory, and its PATH is the line marked as it, among
-# whatever its startup files and a login shell's logout file print.
+# whatever its startup files and a login shell's logout file print. It fails where the shell ends without saying it.
 shell_path() {
   local printed
-  printed=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" "$1" 'printf "\n@hands-path@%s\n" "$PATH"' </dev/null) ||
-    fail "your shell, $SHELL $1, run with no terminal, exited $? before it said its PATH, so which commands a new terminal finds is unknown: its startup files end a shell that has no terminal"
-  printed=$(printf '%s\n' "$printed" | sed -n 's/^@hands-path@//p')
-  [ -n "$printed" ] || fail "your shell, $SHELL $1, run with no terminal, ended without saying its PATH, so which commands a new terminal finds is unknown"
-  printf '%s' "$printed"
+  printed=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" "$1" 'printf "\n@hands-path@%s\n" "$PATH"' </dev/null) || return
+  printed=$(printf '%s\n' "$printed" | sed -n 's/^@hands-path@//p' | tail -n 1)
+  [ -n "$printed" ] && printf '%s' "$printed"
 }
-login_path=$(shell_path -lc)
+login_path=$(shell_path -lc) || fail "your shell, $SHELL -lc, run with no terminal, ended without saying its PATH, so which commands a new terminal finds is unknown"
 on_login_path() { case ":$login_path:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
 lines=()
 on_login_path "$HOMEBREW_PREFIX/bin" || lines+=("eval \"\$($HOMEBREW_PREFIX/bin/brew shellenv)\"")
@@ -117,19 +117,25 @@ if [ ${#lines[@]} -gt 0 ]; then
   printf '%s\n' "${lines[@]}" >>"$profile"
   say "added to $profile, for your login shell's PATH: ${lines[*]}"
 fi
-# The shim runs the claude after it on PATH, so it must be the claude a new terminal finds, not only on its PATH. A new
-# terminal's shell is interactive too, and zsh then reads ~/.zshrc after the profile, where a PATH line can put another
-# claude back in front: the shim's line goes last in the file read last.
-case $(basename "$SHELL") in
-  zsh) rc=$HOME/.zshrc ;;
-  *) rc=$profile ;;
-esac
-terminal_path=$(shell_path -ilc)
-if [ "$(PATH=$terminal_path command -v claude)" != "$shims/claude" ]; then
-  line="export PATH=\"$shims:\$PATH\""
+# The shim runs the claude after it on PATH, so it must be the claude a new terminal finds, not only on its PATH: the
+# shim's line goes last in the file read last. A shell whose startup files end it when it has no terminal, as one that
+# starts tmux does, cannot be asked what a new terminal finds: the login shell is asked instead, and the line goes in the
+# profile it reads.
+terminal=-ilc
+if ! shell_path -ilc >/dev/null; then
+  terminal=-lc rc=$profile
+  say "your shell, $SHELL -ilc, run with no terminal, ended without saying its PATH, as one whose startup files start tmux does: which claude a new terminal finds is judged from its login shell alone, which reads $profile"
+fi
+terminal_claude() { PATH=$(shell_path "$terminal") command -v claude; }
+line="export PATH=\"$shims:\$PATH\""
+if [ "$(terminal_claude)" != "$shims/claude" ]; then
   [ -n "$rc" ] || fail "your shell, $SHELL, is not zsh or bash; add this line last to the file it reads at start and open a new terminal: $line"
-  printf '%s\n' "$line" >>"$rc"
-  say "added to $rc, so a new terminal's claude is hands': $line"
+  # A line there already has been read and undone; adding it again would undo nothing more.
+  [ -f "$rc" ] && grep -qxF "$line" "$rc" || {
+    printf '%s\n' "$line" >>"$rc"
+    say "added to $rc, so a new terminal's claude is hands': $line"
+  }
+  [ "$(terminal_claude)" = "$shims/claude" ] || fail "a new terminal's claude is $(terminal_claude), not hands' $shims/claude, though $rc has $line: a startup file read after it puts another claude first; put that line after this one"
 fi
 
 # Last, so that declining it leaves every step before it done.

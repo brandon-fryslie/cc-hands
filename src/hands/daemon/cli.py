@@ -761,6 +761,7 @@ def install_plugin(record: audit.Record) -> int:
         # Keys pressed during what ran before would reach Claude Code's [y/N] as an answer the person never gave it.
         if sys.stdin.isatty():
             termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        # Over an install that is disabled, this enables it again and asks nothing (Claude Code 2.1.289).
         installed = subprocess.run(["claude", "plugin", "install", "--scope", "user", PLUGIN_ID])
         wide.annotate(install_exit=installed.returncode)
         after = readiness.plugin(path)

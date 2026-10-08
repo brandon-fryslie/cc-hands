@@ -149,7 +149,7 @@ def daemon(home: Home, now: datetime) -> Finding:
 
 def plugin(path: str) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has hands' plugin installed and enabled."""
-    match listing(path, "plugin", f"whether the plugin {PLUGIN_ID} is installed"):
+    match listing(path, ("plugin",), f"whether the plugin {PLUGIN_ID} is installed"):
         case Unknown() as unknown:
             return unknown
         case str() as listed:
@@ -159,20 +159,21 @@ def plugin(path: str) -> Finding:
 def marketplace(path: str) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has the marketplace hands' plugin is installed from, from
     whichever source the person added it: this repository on GitHub, or a checkout of it."""
-    match listing(path, "plugin marketplace", f"whether the marketplace {MARKETPLACE_NAME} is added"):
+    match listing(path, ("plugin", "marketplace"), f"whether the marketplace {MARKETPLACE_NAME} is added"):
         case Unknown() as unknown:
             return unknown
         case str() as listed:
             return marketplace_listed(listed)
 
 
-def listing(path: str, command: str, unknown: str) -> str | Unknown:
+def listing(path: str, command: tuple[str, ...], unknown: str) -> str | Unknown:
     """What `claude <command> list --json` prints, as `claude` on this PATH runs it."""
+    said = " ".join(command)
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
     # Not a session to the shim, since nothing here is a terminal, so the shim runs the real claude.
     try:
         listed = subprocess.run(
-            ["claude", *command.split(), "list", "--json"],
+            ["claude", *command, "list", "--json"],
             env={**os.environ, "PATH": path},
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -181,9 +182,9 @@ def listing(path: str, command: str, unknown: str) -> str | Unknown:
         )
     # A ValueError is output that is not text.
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        return Unknown(f"cannot ask `claude {command} list` {unknown}: {error}")
+        return Unknown(f"cannot ask `claude {said} list` {unknown}: {error}")
     if listed.returncode != 0:
-        return Unknown(f"`claude {command} list` failed ({listed.returncode}), so {unknown} is unknown: {listed.stderr.strip()}")
+        return Unknown(f"`claude {said} list` failed ({listed.returncode}), so {unknown} is unknown: {listed.stderr.strip()}")
     return listed.stdout
 
 

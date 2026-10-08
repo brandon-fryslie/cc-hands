@@ -104,9 +104,9 @@ class Sandbox:
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines()
 
-    def login_finds(self, command: str, shell: str = "/bin/zsh") -> str:
-        """Where a new terminal's shell, interactive and a login shell, finds `command`, or the empty string."""
-        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, "-ilc", f'printf "\\n@found@%s\\n" "$(command -v {command})"'], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    def login_finds(self, command: str, shell: str = "/bin/zsh", flags: str = "-ilc") -> str:
+        """Where a new terminal's shell, started with these flags, finds `command`, or the empty string."""
+        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, flags, f'printf "\\n@found@%s\\n" "$(command -v {command})"'], stdin=subprocess.DEVNULL, capture_output=True, text=True)
         return [line.removeprefix("@found@") for line in found.stdout.splitlines() if line.startswith("@found@")][-1]
 
 
@@ -272,12 +272,28 @@ def test_a_claude_that_cannot_be_asked_fails_without_saying_a_second_run_asks_ag
     assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "asks again" not in ran.stderr
 
 
-def test_a_shell_whose_startup_files_end_it_without_a_terminal_stops_the_run_saying_so(sandbox: Sandbox) -> None:
+def test_a_shell_whose_startup_files_end_it_without_a_terminal_is_judged_from_its_login_shell(sandbox: Sandbox) -> None:
     # As a ~/.zshrc that starts tmux, which with no terminal exits 1, and the shell with it.
     (sandbox.home / ".zshrc").write_text("exit 1\n")
     ran = sandbox.run()
-    assert ran.returncode == 1 and "/bin/zsh -ilc, run with no terminal, exited 1" in ran.stderr
+    assert ran.returncode == 0, ran.stderr
+    assert "judged from its login shell alone" in ran.stdout
+    assert f'export PATH="{sandbox.home}/.hands/bin:$PATH"' in (sandbox.home / ".zprofile").read_text().splitlines()
+    assert sandbox.login_finds("claude", flags="-lc") == str(sandbox.home / ".hands/bin/claude")
+    profile = (sandbox.home / ".zprofile").read_bytes()
+    assert sandbox.run().returncode == 0
+    assert (sandbox.home / ".zprofile").read_bytes() == profile
+
+
+def test_a_startup_file_read_after_the_shim_s_line_that_undoes_it_stops_the_run_saying_so(sandbox: Sandbox) -> None:
+    # zsh reads ~/.zlogin after ~/.zshrc.
+    (sandbox.home / ".zlogin").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "a startup file read after it puts another claude first" in ran.stderr
     assert "hands install-plugin" not in sandbox.calls()
+    rc = (sandbox.home / ".zshrc").read_bytes()
+    assert sandbox.run().returncode == 1
+    assert (sandbox.home / ".zshrc").read_bytes() == rc
 
 
 def test_what_a_logout_file_prints_is_not_taken_for_the_path(sandbox: Sandbox) -> None:
