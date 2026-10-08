@@ -151,6 +151,19 @@ def directory_of(process: Process) -> Path | Undescribed | None:
     return _described(process.pid, process.parent, lambda: _cwd(process.pid))
 
 
+def responsible(pid: int) -> str:
+    """The executable of the process macOS holds responsible for pid, whose app TCC gives its grants to: the terminal
+    app's for a process started in it, however deep, or sshd's over ssh."""
+    # libSystem's responsibility_get_pid_responsible_for_pid, which TCC itself goes by; private, so it is reached by name.
+    responsible_for = _libc.responsibility_get_pid_responsible_for_pid
+    responsible_for.restype, responsible_for.argtypes = ctypes.c_int, [ctypes.c_int]
+    held_by = responsible_for(pid)
+    path = ctypes.create_string_buffer(_PROC_PIDPATHINFO_MAXSIZE)
+    if _libproc.proc_pidpath(held_by, path, len(path)) <= 0:
+        _raise_errno(f"the executable of pid {held_by}, the process responsible for pid {pid},")
+    return path.value.decode()
+
+
 def front_terminal(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
     """pid's controlling terminal while pid is in front of it, so a key typed there reaches it; nothing otherwise."""
     process = processes.get(pid)
@@ -178,6 +191,7 @@ _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
 _PROC_PIDFDVNODEPATHINFO, _FDVNODEPATHINFO_SIZE = 2, 1200
 _FD_RDEV = struct.Struct("=140xi1056x")
+_PROC_PIDPATHINFO_MAXSIZE = 4096
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and
 # its environment, each string ending in a NUL.
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)

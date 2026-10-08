@@ -11,6 +11,7 @@ import sys
 import termios
 import threading
 import time
+import traceback
 from collections.abc import Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from functools import partial
@@ -24,7 +25,7 @@ from hands.daemon import indicator, readiness
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Held, Start, again, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, firstrun, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -143,12 +144,16 @@ def show_phone(home: Home) -> int:
     return 0
 
 
+# sysexits' EX_SOFTWARE: an internal software error.
+CRASHED = 70
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hands")
+    parser = argparse.ArgumentParser(prog="hands", epilog=f"A command other than run that crashes prints its traceback and exits {CRASHED}, an exit no command gives its own meaning.")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
-    running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
+    running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it; exits 0 when it is quit, 3 when a hands already runs on the home, and 1 when it cannot start for any other reason, which it says")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
@@ -163,6 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("install-plugin", help=f"install hands' Claude Code plugin, {PLUGIN_ID}, for every session, at this terminal: Claude Code shows the command `hands plugin` and asks the person to accept it, which is said before it asks; exits 0 only when the plugin is installed and enabled, asking nothing when it already is; 1 when Claude Code asked and it is not, as when the person declines; 2 when Claude Code could not be asked")
     commands.add_parser("first-run", help="answer, at this terminal, what the person's own Claude Code asks only once: its theme and login, whether to trust the folder `hands smoke` starts its session in, and whether to use an API key it is given, by starting it there, then its own login if it has none; each said before it is asked, and nothing asked when all are answered; exits 0 only when they are; 1 when something is still unanswered after; 2 when Claude Code could not be asked")
+    commands.add_parser("grant", help="have the app hands runs in given macOS's Input Monitoring grant, which hands needs to hear the talk key in other apps: macOS is asked, System Settings opened at the grant, what to turn on said, and a new process asked each second whether it has the grant, for up to 5 minutes; exits 0 only when it has; 1 when it was not given in time; 2 when no app holds hands, as over ssh, so it cannot be given here")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
@@ -224,13 +230,13 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
         except CannotStart as cannot:
             run_start.ended(audit_log.record, cannot)
             refuse(cannot, held)
-            return 1
+            return cannot.exit
         try:
             ending, shown = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
         except CannotStart as cannot:
             # The run's launch ended the start, failed with this reason, on the edge the settings chose.
             refuse(cannot, heart)
-            return 1
+            return cannot.exit
         match ending:
             case "quit":
                 return 0
@@ -250,13 +256,19 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
     collector, or on a config.toml the daemon has yet to accept.
     """
     record = audit_log_of(home).record
-    with wide.unit("hands.command", record):
-        # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
-        wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        code = dispatch(home, arguments, record)
-        wide.annotate(exit_code=code)
-        if code != 0:
-            wide.fail(f"exited {code}")
+    try:
+        with wide.unit("hands.command", record):
+            # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
+            wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
+            code = dispatch(home, arguments, record)
+            wide.annotate(exit_code=code)
+            if code != 0:
+                wide.fail(f"exited {code}")
+    except Exception:
+        # [LAW:no-silent-failure] Python exits 1 on a crash, which a command's caller reads as that command's own 1, as
+        # install.sh reads "asked, and not given": a crash exits its own code, its traceback said, and the event has it.
+        traceback.print_exc()
+        return CRASHED
     return code
 
 
@@ -305,6 +317,11 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return install_plugin(record)
         case "first-run":
             return first_run(home, record)
+        case "grant":
+            # Imported here so that no other command loads Quartz.
+            from hands.voice import grant
+
+            return grant.give(grant.on_this_mac(), record)
         case "plugin":
             return render_plugin(home, record)
         case "restart":
@@ -362,7 +379,7 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
 
 
 def hold(home: Home) -> None:
-    """Lock the home for the rest of this process, or CannotStart, naming the daemon that holds it.
+    """Lock the home for the rest of this process, or Held, naming the daemon that holds it.
 
     [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
     written: a second run refused here leaves the heartbeat, the socket, and the indicator to the daemon running.
@@ -386,7 +403,7 @@ def hold(home: Home) -> None:
             pid = holder(descriptor)
             if pid is not None:
                 os.close(descriptor)
-                raise CannotStart(f"hands is already running on {home.root}, as pid {pid}") from error
+                raise Held(f"hands is already running on {home.root}, as pid {pid}") from error
 
 
 def inherited(path: Path) -> int | None:

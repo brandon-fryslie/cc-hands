@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from loguru import logger
 
-from hands.daemon.cli import main
+from hands.daemon.cli import CRASHED, main
 from hands.sessions import heartbeat, marketplace
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
@@ -71,15 +71,16 @@ def test_arguments_are_on_the_event_as_parsed(tmp_path: Path, capsys: pytest.Cap
     assert command["facts"] == {"command": "recall", "home": str(home.root), "arguments.home": str(home.root), "arguments.words": ["token", "helper"], "arguments.most": 3, "exit_code": 0}
 
 
-def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_command_that_raises_exits_its_own_code_saying_its_traceback_and_is_a_failed_event_with_no_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
 
     def full_disk(home: Home, interpreter: str) -> marketplace.Rendered:
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(marketplace, "render", full_disk)
-    with pytest.raises(OSError, match="No space left"):
-        main(["--home", str(home.root), "plugin"])
+    # Not 1, which install.sh reads as a step asked and not given.
+    assert main(["--home", str(home.root), "plugin"]) == CRASHED
+    assert "Traceback (most recent call last)" in (said := capsys.readouterr().err) and "OSError: [Errno 28] No space left on device" in said
     [_, command] = events(home)
     assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "failed", "OSError: [Errno 28] No space left on device")
     assert command["facts"] == {"command": "plugin", "home": str(home.root), "arguments.home": str(home.root)}
@@ -128,3 +129,4 @@ def test_a_command_on_a_home_whose_log_cannot_be_made_still_runs(tmp_path: Path,
     assert capsys.readouterr().out.startswith("hands has not run")
     assert [("cannot be made" in warning, "failed at a WideEvent line" in warning) for warning in warnings] == [(True, False), (False, True)]
     assert not home.audit.exists()
+
