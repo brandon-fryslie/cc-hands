@@ -29,6 +29,11 @@ class Unanswered:
     why: str
     asks: tuple[str, ...]
 
+    @property
+    def listed(self) -> str:
+        """What it asks, as one phrase: each question is a phrase of its own, some with an "and" inside."""
+        return "; ".join(self.asks)
+
 
 def unanswered(state: Path, cwd: Path, key: Key | None) -> Unanswered | None:
     """Whether a Claude Code with the .claude.json `state`, started in `cwd` with `key`, would open on one of its first-run

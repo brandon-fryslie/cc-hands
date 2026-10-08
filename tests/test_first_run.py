@@ -111,7 +111,7 @@ def test_a_fresh_claude_code_is_told_what_it_will_ask_then_asks_it_in_the_smoke_
     exit, shown = at_a_terminal(root, typed_ahead=b"n\n", answer=b"y\n")
     assert exit == 0, shown
     smoke = home(root).smoke.resolve()
-    announced = f"Claude Code now starts in {home(root).smoke}, where `hands smoke` starts its session, and asks what it asks only once: a theme and a login, whether to trust {smoke}. Answer each, then type /exit"
+    announced = f"Claude Code now starts in {home(root).smoke}, where `hands smoke` starts its session, and asks what it asks only once: a theme and a login; whether to trust {smoke}. Answer each, then type /exit"
     assert shown.index(announced) < shown.index("FIRST SCREEN: ")
     assert f"Claude Code is logged in and asks nothing first in {home(root).smoke}" in shown
     status = f"claude auth status in {Path.cwd().resolve()}"
@@ -126,7 +126,7 @@ def test_a_fresh_claude_code_is_told_what_it_will_ask_then_asks_it_in_the_smoke_
 def test_an_api_key_in_the_environment_is_named_among_the_questions(root: Path) -> None:
     exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key="sk-ant-api03-0123456789abcdefghijklmn")
     assert exit == 0, shown
-    assert "whether to use the API key ANTHROPIC_API_KEY in your environment sets. Answer each, then type /exit" in shown
+    assert "; whether to use the API key ANTHROPIC_API_KEY in your environment sets. Answer each, then type /exit" in shown
 
 
 def test_a_claude_code_already_through_its_first_run_and_logged_in_is_asked_nothing(root: Path) -> None:

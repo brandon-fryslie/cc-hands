@@ -258,7 +258,7 @@ def first_run(home: Home, environment: Mapping[str, str]) -> Finding:
         case FirstRun(unanswered=None, logged_in=True):
             return Ready(f"Claude Code is logged in and asks nothing first in {home.smoke}, where `hands smoke` starts its session")
         case FirstRun(unanswered=asked, logged_in=logged_in):
-            owed = ([] if asked is None else [f"would first ask {', '.join(asked.asks)} ({asked.why})"]) + ([] if logged_in else ["has no login"])
+            owed = ([] if asked is None else [f"would first ask {asked.listed} ({asked.why})"]) + ([] if logged_in else ["has no login"])
             return Missing(f"Claude Code {' and '.join(owed)}, so the session `hands smoke` starts in {home.smoke} would wait on it: `hands first-run` answers them at this terminal")
 
 

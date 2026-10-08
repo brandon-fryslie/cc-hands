@@ -235,5 +235,5 @@ def test_a_claude_code_that_would_open_on_a_first_run_question_stops_the_run_at_
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert main(["--home", str(home.root), "smoke"]) == 1
     last = capsys.readouterr().out.splitlines()[-1]
-    assert last.startswith("FAILED joined: Claude Code would first ask a theme and a login, whether to trust") and last.endswith("`hands first-run` answers them at this terminal")
+    assert last.startswith("FAILED joined: Claude Code would first ask a theme and a login; whether to trust") and last.endswith("`hands first-run` answers them at this terminal")
     assert not (tmp_path / "started").exists()

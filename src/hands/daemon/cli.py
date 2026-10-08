@@ -800,7 +800,7 @@ def first_run(home: Home, record: audit.Record) -> int:
                 return not_first_run(said, 2)
             case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
                 home.smoke.mkdir(parents=True, exist_ok=True)
-                print(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {', '.join(asked.asks)}. Answer each, then type /exit", flush=True)
+                print(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit", flush=True)
                 typed_ahead_dropped()
                 ran = subprocess.run([claude], cwd=home.smoke, env=environment)
                 wide.annotate(first_run_exit=ran.returncode)
