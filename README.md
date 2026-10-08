@@ -13,8 +13,8 @@ is not, what does it; it exits 0 only when every step is done.
 1. Claude Code, Homebrew's PortAudio, which the microphone is opened through, uv, the newest
    [release](https://github.com/brandon-fryslie/cc-hands/releases) of hands, with the versions it was tested
    on, the `claude` that starts every session under fritter ([Wrapping every session](#wrapping-every-session)),
-   and the plugin whose hooks join every session to hands ([Installing the hooks](#installing-the-hooks)), from
-   one command in Terminal:
+   the plugin whose hooks join every session to hands ([Installing the hooks](#installing-the-hooks)), the Input
+   Monitoring grant, and hands itself, running, from one command in Terminal:
 
    ```
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"
@@ -29,24 +29,22 @@ is not, what does it; it exits 0 only when every step is done.
    the Claude Code of hands' own that hands talks through, starts the same way in its own folder, `~/.hands/brain/cwd`: answer
    its questions, log it in on a Claude plan or an Anthropic Console account, whichever you pick on its login screen, and
    type `/exit`. A brain that holds a login already asks nothing, and one with none logs in with Claude Code's own login on a
-   Claude plan, or with `hands login --console` on an Anthropic Console account. Last, Claude
-   Code shows the command `hands plugin` and asks whether to run it, which the command says just before: answer y. It
-   puts each on your login shell's `PATH`, hands' `claude` first, and leaves the terminal in a fresh login shell,
-   where they are found.
-
-2. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
-   you have one, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
-   restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
-
-3. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
-   start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
+   Claude plan, or with `hands login --console` on an Anthropic Console account. Then Claude
+   Code shows the command `hands plugin` and asks whether to run it, which the command says just before: answer y.
+   Last, macOS asks for the Input Monitoring grant for the app the command runs in, the terminal app, so hands hears the
+   talk key from other apps: the command opens System Settings at Privacy & Security > Input Monitoring, names the app to
+   turn on, and waits up to 5 minutes. When macOS offers to quit the app, choose Later; hands has the grant without it,
+   and quitting it ends the command. Over ssh no app can be given the grant, and the command says so and stops. It puts
+   each of them on your login shell's `PATH`, hands' `claude` first, and ends running hands in that terminal: hold Right
+   Shift in any app to talk. Its first start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub. `q` there
+   quits hands and leaves the terminal a fresh login shell, where they are found; running the command again starts hands
+   again, and one run beside a hands already running starts no second one.
 
    ```
-   hands run
    hands check        # in another terminal: every line ok
    ```
 
-4. The smoke test, in another terminal while hands runs. It calls hands as the phone's
+2. The smoke test, in another terminal while hands runs. It calls hands as the phone's
    page does and takes three spoken turns in macOS's voice: it asks hands to have a
    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and
    asks what the session said. Each part of the pipeline gets an `ok` line, and the run
@@ -366,7 +364,7 @@ Polar refuses, revoked when a subscription ends or expired, does not start hands
 Polar cannot be reached, the app starts hands for 14 days after Polar last said the key was live. The check sends Polar
 the key and the organization's id, nothing else.
 
-`hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (System Settings > Privacy &
+`hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (`hands grant`, or System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
 
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four

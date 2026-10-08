@@ -56,7 +56,8 @@ case "$1 $2" in
 esac
 """
 # The hands uv installs: its shim is a claude in ~/.hands/bin, Claude Code's first run is finished and the brain logged in
-# unless the person quits them, and its plugin is installed unless the person declines.
+# unless the person quits them, its plugin is installed unless the person declines, the grant is given unless the person
+# lets the wait run out, and its run, which says the claude its PATH finds, quits as q quits it.
 HANDS = r"""#!/bin/bash
 echo "hands $*" >>"${LOG:-/dev/null}"
 case "$1" in
@@ -71,6 +72,13 @@ case "$1" in
   install-plugin)
     [ ! -e "$STUBS/plugin-declined" ] || exit 1
     [ ! -e "$STUBS/claude-unaskable" ] || exit 2 ;;
+  grant)
+    [ ! -e "$STUBS/grant-not-given" ] || exit 1
+    [ ! -e "$STUBS/grant-over-ssh" ] || exit 2 ;;
+  status) [ -e "$STUBS/running" ] || exit 1 ;;
+  run)
+    echo "hands run finds claude $(command -v claude)" >>"${LOG:-/dev/null}"
+    [ ! -e "$STUBS/run-refused" ] || exit 1 ;;
 esac
 """
 # sudo -v is where the password is asked; the run's output marks the moment. The keeper's sudo -n -v finds nothing cached.
@@ -143,7 +151,9 @@ def test_a_bare_mac_gets_claude_code_portaudio_uv_and_the_newest_hands(sandbox: 
     assert "brew install portaudio" in calls and "brew install uv" in calls
     release = "https://github.com/brandon-fryslie/cc-hands/releases/download/v9.9.9"
     assert f"uv tool install --reinstall --python 3.12 --constraints {release}/constraints.txt {release}/hands-9.9.9-py3-none-macosx_12_0_arm64.whl" in calls
-    assert calls.index("hands install-fritter") < calls.index("hands first-run") < calls.index("hands login") < calls.index("hands install-plugin")
+    assert calls.index("hands install-fritter") < calls.index("hands first-run") < calls.index("hands login") < calls.index("hands install-plugin") < calls.index("hands grant") < calls.index("hands run")
+    # hands runs in this terminal once every step is done, on the PATH a new terminal has, whose claude is hands' shim.
+    assert f"hands run finds claude {sandbox.home / '.hands/bin/claude'}" in calls
     # A new terminal finds each of them without the person touching a profile, and its claude is hands' shim.
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
     assert sandbox.login_finds("hands") == str(sandbox.home / ".local/bin/hands")
@@ -352,3 +362,33 @@ def test_a_shim_behind_the_native_claude_on_the_login_path_is_put_first(sandbox:
 
 def test_the_releases_it_installs_and_the_marketplace_hands_adds_are_one_repository() -> None:
     assert f"REPO={MARKETPLACE}\n" in INSTALL.read_text()
+
+
+def test_a_grant_not_given_in_time_stops_the_run_before_hands_runs_saying_a_second_run_waits_again(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "grant-not-given").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "without the Input Monitoring grant" in ran.stderr and "running this command again waits again" in ran.stderr
+    assert "hands run" not in sandbox.calls()
+    (sandbox.root / "stubs" / "grant-not-given").unlink()
+    assert sandbox.run().returncode == 0 and "hands run" in sandbox.calls()
+
+
+def test_a_grant_that_cannot_be_given_here_fails_without_saying_a_second_run_waits_again(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "grant-over-ssh").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "cannot be given here" in ran.stderr and "again" not in ran.stderr
+    assert "hands run" not in sandbox.calls()
+
+
+def test_a_second_run_beside_a_hands_that_runs_starts_no_second_one(sandbox: Sandbox) -> None:
+    assert sandbox.run().returncode == 0
+    (sandbox.root / "stubs" / "running").touch()
+    again = sandbox.run()
+    assert again.returncode == 0, again.stderr
+    assert "hands is running already" in again.stdout and "hands run" not in sandbox.calls()
+
+
+def test_a_hands_that_will_not_run_fails_the_run_saying_so(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "run-refused").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "hands stopped, exiting 1" in ran.stderr

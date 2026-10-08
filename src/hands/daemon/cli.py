@@ -163,6 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
     commands.add_parser("install-plugin", help=f"install hands' Claude Code plugin, {PLUGIN_ID}, for every session, at this terminal: Claude Code shows the command `hands plugin` and asks the person to accept it, which is said before it asks; exits 0 only when the plugin is installed and enabled, asking nothing when it already is; 1 when Claude Code asked and it is not, as when the person declines; 2 when Claude Code could not be asked")
     commands.add_parser("first-run", help="answer, at this terminal, what the person's own Claude Code asks only once: its theme and login, whether to trust the folder `hands smoke` starts its session in, and whether to use an API key it is given, by starting it there, then its own login if it has none; each said before it is asked, and nothing asked when all are answered; exits 0 only when they are; 1 when something is still unanswered after; 2 when Claude Code could not be asked")
+    commands.add_parser("grant", help="have the app hands runs in given macOS's Input Monitoring grant, which hands needs to hear the talk key in other apps: macOS is asked, System Settings opened at the grant, what to turn on said, and a new process asked each second whether it has the grant, for up to 5 minutes; exits 0 only when it has; 1 when it was not given in time; 2 when no app holds hands, as over ssh, so it cannot be given here")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
@@ -305,6 +306,11 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return install_plugin(record)
         case "first-run":
             return first_run(home, record)
+        case "grant":
+            # Imported here so that no other command loads Quartz.
+            from hands.voice import grant
+
+            return grant.give(grant.on_this_mac(), record)
         case "plugin":
             return render_plugin(home, record)
         case "restart":

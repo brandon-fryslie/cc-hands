@@ -5,11 +5,12 @@
 #
 # It installs what is missing of Claude Code, Homebrew, PortAudio, uv, the newest released hands, the claude shim that
 # starts every session under fritter, and hands' plugin, and leaves what is there; a run stopped part-way is finished by
-# running it again. It puts each one's directory on the PATH of the person's login shell, the shim's first, and ends in a
-# fresh login shell, so this terminal has them too. The only input it asks for is the administrator password Homebrew's
-# own install needs, what Claude Code asks only once (its theme, its login, and whether to trust the folder `hands smoke`
-# runs in), the same for the brain, hands' own Claude Code, and the yes Claude Code asks for to install a plugin by running
-# a command, each said before it is asked.
+# running it again. It puts each one's directory on the PATH of the person's login shell, the shim's first, and ends
+# running hands in this terminal, then in a fresh login shell once hands quits, so this terminal has them too. The only
+# input it asks for is the administrator password Homebrew's own install needs, what Claude Code asks only once (its
+# theme, its login, and whether to trust the folder `hands smoke` runs in), the same for the brain, hands' own Claude
+# Code, the yes Claude Code asks for to install a plugin by running a command, and the Input Monitoring grant macOS keeps
+# for the person to give in System Settings, each said before it is asked.
 set -euo pipefail
 
 REPO=brandon-fryslie/cc-hands
@@ -157,7 +158,7 @@ case $login in
   *) fail "the brain is not logged in, so hands has no model to talk with: Claude Code could not be asked, as said above" ;;
 esac
 
-# Last, so that declining it leaves every step before it done.
+# After the steps Claude Code asks for, so that declining it leaves every step before it done.
 plugin=0
 hands install-plugin || plugin=$?
 case $plugin in
@@ -166,5 +167,24 @@ case $plugin in
   *) fail "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked, as said above" ;;
 esac
 
-say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, Claude Code has been through its first run, and the brain is logged in; this terminal is now a login shell that finds them"
+# The talk key's Input Monitoring grant, which only the person can give, to the app this runs in: hands waits for it.
+grant=0
+hands grant || grant=$?
+case $grant in
+  0) ;;
+  1) fail "hands cannot hear the talk key without the Input Monitoring grant; running this command again waits again" ;;
+  *) fail "hands cannot hear the talk key: the Input Monitoring grant cannot be given here, as said above" ;;
+esac
+
+installed="Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, Claude Code has been through its first run, the brain is logged in, and the app this runs in has the Input Monitoring grant"
+# A hands already running is left to run, as a second run of this command finds it: `hands run` would refuse a second.
+if hands status >/dev/null; then
+  say "done: $installed; hands is running already"
+  exec "$SHELL" -l
+fi
+say "done: $installed; hands now runs in this terminal, on a new terminal's PATH. Hold Right Shift in any app to talk; q here quits hands and leaves this terminal a login shell that finds them"
+# [LAW:one-source-of-truth] hands starts its sessions from the PATH a new terminal has, as `hands check` there judges it.
+ran=0
+PATH=$(shell_path "$terminal") hands run || ran=$?
+[ "$ran" -eq 0 ] || fail "hands stopped, exiting $ran, as said above; running this command again starts it again"
 exec "$SHELL" -l

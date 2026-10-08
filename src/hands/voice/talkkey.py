@@ -8,6 +8,8 @@ shows it keys only with the Input Monitoring grant, which belongs to the app han
 grant no tap is made, so the grant is checked at the door (`granted`) and a tap that still cannot be made fails loudly.
 """
 
+import ctypes
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -56,6 +58,21 @@ def granted() -> bool:
 def ask() -> None:
     """Put the app hands runs in on Input Monitoring's list in System Settings, and prompt for the grant once."""
     Quartz.CGRequestListenEventAccess()
+
+
+def responsible() -> str:
+    """The executable of the process macOS holds responsible for this one, whose app the grant belongs to: the terminal
+    app's for a process started in it, however deep, or sshd's over ssh."""
+    # libSystem's responsibility_get_pid_responsible_for_pid, which TCC itself goes by; private, so it is reached by name.
+    system = ctypes.CDLL(None, use_errno=True)
+    responsible_for = system.responsibility_get_pid_responsible_for_pid
+    responsible_for.restype, responsible_for.argtypes = ctypes.c_int, [ctypes.c_int]
+    pid = responsible_for(os.getpid())
+    path = ctypes.create_string_buffer(4096)
+    # [LAW:no-silent-failure] proc_pidpath answers 0 where it found no path, with errno saying why.
+    if system.proc_pidpath(pid, path, len(path)) <= 0:
+        raise OSError(ctypes.get_errno(), f"macOS gave no executable for pid {pid}, the process responsible for hands")
+    return path.value.decode()
 
 
 def event_of(kind: int, keycode: int, flags: int, at: Instant) -> KeyEvent:
