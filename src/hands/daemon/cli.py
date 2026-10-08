@@ -324,7 +324,7 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
     from hands.voice import talkkey
 
     # [LAW:no-silent-failure] no run without its talk key: a missing grant is named at the door, and macOS is asked to
-    # show the prompt that adds the terminal to the list.
+    # show the prompt that adds the app hands runs in to the list.
     granted = talkkey.granted()
     if not granted:
         talkkey.ask()

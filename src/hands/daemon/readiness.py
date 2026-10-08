@@ -69,7 +69,7 @@ def check(home: Home, path: str, granted: bool, reached: Finding, running: Findi
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, grant(granted), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, hears(granted, running), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -217,6 +217,15 @@ def shim(home: Home, path: str) -> Finding:
             if not current:
                 return Missing(f"`claude` on this PATH is hands' shim, {found}, but its fritter {runs} is not the one this hands carries, {carried}: run `hands install-fritter`")
             return Ready(f"`claude` on this PATH is hands' shim, {found}: every interactive session started from it can be typed into")
+
+
+def hears(granted: bool, running: Finding) -> Ready | Missing:
+    """Whether hands hears the keys typed in other apps. A running hands does: it starts only with the Input Monitoring
+    grant of the app it runs in, hands.app or a terminal's, which a check run elsewhere cannot see. Otherwise, whether
+    the app this runs in has the grant."""
+    if isinstance(running, Ready):
+        return Ready("hands is running, so the app it runs in has the Input Monitoring grant and it hears the talk key (Right Shift)")
+    return grant(granted)
 
 
 def grant(granted: bool) -> Ready | Missing:

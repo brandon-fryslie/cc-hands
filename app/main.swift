@@ -14,8 +14,10 @@ let given = CommandLine.arguments.dropFirst()
 // daemon: an interactive shell ignores SIGTERM, so one standing where hands will be would not hear a quit while it
 // reads its rc files.
 let shell = given.first ?? String(cString: getpwuid(getuid())!.pointee.pw_shell)
-// The NUL marks where rc files' own output ends and the environment begins.
-let environmentSaid = [shell, "-l", "-i", "-c", "/usr/bin/printf '\\0'; exec /usr/bin/env -0"]
+// env writes the environment to a file only it holds: the shell's own output goes to the log, and a background job its
+// rc files start, which keeps the shell's stdout open, holds nothing the app waits on.
+let environmentFile = FileManager.default.temporaryDirectory.appending(path: "hands.app-environment-\(getpid())")
+let environmentSaid = [shell, "-l", "-i", "-c", "exec /usr/bin/env -0 > '\(environmentFile.path)'"]
 
 // ~/Library/Logs is where a Mac app's log lives, so Console.app shows it.
 let log = given.dropFirst().first.map { URL(fileURLWithPath: $0) }
@@ -50,9 +52,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
         reader.executableURL = URL(fileURLWithPath: shell)
         reader.arguments = Array(environmentSaid.dropFirst())
         reader.standardInput = FileHandle.nullDevice
-        let told = Pipe()
-        reader.standardOutput = told
+        reader.standardOutput = output
         reader.standardError = output
+        reader.terminationHandler = { ended in onMain { self.read(ended) } }
         do {
             try reader.run()
         } catch {
@@ -61,20 +63,22 @@ final class Launcher: NSObject, NSApplicationDelegate {
             return
         }
         phase = .reading(reader)
-        DispatchQueue.global().async {
-            let environment = told.fileHandleForReading.readDataToEndOfFile()
-            reader.waitUntilExit()
-            onMain { self.read(reader, environment) }
-        }
     }
 
-    func read(_ reader: Process, _ told: Data) {
-        guard reader.terminationReason == .exit && reader.terminationStatus == 0 else {
-            stopped("hands.app could not read the environment of your login shell, \(shell): it \(how(reader)).\n\n\(lastLines())\n\nIts full log is \(log.path).")
+    func read(_ reader: Process) {
+        let told: Data
+        do {
+            guard reader.terminationReason == .exit && reader.terminationStatus == 0 else {
+                throw Ended(how: how(reader))
+            }
+            told = try Data(contentsOf: environmentFile)
+            try FileManager.default.removeItem(at: environmentFile)
+        } catch {
+            stopped("hands.app could not read the environment of your login shell, \(shell): \(error.localizedDescription).\n\n\(lastLines())\n\nIts full log is \(log.path).")
             return
         }
-        // What precedes the first NUL is the rc files' own output; each entry after it is NAME=value.
-        let entries = told.split(separator: 0, omittingEmptySubsequences: false).dropFirst().filter { !$0.isEmpty }
+        // Each entry is NAME=value.
+        let entries = told.split(separator: 0)
         let environment = Dictionary(entries.map { entry in
             let text = String(decoding: entry, as: UTF8.self)
             let name = text.prefix { $0 != "=" }
@@ -162,6 +166,12 @@ final class Launcher: NSObject, NSApplicationDelegate {
 func onMain(_ work: @escaping () -> Void) {
     CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue, work)
     CFRunLoopWakeUp(CFRunLoopGetMain())
+}
+
+// A process that ended other than with exit 0, as an error that says how.
+struct Ended: LocalizedError {
+    let how: String
+    var errorDescription: String? { "it \(how)" }
 }
 
 func how(_ ended: Process) -> String {

@@ -126,3 +126,13 @@ def test_a_log_past_its_limit_is_begun_again_with_the_last_kept_beside_it(opened
     assert (tmp_path / "hands.log.1").read_text() == last
     text = logged(tmp_path, "hands exited 0")
     assert f"began this log again; the last one is {tmp_path / 'hands.log'}.1" in text and "x" * 100 not in text
+
+
+def test_a_background_job_an_rc_file_starts_does_not_hold_up_hands(opened: Open, tmp_path: Path) -> None:
+    # The job keeps the shell's stdout open past the shell's exit.
+    app = opened(f"sleep 30 & echo $! > {tmp_path / 'job.pid'}", "exit 0")
+    try:
+        assert app.wait(timeout=10) == 0
+        assert "hands exited 0" in logged(tmp_path, "hands exited 0")
+    finally:
+        os.kill(int((tmp_path / "job.pid").read_text()), signal.SIGKILL)
