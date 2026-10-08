@@ -26,7 +26,7 @@ from pipecat.transports.local.audio import LocalAudioTransportParams
 from test_microphone import FreshPortAudio, Room, _phone  # pyright: ignore[reportPrivateUsage]
 
 API = SessionId("api")
-EXPIRED = Speak(Expired(API, Permission("Bash", {"command": "ls"})))
+EXPIRED = Speak(Expired(API, Permission("Bash", {"command": "ls"}), "hook"))
 # What the output transport pushes of one utterance: the frames that lead and close it, and what plays between.
 Step = Literal["lead", "audio", "barge-in", "resume", "close"]
 AUDIO = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16_000, num_channels=1)

@@ -123,6 +123,28 @@ def environment_of(process: Process) -> Mapping[str, str] | Undescribed | None:
     return _described(process.pid, process.parent, lambda: _started_as(process.pid)[2])
 
 
+@dataclass(frozen=True)
+class Launch:
+    """Where a process was started, and its arguments after the program, as it was started with them."""
+
+    directory: Path
+    arguments: tuple[str, ...]
+
+
+def launch_of(pid: int) -> Launch | Undescribed | None:
+    """How a process of this user's was started; None if it is not running, and the refusal if the kernel would not say."""
+    match process_table().get(pid):
+        case None:
+            return None
+        case process:
+
+            def read() -> Launch:
+                _, arguments, environment = _started_as(pid)
+                return Launch(_started_in(_cwd(pid), environment), arguments)
+
+            return _described(pid, process.parent, read)
+
+
 def directory_of(process: Process) -> Path | Undescribed | None:
     """The directory a process of this user's runs in; None if it has exited since it was listed, and the refusal if the
     kernel would not say."""
@@ -172,13 +194,17 @@ def _terminal(process: Process, tty: int) -> Terminal | Undescribed | None:
     listed, and the refusal if the kernel would not say."""
     match _described(process.pid, process.parent, lambda: (_cwd(process.pid), *_started_as(process.pid))):
         case (cwd, executable, arguments, environment):
-            # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree
-            # and the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that
-            # directory, in the one record the path itself is read from; a program started with none, or one that is no
-            # absolute path, is taken to be where it started.
-            return Terminal(process.pid, process.parent, (cwd / environment.get("PWD", "") / executable).resolve(), cwd, environment, arguments, tty)
+            # A path exec'd relative to the directory the process was started in.
+            return Terminal(process.pid, process.parent, (_started_in(cwd, environment) / executable).resolve(), cwd, environment, arguments, tty)
         case missing:
             return missing
+
+
+def _started_in(cwd: Path, environment: Mapping[str, str]) -> Path:
+    """The directory a process was started in, which a session leaves for a worktree and the kernel keeps no record of.
+    [LAW:one-source-of-truth] The PWD its shell started it with names that directory, in the one record its arguments are
+    read from; a program started with none, or one that is no absolute path, is taken to be where it runs."""
+    return cwd / environment.get("PWD", "")
 
 
 def _described[T](pid: int, parent: int, read: Callable[[], T]) -> T | Undescribed | None:

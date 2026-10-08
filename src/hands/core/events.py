@@ -213,6 +213,9 @@ class PermissionRequested:
     on: Blocker
     # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
     mode: Mode | None
+    # How long Claude Code itself waits on the dialog before it continues without an answer, its askUserQuestionTimeout
+    # for a question; None where it waits as long as it takes.
+    timeout: float | None
 
 
 @dataclass(frozen=True)

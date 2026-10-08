@@ -43,7 +43,7 @@ def home(tmp_path: Path) -> Home:
 
 
 def test_a_start_reads_the_membership_the_shim_wrote(home: Home) -> None:
-    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionStart", SID, None, Joined(MEMBER, "startup"))
+    assert parse_hook(body(hook_event_name="SessionStart", source="startup"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionStart", SID, None, Joined(MEMBER, "startup"), None)
     assert parse(home, body(hook_event_name="SessionStart", source="compact")) == Joined(MEMBER, "compact")
     assert parse(home, body(hook_event_name="SessionStart", source="fork")) == Joined(MEMBER, "fork")
 
@@ -58,7 +58,7 @@ def test_a_hook_whose_session_has_no_file_joins_nothing_and_still_says_what_happ
     """It ended, or its process moved on to another session: the registry says which, as it did before hooks joined."""
     home.membership(SID).unlink()
     raw = body(hook_event_name="UserPromptSubmit", prompt="hi", prompt_id="p", permission_mode="default")
-    assert parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("UserPromptSubmit", SID, None, Prompted(SID, at=12.5, mode="default", prompt=PromptId("p")))
+    assert parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("UserPromptSubmit", SID, None, Prompted(SID, at=12.5, mode="default", prompt=PromptId("p")), None)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_every_hook_of_a_running_session_brings_the_session_so_one_that_never_st
 
 def test_an_end_needs_no_membership_file_the_shim_has_already_removed(home: Home) -> None:
     home.membership(SID).unlink()
-    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionEnd", SID, None, Ended(SID, "other"))
+    assert parse_hook(body(hook_event_name="SessionEnd", reason="other"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST) == Hook("SessionEnd", SID, None, Ended(SID, "other"), None)
 
 
 def test_the_turn_hooks(home: Home) -> None:
@@ -119,7 +119,7 @@ def test_a_stop_is_still_the_end_of_a_turn_when_the_reply_it_carries_is_not_a_st
 def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None:
     raw = body(hook_event_name="PermissionRequest", tool_name="Bash", tool_input={"command": "rm -r build"}, permission_suggestions=[])
     permission = Permission(tool="Bash", input={"command": "rm -r build"})
-    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=permission, mode=None)
+    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=permission, mode=None, timeout=None)
 
 
 def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Home) -> None:
@@ -135,7 +135,7 @@ def test_every_hook_that_carries_a_mode_reports_it(home: Home, mode: Mode) -> No
     assert parse(home, body(hook_event_name="UserPromptSubmit", prompt="hi", permission_mode=mode, prompt_id="p")) == Prompted(SID, at=12.5, mode=mode, prompt=PromptId("p"))
     assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", permission_mode=mode, prompt_id="p")) == Stopped(SID, "ok", mode=mode, prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
     requested = parse(home, body(hook_event_name="PermissionRequest", permission_mode=mode, **call))
-    assert requested == PermissionRequested(SID, at=12.5, request=REQUEST, on=Permission("Bash", {"command": "ls"}), mode=mode)
+    assert requested == PermissionRequested(SID, at=12.5, request=REQUEST, on=Permission("Bash", {"command": "ls"}), mode=mode, timeout=None)
     finished = parse(home, body(hook_event_name="PostToolUse", permission_mode=mode, tool_use_id="t", tool_response={}, **call))
     assert finished == ToolFinished(SID, at=12.5, call=Permission("Bash", {"command": "ls"}), mode=mode)
 
@@ -175,7 +175,7 @@ def test_an_ask_user_question_request_is_a_question_carrying_what_it_asks_and_it
         QUESTIONS,
     )
     event = parse(home, raw)
-    assert event == PermissionRequested(SID, at=12.5, request=REQUEST, on=question, mode=None)
+    assert event == PermissionRequested(SID, at=12.5, request=REQUEST, on=question, mode=None, timeout=None)
     assert isinstance(event, PermissionRequested) and isinstance(event.on, Question) and event.on.input == QUESTIONS
 
 
@@ -191,7 +191,7 @@ def test_a_question_with_no_options_and_no_descriptions_is_still_a_question(home
     asked = {"questions": [{"question": "Name it?"}, {"question": "Pick", "options": [{"label": "a"}, {"label": "b", "description": ""}]}]}
     raw = body(hook_event_name="PermissionRequest", tool_name="AskUserQuestion", tool_input=asked, permission_suggestions=[])
     on = Question((AskedQuestion("Name it?", (), several=False), AskedQuestion("Pick", (Option("a", None), Option("b", None)), several=False)), asked)
-    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=on, mode=None)
+    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=on, mode=None, timeout=None)
 
 
 # As Claude Code 2.1.281 sends it: the plan file already read into the input.
@@ -200,7 +200,7 @@ PLAN_INPUT = {"plan": "# Plan\n\n1. Create hello.txt.\n2. Write hi into it.\n", 
 
 def test_an_exit_plan_mode_request_is_a_plan_carrying_its_text(home: Home) -> None:
     raw = body(hook_event_name="PermissionRequest", tool_name="ExitPlanMode", tool_input=PLAN_INPUT, permission_suggestions=[])
-    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=Plan(PLAN_INPUT["plan"]), mode=None)
+    assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=Plan(PLAN_INPUT["plan"]), mode=None, timeout=None)
 
 
 @pytest.mark.parametrize("ran", [{}, {"plan": "# Plan, edited at the dialog"}])

@@ -147,8 +147,9 @@ Dialog = Held | LetGo
 class Held:
     on: Blocker
     request: RequestId                    # the shim call waiting for a reply
-    deadline: Instant                     # derived from the hook config's timeout
+    deadline: Instant                     # the hook config's timeout, or a question's own if sooner
     warned: bool                          # the deadline warning has been spoken
+    expiry: Expiry                        # "hook": hands lets go; "continued": Claude Code goes on unanswered
 
 # Everything Claude Code stops for arrives through the same PermissionRequest hook.
 Blocker = Permission | Question | Plan
@@ -302,6 +303,17 @@ The deadline itself comes from one number. `hands.sessions.hookconfig` declares 
 waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
 earlier, so the deny reaches Claude Code before Claude Code kills the hook
 `[LAW:single-enforcer]`.
+
+A question can end sooner. Claude Code's `askUserQuestionTimeout` (`60s`, `5m`, `10m`, or
+`never`, the default) continues a question unanswered once it runs out, and a question
+reaches its hook from Claude Code at the start of that wait. When a `PermissionRequest`
+for `AskUserQuestion` arrives, `hands.sessions.questiontimeout` reads the setting from
+the session's `--settings` (found in its `claude` process's arguments) and then the
+user's `settings.json` in the session's config directory, the first that sets it winning,
+as 2.1.289 reads them. Managed policy outranks both and is not read. The question's
+deadline is the sooner of the two, so a `60s` question is warned of at 50 seconds and
+said to go on without an answer at 60. The hook's event carries what was read
+(`question_timeout`: seconds, the settings that set them, and any settings left unread).
 
 Claude Code queues messages submitted while a turn is running and shows them with
 "Press up to edit queued messages". Measured on 2.1.270: text pasted into a working

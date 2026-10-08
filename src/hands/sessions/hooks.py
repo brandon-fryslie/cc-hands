@@ -10,11 +10,12 @@ from loguru import logger
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Attached, Displayed, Ended, EndReason, Event, Joined, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
-from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership, recorded_membership
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.questiontimeout import QuestionTimeout, question_timeout
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,9 @@ class Hook:
     # whose session has no file, which ended or whose process has moved on to another session.
     joining: Attached | None
     happened: Event
+    # What the session's settings say of how long it waits on the question it asks, and which set it; None for a hook
+    # that asks none.
+    asked: QuestionTimeout | None
 
 
 def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: RequestId) -> Hook:
@@ -41,13 +45,19 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
         case "SessionStart":
             # The shim writes the membership file before it posts, so the start reads it.
             source = _start_source(payload.text("source"))
-            return Hook(name, session, None, Joined(read_membership(home, session), source))
+            return Hook(name, session, None, Joined(read_membership(home, session), source), None)
         case "SessionEnd":
-            return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))))
+            return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))), None)
+        case "PermissionRequest":
+            recorded = recorded_membership(home, session)
+            on = called(payload)
+            asked = _waited(on, recorded)
+            happened = PermissionRequested(session, at, request, on, _mode(payload), None if asked is None else asked.seconds)
+            return Hook(name, session, None if recorded is None else Attached(recorded), happened, asked)
         case _:
             happened = _happened(payload, session, at, heard, request)
             recorded = recorded_membership(home, session)
-            return Hook(name, session, None if recorded is None else Attached(recorded), happened)
+            return Hook(name, session, None if recorded is None else Attached(recorded), happened, None)
 
 
 def parse_display(raw: bytes, *, at: Instant) -> Displayed:
@@ -72,8 +82,6 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
             return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
-        case "PermissionRequest":
-            return PermissionRequested(session, at, request, called(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
             return ToolFinished(session, at, _ran(payload), _mode(payload))
         # What a hook hands only passes on says happened, in the fields its reference names (code.claude.com/docs/en/hooks).
@@ -114,6 +122,18 @@ def _trigger(trigger: str) -> CompactTrigger | Unrecognised:
             return trigger
         case other:
             return Unrecognised(other)
+
+
+def _waited(on: Blocker, membership: Membership | None) -> QuestionTimeout | None:
+    """How long the session waits on a question before it continues without an answer; None for a dialog it waits on
+    as long as it takes. A session with no membership file has ended, or moved on to another session, so nothing waits."""
+    match on, membership:
+        case Question(), Membership():
+            return question_timeout(membership)
+        case Question(), None:
+            return QuestionTimeout(None, None, ("the session has no membership file",))
+        case _:
+            return None
 
 
 def called(payload: Payload) -> Blocker:

@@ -13,6 +13,15 @@ from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import parse_pid, process_starts, still_running
 
 
+def config_of(membership: Membership) -> Path:
+    """The Claude Code config directory the session runs under, which holds its transcript at
+    `projects/<project>/<session>.jsonl` (2.1.282). Found from the transcript, not from this process's CLAUDE_CONFIG_DIR,
+    because each session may have been started under its own."""
+    if len(membership.transcript.parents) < 3:
+        raise Rejected(f"the transcript {membership.transcript} is not in a config directory's projects")
+    return membership.transcript.parents[2]
+
+
 def write_membership(home: Home, membership: Membership) -> None:
     path = home.membership(membership.id)
     path.parent.mkdir(parents=True, exist_ok=True)

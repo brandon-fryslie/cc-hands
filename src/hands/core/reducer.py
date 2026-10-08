@@ -340,8 +340,14 @@ def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | N
         case (PermissionRequested(request=request), Held(request=held)) if held == request:
             # The request it already waits on, heard again: its deadline and whether it was warned are its own, by request id.
             return dialog
-        case (PermissionRequested(at=at, request=request, on=on), _):
-            return Held(on=on, request=request, deadline=at + deadline, warned=False)
+        case (PermissionRequested(at=at, request=request, on=on, timeout=timeout), _):
+            # The wait ends at the sooner of hands' deadline for the hook and Claude Code's own for the dialog, so its
+            # warning is spoken before whichever comes first.
+            match timeout:
+                case float() if timeout < deadline:
+                    return Held(on=on, request=request, deadline=at + timeout, warned=False, expiry="continued")
+                case _:
+                    return Held(on=on, request=request, deadline=at + deadline, warned=False, expiry="hook")
         case (ToolFinished(call=call), Held(on=asked) | LetGo(on=asked)) if _same_call(asked, call):
             # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
             return None
@@ -680,9 +686,9 @@ def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effe
 
 def _expiring(session: SessionId, dialog: Dialog | None, at: Instant) -> tuple[Dialog | None, list[Effect]]:
     match dialog:
-        case Held(on=on, request=request, deadline=deadline) if at >= deadline:
+        case Held(on=on, request=request, deadline=deadline, expiry=expiry) if at >= deadline:
             left, reply = _expiry(on)
-            return left, [Reply(session, request, reply), Speak(Expired(session, on))]
+            return left, [Reply(session, request, reply), Speak(Expired(session, on, expiry))]
         case Held(on=on, request=request, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
             return replace(dialog, warned=True), [Speak(DeadlineNear(session, request, on, remaining=deadline - at))]
         case _:

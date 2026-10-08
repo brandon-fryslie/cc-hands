@@ -58,7 +58,7 @@ async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:
     sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=PromptId("p1")))
-    request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan")
+    request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan", timeout=None)
     await sessions.apply(request)
     await sessions.answer(RequestId("r1"), Allow())
     assert describe_listing(sessions.live()[0])["mode"] == "plan mode"

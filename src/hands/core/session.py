@@ -145,6 +145,11 @@ class PlanApproved:
 FinishedCall = Permission | Question | PlanApproved
 
 
+# What ends the wait on a held dialog at its deadline: hands, letting its hook go before Claude Code kills it, or Claude
+# Code, continuing without an answer when its own timeout for the dialog comes sooner.
+Expiry = Literal["hook", "continued"]
+
+
 @dataclass(frozen=True)
 class Held:
     """At a dialog whose PermissionRequest hook hands holds open, waiting on a reply by voice."""
@@ -155,6 +160,7 @@ class Held:
     # [LAW:no-ambient-temporal-coupling] the warning is spoken once because speaking it is this
     # value changing, not a timer that could fire twice.
     warned: bool
+    expiry: Expiry
 
 
 @dataclass(frozen=True)

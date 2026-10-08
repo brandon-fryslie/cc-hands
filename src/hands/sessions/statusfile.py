@@ -14,6 +14,7 @@ from loguru import logger
 from hands.core.events import StatusReported
 from hands.core.session import Instant, Membership, Session, SessionId, status_stamp
 from hands.core.status import Busy, Idle, Reason, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
+from hands.sessions.membership import config_of
 from hands.sessions.payload import Payload, Rejected
 
 # The waitingFor reasons this version knows, by the name the file gives them.
@@ -21,12 +22,8 @@ _REASONS: dict[str, Reason] = {reason: reason for reason in get_args(Reason)}
 
 
 def status_file(membership: Membership) -> Path:
-    """Where Claude Code keeps the session's status: `sessions/<pid>.json` in the config directory the session runs
-    under, which holds its transcript at `projects/<project>/<session>.jsonl` (2.1.282). Found from the transcript, not
-    from this process's CLAUDE_CONFIG_DIR, because each session may have been started under its own."""
-    if len(membership.transcript.parents) < 3:
-        raise Rejected(f"the transcript {membership.transcript} is not in a config directory's projects")
-    return membership.transcript.parents[2] / "sessions" / f"{membership.pid}.json"
+    """Where Claude Code keeps the session's status: `sessions/<pid>.json` in the config directory the session runs under."""
+    return config_of(membership) / "sessions" / f"{membership.pid}.json"
 
 
 def parse_report(membership: Membership, raw: bytes) -> Report:

@@ -8,7 +8,7 @@ from typing import Literal
 from hands.core.events import SessionEvent
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, RequestId, SessionId
+from hands.core.session import Blocker, CommandName, Expiry, Keystroke, PromptId, PromptText, RequestId, SessionId
 from hands.core.tmux import Pane
 from hands.core.turn import AgentId, AgentTask
 
@@ -164,10 +164,12 @@ class DeadlineNear:
 
 @dataclass(frozen=True)
 class Expired:
-    """Nobody answered by voice in time: a permission was denied, a question left to its dialog."""
+    """Nobody answered by voice in time: a permission was denied, a question left to its dialog or continued without
+    an answer."""
 
     session: SessionId
     on: Blocker
+    expiry: Expiry
 
 
 Announcement = DeadlineNear | Expired
