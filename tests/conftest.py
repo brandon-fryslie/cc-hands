@@ -354,4 +354,4 @@ async def unedited() -> SettingsEdited:
 
 def by_hand(_samples: bytes, _opener: object) -> Speaker:
     """Whose voice a hold is in, for a Whisper whose test is not about voices: the user's hand, as every hold was."""
-    return ByHand(taught=False)
+    return ByHand(taught=False, similarity=None)

@@ -513,7 +513,7 @@ async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking
     assert devices.speaker.quiet.is_set()
     # The user's turn is speech too, from its first hold's opening, whether or not it has cut hands off: quiet waits for
     # both sides, whichever stops last.
-    await devices.speaker.push_frame(TurnOpened(hold=Hold(1, "engaged conversation")))
+    await devices.speaker.push_frame(TurnOpened(hold=Hold(1, "engaged conversation", 0)))
     await devices.speaker.push_frame(BotStartedSpeakingFrame())
     await devices.speaker.push_frame(BotStoppedSpeakingFrame())
     assert not devices.speaker.quiet.is_set()

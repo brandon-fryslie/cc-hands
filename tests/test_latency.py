@@ -40,11 +40,11 @@ async def logged(*frames: Frame) -> list[str]:
 
 
 def opened(number: int) -> TurnOpened:
-    return TurnOpened(hold=Hold(number, "held key"))
+    return TurnOpened(hold=Hold(number, "held key", 0))
 
 
 def resolved(number: int) -> TurnResolved:
-    return TurnResolved(hold=Hold(number, "held key"))
+    return TurnResolved(hold=Hold(number, "held key", 0))
 
 
 async def told(*frames: Frame) -> list[Mark]:

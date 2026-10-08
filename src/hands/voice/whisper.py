@@ -42,7 +42,7 @@ from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.speakers import seconds, spoken_as
-from hands.voice.trigger import Opener, turn_start
+from hands.voice.trigger import turn_start
 from hands.voice.turnstop import Hold, HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
 
 # What every hold is said in, as Pipecat names it.
@@ -146,7 +146,7 @@ class Whisper(SegmentedSTTService):
     never disagree about where a hold is.
     """
 
-    def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], told: Callable[[bytes, Opener], Speaker], record: Record) -> None:
+    def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], told: Callable[[bytes, Hold], Speaker], record: Record) -> None:
         # Pipecat checks at start that the settings say every field; these are what each hold is transcribed with.
         super().__init__(settings=STTSettings(model=transcription.MODEL, language=LANGUAGE))  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
@@ -169,7 +169,7 @@ class Whisper(SegmentedSTTService):
         self._dropped = 0
         # How many holds have opened, the key's and those typed; and the last the key opened, hold 0 until one has.
         self._holds = 0
-        self._opened = _Open(Hold(0, "held key"), 0, 0, "over")
+        self._opened = _Open(Hold(0, "held key", 0), 0, 0, "over")
         # The holds queued to be heard, oldest first, the key's, those typed and those thrown away, and hearings of the hold
         # still open.
         # Pipecat takes its queue one segment at a time, in order, so each it takes is the oldest, and a hold typed is
@@ -198,7 +198,7 @@ class Whisper(SegmentedSTTService):
         """A hold that opens and ends at once, and is heard in line behind the holds queued ahead of it, as one the key
         sent would be: it joins a turn a hold of the key's has open, and leaves the key's hold and its audio as they were."""
         self._holds += 1
-        hold = Hold(self._holds, "typed")
+        hold = Hold(self._holds, "typed", self._opened.hold.conversation)
         await self.push_frame(TurnOpened(hold=hold))
         await self.push_frame(VADUserStoppedSpeakingFrame())
         self._transcribing.append(_Written(hold, text))
@@ -256,7 +256,7 @@ class Whisper(SegmentedSTTService):
                 self._user_speaking = False
             case "up" | "listening" | "arming", "down":
                 self._holds += 1
-                hold = Hold(self._holds, frame.opened)
+                hold = Hold(self._holds, frame.opened, frame.conversation)
                 # The second the desk heard before it is its first hop.
                 self._opened = _Open(hold, len(self._audio_buffer), 0, _overhearing(hold))
                 opened = TurnOpened(hold=hold)
@@ -404,7 +404,7 @@ class Whisper(SegmentedSTTService):
         hold's WAV with."""
         samples = _samples(audio)[: -len(self._trailing_silence()) or None]
         try:
-            speaker = await self._model.run(lambda: self._told(samples, hold.opener))
+            speaker = await self._model.run(lambda: self._told(samples, hold))
         except Exception as error:
             # [LAW:no-silent-failure] the failure is an error line; the words Whisper heard still reach the brain.
             speaker = Untellable(f"{type(error).__name__}: {error}")

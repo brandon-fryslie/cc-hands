@@ -110,10 +110,12 @@ class HoldHeard:
 
 @dataclass(frozen=True)
 class ByHand:
-    """A hold the user's hand opened, at the key, a button, or the phone: theirs, whoever else is in the room. `taught`
-    says its voice was long enough to teach the user's voiceprint."""
+    """A hold the owner's hand opened, at the key, a button, or the phone: theirs, whoever else is in the room. `taught`
+    says it taught the owner's voiceprint, a hold of the desk's key long enough to; `similarity` is how like the print
+    it was before, by cosine, the owner's own measure for tuning SAME_VOICE, none where it was not heard or no print yet."""
 
     taught: bool
+    similarity: float | None
 
 
 @dataclass(frozen=True)

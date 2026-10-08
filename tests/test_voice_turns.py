@@ -243,7 +243,7 @@ async def rigged(
     def voiced(samples: bytes, _opener: object) -> Voice:
         # Told the voice alone: Pipecat's padding is no part of it.
         told_samples.append(samples)
-        match speakers.pop(0) if speakers else ByHand(taught=False):
+        match speakers.pop(0) if speakers else ByHand(taught=False, similarity=None):
             case Exception() as failed:
                 raise failed
             case speaker:
@@ -290,7 +290,7 @@ async def test_words_in_someone_elses_voice_reach_the_model_as_theirs(rig: Rig) 
     rig.speakers.append(Other(similarity=0.12))
     await rig.hold(["down", "down", "up"], by="engaged conversation")
     await rig.texts.put("should we split the ticket")
-    assert await rig.everything_sent(holds=1) == ["[someone else in the room] should we split the ticket"]
+    assert await rig.everything_sent(holds=1) == ["[someone else in the room: should we split the ticket]"]
     assert [(entry.hold, entry.speaker) for entry in rig.recorded if isinstance(entry, Voiced)][0] == (1, Other(similarity=0.12))
 
 
@@ -906,7 +906,7 @@ async def test_a_press_that_passes_the_floor_ahead_of_the_last_turns_stop_keeps_
     """The stop comes back up from the user aggregator while a press goes down past the floor, so the press can arrive
     first: the floor stays the user's through the turn that press opened."""
     out = Recorded()
-    one, two = Hold(1, "held key"), Hold(2, "engaged conversation")
+    one, two = Hold(1, "held key", 0), Hold(2, "engaged conversation", 0)
     async with running([Floor(lambda id: id, dict), out], []) as run:
 
         async def until(what: Callable[[], bool]) -> None:

@@ -26,10 +26,12 @@ from hands.voice.trigger import Opener
 
 @dataclass(frozen=True)
 class Hold:
-    """One hold, by the number Whisper gave it as it opened, and what opened it."""
+    """One hold, by the number Whisper gave it as it opened, what opened it, and which of the desk's conversations it
+    was in (hands.voice.ptt.Gate)."""
 
     number: int
     opener: Opener
+    conversation: int
 
 
 @dataclass(kw_only=True)

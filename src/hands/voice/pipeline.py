@@ -36,9 +36,8 @@ from hands.sessions.audit import Record, Speaker
 from hands.voice.player import Marks, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice.trigger import Opener
 from hands.voice.turnstart import EdgeTurnStart, interrupting
-from hands.voice.turnstop import KeyTurnStop
+from hands.voice.turnstop import Hold, KeyTurnStop
 from hands.voice import conversation, voices
 from hands.voice.whisper import Whisper
 from hands.voice.backends import ClaudeCodeBackend
@@ -77,7 +76,7 @@ def build_voice(
     player: Player,
     floor: Floor,
     prompt: Callable[[], Awaitable[str | None]],
-    told: Callable[[bytes, Opener], Speaker],
+    told: Callable[[bytes, Hold], Speaker],
     record: Record,
 ) -> Voice:
     """Wire mic, push-to-talk, Whisper on MLX, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
