@@ -11,9 +11,8 @@ never touched by a drive; it waits for their word as it always does.
 from dataclasses import dataclass
 
 from hands.core.effects import Fritter, NotTyped, Text, Type, Typed
-from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
-from hands.core.session import Drive, Gone, PromptText, Registry, Running, Session, SessionId
-from hands.core.status import Waiting
+from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, prompter
+from hands.core.session import Drive, Gone, PromptText, Registry, Session, SessionId
 from hands.core.tmux import Keyboard, Pane
 
 # [LAW:no-mode-explosion] the cap on what one standing order sends: a drive that has sent this many prompts ends, and the
@@ -105,23 +104,25 @@ def decide(registry: Registry, request: Decidable) -> tuple[Registry, DriveOutco
     match (request, registry.sessions.get(id), registry.drives.get(id)):
         case (_, None, _):
             return registry, UnknownSession(id)
-        case (StopDrive(), _, None) | (DriveSending(), _, None):
-            return registry, NotDriven(id)
         case (StopDrive(), _, Drive() as drive):
             return registry.undrive(id), DriveStopped(id, drive)
         case (_, Gone(), _):
             return registry, SessionEnded(id)
-        case (StartDrive(order=order), Session(), replaced):
+        case (StopDrive(), _, None) | (DriveSending(), _, None):
+            return registry, NotDriven(id)
+        case (StartDrive(order=order), Session(), None):
             drive = Drive(order, 0)
+            return registry.drive(id, drive), Driving(id, drive, None)
+        case (StartDrive(order=order), Session(), Drive(sends=sends) as replaced):
+            # A new order for a driven session goes on from the sends the one it replaces made, so the cap bounds the loop
+            # however often the order is given again; the count starts over only once a drive has ended.
+            drive = Drive(order, sends)
             return registry.drive(id, drive), Driving(id, drive, replaced)
-        case (DriveSending(text=text, pane=pane), Session(state=state, membership=member), Drive() as drive):
-            match (state, writer(member, pane)):
-                case (_, Unwrapped() as unwrapped):
-                    return registry, unwrapped
-                case (Running(status=Waiting()), _):
-                    # A dialog would take the prompt as its answer, and what a session asks is the user's to answer.
-                    return registry, AtItsDialog(id)
-                case (_, Fritter() | Pane() as by):
+        case (DriveSending(text=text, pane=pane), Session() as session, Drive() as drive):
+            match prompter(session, pane):
+                case Unwrapped() | AtItsDialog() as unreached:
+                    return registry, unreached
+                case Fritter() | Pane() as by:
                     sent = Drive(drive.order, drive.sends + 1)
                     typed = Type(id, by, Text(text))
                     # [LAW:dataflow-not-control-flow] the count decides which send this is, never a flag set beside it.

@@ -45,7 +45,7 @@ from hands.core.beside import beside
 from hands.core.place import Modality
 from hands.core.permissions import heard
 from hands.core.front import InFront
-from hands.core.session import Permission, SessionId
+from hands.core.session import Drive, Permission, SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
     Answering,
@@ -103,9 +103,9 @@ class UserAsked:
 
 @dataclass(frozen=True)
 class HandsAsked:
-    """What hands handed the brain to tell, or, `driven`, to act on under the user's standing order for a session."""
+    """What hands handed the brain to tell, or, under `drive`, to act on as the user's standing order for a session."""
 
-    driven: bool
+    drive: Drive | None
 
 
 # Whose turn the brain answered.
@@ -368,20 +368,20 @@ class BrainStage(FrameProcessor):
                 case (str() as text, reading):
                     asker = await reading
                     await self._ask(f"{text}\n\n{beside(asker.front, asker.modality)}", asker, (), (), arrived, released, taken)
-                case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances, driven=driven):
+                case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances, drive=drive):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
                     # A driven turn is the brain's to act on, not the user's to answer, so their focus stays where it is.
-                    match driven:
-                        case False:
+                    match drive:
+                        case None:
                             await self._refocus(session)
-                        case True:
+                        case Drive():
                             pass
                     # The turn is what says them, sent with what tells what of them was heard, and a part of the first
                     # of them, in its trace.
                     await self.push_frame(Uttering(utterances))
                     with continuing(utterances[0].begun.span if utterances else None):
-                        failure = await self._ask(text, HandsAsked(driven), (unsaid,), utterances, arrived, None, taken)
+                        failure = await self._ask(text, HandsAsked(drive), (unsaid,), utterances, arrived, None, taken)
                     match failure:
                         case str():
                             for utterance in utterances:

@@ -21,8 +21,9 @@ from hands.core.attention import DEFAULT as DEFAULT_OVERLAY, Amount, Attention, 
 from hands.core.delta import Delta
 from hands.core.effects import SessionGone, Summarise
 from hands.core.narration import Segment, narration
-from hands.core.pending import Finished, News, Unread
+from hands.core.pending import Finished, News, Unread, steered
 from hands.core.session import Drive, PromptId, SessionId
+from hands.core.drive import StopDrive
 from hands.core.subagents import Subagent, reporting
 from hands.core.turn import Said
 from hands.sessions.delta import Changes, NoChanges
@@ -120,6 +121,7 @@ async def narrate(
             case Summarise(session=session, turn=turn, closing=closing):
                 delivered = delivery(await set_to(aloud), await _overlay(overlays, session), sessions.driven(session))
                 told = await recount(tails, session, turn, closing, utterance, await read.taken(session), delivered, recounts)
+                await _unsteer(sessions, told, utterance)
             case SessionGone(session=session):
                 recounts.gone(session)
                 attention = await set_to(aloud)
@@ -132,6 +134,17 @@ async def narrate(
                 utterance.settle("noted")
             case _:
                 await queue_frame(Unprompted(told, (utterance,)))
+
+
+async def _unsteer(sessions: Sessions, told: Finished | Unread | None, utterance: Utterance) -> None:
+    """A drive whose turn the brain could not be handed ends: nothing would come back to send the next prompt, and the
+    session would read as driven with nobody driving it."""
+    match told:
+        case Unread(session=session, stopped=Drive()):
+            # [LAW:nothing-unseen] the drive this turn ended, and why.
+            utterance.annotate(drive_ended=await sessions.drive(StopDrive(session)))
+        case _:
+            pass
 
 
 async def recount(
@@ -159,7 +172,7 @@ async def recount(
         _unread(session, error)
         utterance.fail(f"the turn could not be read: {type(error).__name__}: {error}")
         recounts.unread(session, turn)
-        return _delivered(delivered, lambda _: Unread(session))
+        return _delivered(delivered, lambda telling: Unread(session, steered(telling)))
     if told is None or not (told.turn.steps or delta):
         logger.info(f"session {session} stopped with no untold turn, so there is nothing to tell")
         recounts.put(session, turn, None)
@@ -209,14 +222,14 @@ async def _subagents(session: SessionId, told: Telling) -> tuple[tuple[Subagent,
     return tuple(read), tuple(unread)
 
 
-def _delivered[T](delivered: Delivery, told: Callable[[Amount | Drive], T]) -> T | None:
+def _delivered[T](delivered: Delivery, told: Callable[[Amount | Steering], T]) -> T | None:
     """What is told, as much of it as is set, or to the brain under the drive, as the turn finishes; none when it waits
     to be asked for."""
     match delivered:
         case Spoken(amount=amount):
             return told(amount)
-        case Steering(drive=drive):
-            return told(drive)
+        case Steering() as steering:
+            return told(steering)
         case Withheld():
             return None
 

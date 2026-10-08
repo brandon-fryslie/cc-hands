@@ -15,7 +15,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, Prompted, Stopped
-from hands.core.drive import StartDrive
+from hands.core.drive import DriveStopped, StartDrive
 from hands.core.session import Drive, Membership, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Failure, failures_to
 from hands.sessions.wide import WideEvent, begun
@@ -428,14 +428,47 @@ async def test_a_driven_sessions_turn_is_handed_to_the_brain_to_act_on_with_fini
     finally:
         narrating.cancel()
     frame = said(unprompted(queued))
-    assert isinstance(frame, Narrated) and frame.driven
+    assert isinstance(frame, Narrated) and frame.drive is not None
     assert 'You are driving cc-hands under the user\'s standing order: "keep fixing tests until they pass". You have sent it 0 of the 20 prompts' in frame.text
     assert f"call drive_send with session {SID}" in frame.text
     [utterance] = cast(Unprompted, queued).utterances
-    assert utterance.facts["delivered"] == Steering(Drive("keep fixing tests until they pass", 0))
+    assert utterance.facts["delivered"] == Steering(Drive("keep fixing tests until they pass", 0), Withheld("off"))
 
 
 def test_an_undriven_turn_is_not_marked_driven() -> None:
     news = News(PromptId("p1"), "Fixed it.", "", "", (), frozenset())
     frame = said(Finished(SID, (news,), "full"))
-    assert isinstance(frame, Narrated) and not frame.driven
+    assert isinstance(frame, Narrated) and frame.drive is None
+
+
+def test_a_driven_turn_that_asks_the_user_stops_the_drive_and_puts_the_question() -> None:
+    news = News(PromptId("p1"), "Should I delete the legacy migration?", "", "Should I delete the legacy migration?", (), frozenset())
+    text = told(SID, "billing", (news,), Steering(Drive("keep billing going", 2), Spoken("brief", "finished")))
+    assert f"Call stop_driving with session {SID}" in text and "Should I delete the legacy migration?" in text
+    assert "drive_send" not in text
+
+
+def test_a_driven_turn_the_user_set_held_is_acted_on_in_silence() -> None:
+    news = News(PromptId("p1"), "Fixed one test.", "", "", (), frozenset())
+    text = told(SID, "billing", (news,), Steering(Drive("keep billing going", 2), Withheld("quiet")))
+    assert "call drive_send" in text and "say nothing to the user" in text
+
+
+async def test_a_driven_turn_that_cannot_be_read_ends_the_drive_and_says_so(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    frames: asyncio.Queue[Frame] = asyncio.Queue()
+    narrating = asyncio.create_task(narrate(sessions, Utterances(recorded.append), Tails(sessions), frames.put, Attention, Overlays(Home(tmp_path / "home")), Recounts()))
+    try:
+        await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp_path / "gone.jsonl"), "startup"))
+        await sessions.drive(StartDrive(SID, "keep fixing tests until they pass"))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
+        await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
+        queued = await asyncio.wait_for(frames.get(), 5.0)
+    finally:
+        narrating.cancel()
+    spoken = said(unprompted(queued))
+    assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not read it, so I stopped driving it."
+    assert sessions.driven(SID) is None
+    [utterance] = cast(Unprompted, queued).utterances
+    assert utterance.facts["drive_ended"] == DriveStopped(SID, Drive("keep fixing tests until they pass", 0))

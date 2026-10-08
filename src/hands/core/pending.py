@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.core.attention import Amount
+from hands.core.attention import Amount, Steering
 from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Speak, WentOn
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
@@ -48,14 +48,25 @@ class Finished:
     session: SessionId
     news: tuple[News, ...]
     # As much of them as is set for the ear, or the drive they are handed to the brain to act on.
-    telling: Amount | Drive
+    telling: Amount | Steering
+
+
+def steered(telling: Amount | Steering) -> Drive | None:
+    """The standing order finished turns are handed to the brain under; None when they are told to the user."""
+    match telling:
+        case "brief" | "full":
+            return None
+        case Steering(drive=drive):
+            return drive
 
 
 @dataclass(frozen=True)
 class Unread:
-    """A session finished a turn whose transcript could not be read: said as a system fact is, with no model."""
+    """A session finished a turn whose transcript could not be read: said as a system fact is, with no model. `stopped`
+    is the drive that ended with it, since the brain was never handed the turn it waited on."""
 
     session: SessionId
+    stopped: Drive | None
 
 
 @dataclass(frozen=True)

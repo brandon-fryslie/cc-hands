@@ -866,9 +866,9 @@ def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Pa
 def test_a_brain_turn_is_written_with_what_was_in_front_as_the_user_asked_it_and_none_for_hands(tmp_path: Path) -> None:
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
-    for asker in (UserAsked("screen", "held key", SessionInFront("iTerm2", SessionId("s1"), "hands, docs"), 4.2), HandsAsked(False)):
+    for asker in (UserAsked("screen", "held key", SessionInFront("iTerm2", SessionId("s1"), "hands, docs"), 4.2), HandsAsked(None)):
         with unit("voice.turn", log.record):
             annotate(asker=asker)
     user, hands = lines(path)
     assert user["facts"]["asker"] == {"type": "UserAsked", "modality": "screen", "opened": "held key", "front": {"type": "SessionInFront", "app": "iTerm2", "session": "s1", "name": "hands, docs"}, "read_ms": 4.2}
-    assert hands["facts"]["asker"] == {"type": "HandsAsked", "driven": False}
+    assert hands["facts"]["asker"] == {"type": "HandsAsked", "drive": None}

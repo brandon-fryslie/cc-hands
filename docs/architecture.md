@@ -1557,14 +1557,17 @@ one file.
 (`hands.core.drive`): `drive_session` holds it in the registry beside the drafts, its one
 home, and the session's end drops it. While it holds, `delivery` hands each turn the
 session finishes to the brain as `Steering`, whatever quiet, the overlay, or finished
-turns are set to, so a drive never stalls on a setting meant for the ear; the turn is
-taken in hands' lane like any telling, without moving the user's focus, and its
-`voice.turn` event's asker says `driven`. The brain answers it with `drive_send`, which
-types the next prompt through the same Type effect as a draft, or with `stop_driving`.
+turns are set to, so a drive never stalls on a setting meant for the ear; those settings
+still decide whether the brain says anything of it. The turn is taken in hands' lane like
+any telling, without moving the user's focus, and its `voice.turn` event's asker carries
+the drive. The brain answers it with `drive_send`, which types the next prompt through
+the same Type effect as a draft, or with `stop_driving`; a turn that asks the user
+something tells it to stop and ask, and one that cannot be read ends the drive aloud.
 `drive.decide` is the one place a prompt reaches a session without the user's "send
 it": it refuses any session with no drive, never touches a staged draft, refuses a
-session at a dialog, which stays the user's to answer, and ends the drive on the send
-that spends its cap of `SENDS` prompts, since every send ends in a turn handed back.
+session at a dialog (`reach.prompter`, shared with drafts and commands), and ends the
+drive on the send that spends its cap of `SENDS` prompts. Giving the order again keeps
+the count, so only a drive's end starts it over.
 
 ## The summary store
 

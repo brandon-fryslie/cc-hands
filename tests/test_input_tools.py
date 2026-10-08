@@ -476,3 +476,5 @@ async def test_a_prompt_sent_under_a_drive_is_in_the_audit_log_joined_to_its_cal
     assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
     assert written[-2]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "drive_send"
     assert written[-3]["facts"]["tool"] == "drive_session" and written[-3]["facts"]["called"]["arguments"] == {"session": "s1", "order": "keep going"}
+    assert written[-3]["facts"]["drive"] == {"type": "Driving", "session": "s1", "drive": {"type": "Drive", "order": "keep going", "sends": 0}, "replaced": None}
+    assert written[-1]["facts"]["drive"]["type"] == "Typed"

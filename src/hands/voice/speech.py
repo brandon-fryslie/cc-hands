@@ -8,10 +8,10 @@ from pathlib import PurePath
 
 from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
 
-from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
+from hands.core.attention import Amount, Attention, Overlay, Route, Spoken, Steering, Withheld, progress_route
 from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell, WentOn
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
-from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
+from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, steered, went_on
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.drive import SENDS
@@ -55,15 +55,15 @@ class Narrated(DataFrame, UninterruptibleFrame):
     its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
     hands says as written if the brain cannot take the turn: that it could not be told, never the turn's own words.
     `session` is the one whose turn or question it tells, which is told to the user as the brain takes it, and
-    `utterances` what it says of the sessions, which the brain's stage sends what it says of them with. `driven` is a
-    turn handed to the brain under a drive, which it acts on rather than tells, so the user's focus stays where it is.
+    `utterances` what it says of the sessions, which the brain's stage sends what it says of them with. `drive` is the
+    standing order a turn is handed to the brain under, to act on rather than tell, so the user's focus stays where it is.
     """
 
     text: str
     unsaid: str
     session: SessionId
     utterances: tuple[Utterance, ...]
-    driven: bool = False
+    drive: Drive | None
 
 
 @dataclass
@@ -100,7 +100,7 @@ class InOwnWords:
     text: str
     unsaid: str
     session: SessionId
-    driven: bool = False
+    drive: Drive | None
 
 
 # How something hands tells is said. [LAW:one-type-per-behavior] `sent` is the one place that decides the frames each makes.
@@ -113,9 +113,9 @@ def sent(saying: Saying, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
         case AsWritten(spoken=spoken):
             # In hands' lane, in order with what it hands the brain: the brain's stage sends it with what tells it was heard.
             return (Aloud(spoken, utterances),)
-        case InOwnWords(text=text, unsaid=unsaid, session=session, driven=driven):
+        case InOwnWords(text=text, unsaid=unsaid, session=session, drive=drive):
             # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
-            return (Narrated(text, unsaid, session, utterances, driven),)
+            return (Narrated(text, unsaid, session, utterances, drive),)
 
 
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
@@ -187,12 +187,13 @@ def frames(pending: Pending, names: Names) -> Saying:
             # In hands' lane, so a deadline is heard after the question it counts down, never ahead of it.
             return AsWritten(TTSSpeakFrame(announcement_text(announcement, names)))
         case Narrate(moment=moment):
-            return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session)
+            return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session, None)
         case Finished(session=session, news=news, telling=telling):
             name = names(session)
-            return InOwnWords(told(session, name, news, telling), f"{name} finished {_turns(news)}, and I could not tell it.", session, isinstance(telling, Drive))
-        case Unread(session=session):
-            return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False))
+            return InOwnWords(told(session, name, news, telling), f"{name} finished {_turns(news)}, and I could not tell it.", session, steered(telling))
+        case Unread(session=session, stopped=stopped):
+            ended = "" if stopped is None else ", so I stopped driving it"
+            return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it{ended}.", append_to_context=False))
         case SessionGone(session=session):
             return AsWritten(TTSSpeakFrame(f"The session {names(session)} is gone."))
         case Mentioned(session=session, occurrence=occurrence, amount=amount):
@@ -213,9 +214,9 @@ def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:
             return name
 
 
-def told(session: SessionId, name: str, news: Sequence[News], telling: Amount | Drive) -> str:
+def told(session: SessionId, name: str, news: Sequence[News], telling: Amount | Steering) -> str:
     """Finished turns as the model is handed them: the last thing the session said in each, what hands read of each
-    that those words may not say, what it is waiting on, which the model ends by asking, and how much of it to say.
+    that those words may not say, what it is waiting on, and what the model is to do with them.
 
     Only the last turn's question is put: a session that went on to another turn was answered, at the keyboard or
     by the turn that followed.
@@ -223,30 +224,41 @@ def told(session: SessionId, name: str, news: Sequence[News], telling: Amount | 
     # [LAW:single-enforcer] one bound for the whole telling, shared among its turns, however many were folded into it.
     shown = REPLY_SHOWN // len(news)
     accounts = _account(news[0], shown) + "".join(f"{_then(before, each)}{_account(each, shown)}" for before, each in pairwise(news))
-    asked = news[-1].asked
-    ending = (
-        f"It is waiting on the user's answer to this, so end by asking it, with what it refers to, so they can answer without looking at the screen: {asked}"
-        if asked
-        else "It asks the user nothing."
-    )
-    return (
-        f"[hands] The Claude Code session {name} (id {session}) finished {_turns(news)}. {accounts}"
-        f"{_how(telling, name, session)} {ending}"
-    )
+    return f"[hands] The Claude Code session {name} (id {session}) finished {_turns(news)}. {accounts}{_how(telling, news[-1].asked, name, session)}"
 
 
-def _how(telling: Amount | Drive, name: str, session: SessionId) -> str:
-    """What the model is asked to do with the turns: say as much of them as is set, or act on them under the drive."""
-    match telling:
-        case "brief" | "full" as amount:
-            return _HOW_MUCH[amount]
-        case Drive(order=order, sends=sends):
+def _how(telling: Amount | Steering, asked: str, name: str, session: SessionId) -> str:
+    """What the model is to do with the turns: say as much of them as is set, ending on what the session asks the user;
+    or, under a drive, send the next prompt, unless the session asks the user something, which is theirs to answer."""
+    ask = f"end by asking it, with what it refers to, so they can answer without looking at the screen: {asked}"
+    match telling, asked:
+        case ("brief" | "full") as amount, "":
+            return f"{_HOW_MUCH[amount]} It asks the user nothing."
+        case ("brief" | "full") as amount, _:
+            return f"{_HOW_MUCH[amount]} It is waiting on the user's answer to this, so {ask}"
+        case Steering(drive=Drive(order=order, sends=sends), ear=ear), "":
             return (
                 f"You are driving {name} under the user's standing order: \"{order}\". You have sent it {sends} of the "
                 f"{SENDS} prompts the order allows. Act on it now: call drive_send with session {session} and the next prompt "
                 "that moves it toward the order, or call stop_driving when the order is met, or when it needs the user's "
-                "decision or is going wrong. Then tell the user in one short sentence what you did, naming the session."
+                f"decision or is going wrong. {_steered(ear, name)}"
             )
+        case Steering(drive=Drive(order=order)), _:
+            # [LAW:single-enforcer] what a driven session asks the user stays theirs: the drive stops here, never answered by a send.
+            return (
+                f"You are driving {name} under the user's standing order: \"{order}\", and it is waiting on the user's "
+                f"answer to a question, which is theirs to give. Call stop_driving with session {session}, then tell the "
+                f"user you stopped driving it, and {ask}"
+            )
+
+
+def _steered(ear: Spoken | Withheld, name: str) -> str:
+    """What the user hears of a driven turn: a sentence of what was done, unless they set it to be held."""
+    match ear:
+        case Spoken():
+            return f"Then tell the user in one short sentence what you did, naming {name}."
+        case Withheld():
+            return "Then say nothing to the user: they set this session's finished turns to be held."
 
 
 def _account(news: News, shown: int) -> str:

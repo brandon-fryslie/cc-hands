@@ -49,9 +49,9 @@ GONE = SessionGone(SessionId("old"))
             id="blocking, then result, then fyi",
         ),
         pytest.param(
-            (finished(API, "one"), finished(WEB, "two"), Unread(API)),
+            (finished(API, "one"), finished(WEB, "two"), Unread(API, None)),
             {},
-            (finished(API, "one"), finished(WEB, "two"), Unread(API)),
+            (finished(API, "one"), finished(WEB, "two"), Unread(API, None)),
             id="arrival order within a priority",
         ),
         pytest.param(
@@ -73,9 +73,9 @@ GONE = SessionGone(SessionId("old"))
             id="a session's story is told in the order it happened, its turn before its next request",
         ),
         pytest.param(
-            (finished(API, "one"), Unread(API), finished(API, "three")),
+            (finished(API, "one"), Unread(API, None), finished(API, "three")),
             {},
-            (finished(API, "one"), Unread(API), finished(API, "three")),
+            (finished(API, "one"), Unread(API, None), finished(API, "three")),
             id="a turn that could not be read stands between the turns it came between",
         ),
         pytest.param(

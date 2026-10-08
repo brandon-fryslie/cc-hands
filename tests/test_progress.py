@@ -155,8 +155,8 @@ def finished(session: SessionId) -> Finished:
             id="progress of the next turn is heard though the turn before's result is told after it",
         ),
         pytest.param(
-            (Working(SID, IN_NEXT, (TESTS,)), Unread(SID)),
-            (Unread(SID),),
+            (Working(SID, IN_NEXT, (TESTS,)), Unread(SID, None)),
+            (Unread(SID, None),),
             id="a turn that could not be read goes by no id, so the progress it follows is said by it",
         ),
     ],
@@ -172,7 +172,7 @@ def test_progress_heard_is_said_as_written_in_hands_lane() -> None:
 
 def running(turn: Turn) -> Registry:
     session = Session(MEMBER, Running(Busy(), Stamp(1000), None), mode=None, turn=turn)
-    return Registry(permission_deadline=60.0, sessions={SID: session}, drafts={})
+    return Registry(permission_deadline=60.0, sessions={SID: session}, drafts={}, drives={})
 
 
 def turn_of(registry: Registry) -> Turn:
@@ -346,7 +346,7 @@ def test_progress_heard_is_a_fact_the_audit_log_can_write() -> None:
 
 def test_calls_read_after_their_session_ended_are_behind_not_wrong() -> None:
     # The tail reads a transcript a moment past its session's end: no audit line says a hook came late.
-    gone = Registry(permission_deadline=60.0, sessions={SID: Gone(MEMBER)}, drafts={})
+    gone = Registry(permission_deadline=60.0, sessions={SID: Gone(MEMBER)}, drafts={}, drives={})
     assert reduce(gone, Progressed(SID, (TURN,), (TESTS,), at=10.0)) == (gone, [])
     assert reduce(gone, Displayed(SID, (TURN,), "a line\n", at=10.0)) == (gone, [])
 
@@ -701,7 +701,7 @@ async def test_a_subagent_nothing_says_the_start_of_is_said_in_the_log_and_never
 def idle() -> Registry:
     # The parent's turn is over: a subagent run in the background works on after it.
     session = Session(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl")), Idle(status.Idle(), Stamp(1000), TURN), mode=None, turn=Told(TURN))
-    return Registry(permission_deadline=60.0, sessions={SID: session}, drafts={})
+    return Registry(permission_deadline=60.0, sessions={SID: session}, drafts={}, drives={})
 
 
 def test_a_subagent_s_calls_are_gathered_whatever_its_parent_is_doing_and_told_once_they_settle() -> None:
@@ -717,7 +717,7 @@ def test_a_subagent_s_calls_are_gathered_whatever_its_parent_is_doing_and_told_o
 def test_a_subagent_s_burst_and_its_parent_s_are_told_apart() -> None:
     session = idle().sessions[SID]
     assert isinstance(session, Session)
-    registry = Registry(permission_deadline=60.0, sessions={SID: Session(session.membership, session.state, None, turn=Opened(TURN))}, drafts={})
+    registry = Registry(permission_deadline=60.0, sessions={SID: Session(session.membership, session.state, None, turn=Opened(TURN))}, drafts={}, drives={})
     registry, _ = reduce(registry, Progressed(SID, (TURN,), (Doing(EDITING, "edit a.py"),), at=10.0))
     registry, _ = reduce(registry, Progressed(SID, REVIEW, (TESTS,), at=10.0))
     assert reduce(registry, Tick(10.0 + SETTLE))[1] == [Progress(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),), ""), Progress(SID, REVIEW, (TESTS,), "")]

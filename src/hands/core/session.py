@@ -380,7 +380,7 @@ class Registry:
     # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
     drafts: Mapping[SessionId, Staged]
     # [LAW:one-source-of-truth] the one home of every standing order: a session with no entry is not driven.
-    drives: Mapping[SessionId, Drive] = field(default_factory=dict[SessionId, Drive])
+    drives: Mapping[SessionId, Drive]
 
     def put(self, session: Known) -> Self:
         return replace(self, sessions={**self.sessions, session.membership.id: session})

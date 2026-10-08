@@ -101,7 +101,7 @@ def test_a_hook_missing_what_it_must_carry_is_refused_by_name(home: Home, fields
         hooked(home, **fields)
 
 
-EMPTY = Registry(permission_deadline=85.0, sessions={}, drafts={})
+EMPTY = Registry(permission_deadline=85.0, sessions={}, drafts={}, drives={})
 
 
 def live() -> Registry:

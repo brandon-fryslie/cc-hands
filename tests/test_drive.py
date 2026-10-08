@@ -39,8 +39,18 @@ def test_starting_a_drive_holds_the_order() -> None:
     assert decide(registry(), StartDrive(ONE.id, ORDER)) == (driven(), Driving(ONE.id, Drive(ORDER, 0), replaced=None))
 
 
-def test_a_new_order_replaces_the_old_and_counts_afresh() -> None:
-    assert decide(driven(3), StartDrive(ONE.id, "ship it")) == (registry(drives={ONE.id: Drive("ship it", 0)}), Driving(ONE.id, Drive("ship it", 0), replaced=Drive(ORDER, 3)))
+def test_a_new_order_replaces_the_old_and_goes_on_from_its_sends() -> None:
+    assert decide(driven(3), StartDrive(ONE.id, "ship it")) == (registry(drives={ONE.id: Drive("ship it", 3)}), Driving(ONE.id, Drive("ship it", 3), replaced=Drive(ORDER, 3)))
+
+
+def test_giving_the_order_again_never_lifts_the_cap() -> None:
+    before, _ = decide(driven(SENDS - 1), StartDrive(ONE.id, ORDER))
+    assert decide(before, DriveSending(ONE.id, NEXT, PANE)) == (registry(), LastSend(Type(ONE.id, FRITTER, Text(NEXT)), Drive(ORDER, SENDS)))
+
+
+def test_a_send_to_a_session_that_ended_says_it_ended() -> None:
+    after, _ = reduce(driven(state=Running(Busy(), Stamp(1), idled=Stamp(1))), Died(WRAPPED))
+    assert decide(after, DriveSending(ONE.id, NEXT, PANE)) == (after, SessionEnded(ONE.id))
 
 
 def test_stopping_lets_the_order_go() -> None:
@@ -76,12 +86,12 @@ def test_a_send_never_touches_a_staged_draft() -> None:
 
 
 def test_an_unknown_session_cannot_be_driven() -> None:
-    empty = Registry(permission_deadline=60.0, sessions={}, drafts={})
+    empty = Registry(permission_deadline=60.0, sessions={}, drafts={}, drives={})
     assert decide(empty, StartDrive(ONE.id, ORDER)) == (empty, UnknownSession(ONE.id))
 
 
 def test_an_ended_session_cannot_be_driven() -> None:
-    ended = Registry(permission_deadline=60.0, sessions={ONE.id: Gone(WRAPPED)}, drafts={})
+    ended = Registry(permission_deadline=60.0, sessions={ONE.id: Gone(WRAPPED)}, drafts={}, drives={})
     assert decide(ended, StartDrive(ONE.id, ORDER)) == (ended, SessionEnded(ONE.id))
 
 
@@ -93,7 +103,8 @@ def test_a_drive_ends_with_its_session() -> None:
 @pytest.mark.parametrize("attention", [Attention(), Attention(quiet="on"), Attention(finished="full")])
 @pytest.mark.parametrize("overlay", ["normal", "watched", "muted"])
 def test_a_driven_turn_reaches_the_brain_whatever_is_set_for_the_ear(attention: Attention, overlay: Overlay) -> None:
-    assert delivery(attention, overlay, Drive(ORDER, 1)) == Steering(Drive(ORDER, 1))
+    steering = delivery(attention, overlay, Drive(ORDER, 1))
+    assert isinstance(steering, Steering) and steering.drive == Drive(ORDER, 1) and steering.ear == delivery(attention, overlay, None)
 
 
 def test_without_a_drive_the_settings_decide_as_before() -> None:

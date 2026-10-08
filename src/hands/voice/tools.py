@@ -20,7 +20,7 @@ from loguru import logger
 
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
-from hands.core.drive import SENDS, DriveSend, StartDrive, StopDrive
+from hands.core.drive import SENDS, DriveOutcome, DriveRequest, DriveSend, StartDrive, StopDrive
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
@@ -1348,6 +1348,13 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
     """drive_session, stop_driving, drive_send: a session kept going on the user's standing order, each prompt sent with
     no "send it", since the order was their word for all of them."""
 
+    async def drive(request: DriveRequest) -> DriveOutcome:
+        outcome = await sessions.drive(request)
+        # [LAW:nothing-unseen] what the drive decided, on the call's event: an order started or the one it replaced, the
+        # sends counted, and the send that spent it.
+        annotate(drive=outcome)
+        return outcome
+
     async def drive_session(session: str, order: str) -> Result:
         """Drive a session on the user's standing order: from now on each turn it finishes is handed to you to act on,
         and you send its next prompt yourself with drive_send, until the order is met or the user stops it. Call it only
@@ -1359,7 +1366,7 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
             session: The session's id, from list_sessions.
             order: What the user said to keep it at and when it is done, in their words, such as "keep it fixing tests until they all pass".
         """
-        return await _answer(sessions, session, lambda id: StartDrive(id, order), sessions.drive, _for_the_model(drive_readback))
+        return await _answer(sessions, session, lambda id: StartDrive(id, order), drive, _for_the_model(drive_readback))
 
     async def stop_driving(session: str) -> Result:
         """Stop driving a session: its turns are told as any session's are, and what is sent to it waits for the user's
@@ -1371,7 +1378,7 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer(sessions, session, StopDrive, sessions.drive, _for_the_model(drive_readback))
+        return await _answer(sessions, session, StopDrive, drive, _for_the_model(drive_readback))
 
     async def drive_send(session: str, text: str) -> Result:
         """Type the next prompt into a session you are driving and press Return, with no draft and no readback. It is
@@ -1383,7 +1390,7 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
             session: The session's id, the one hands said you are driving.
             text: The prompt.
         """
-        return await _answer(sessions, session, lambda id: DriveSend(id, _prompt_text(text, "prompt")), sessions.drive, _for_the_model(drive_readback))
+        return await _answer(sessions, session, lambda id: DriveSend(id, _prompt_text(text, "prompt")), drive, _for_the_model(drive_readback))
 
     # A barge-in must not cancel a send part way: a prompt half typed is one the session reads wrong.
     return [

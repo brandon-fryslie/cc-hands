@@ -79,7 +79,7 @@ class Sessions:
         names: Names | None = None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
-        self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
+        self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={}, drives={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
         # [LAW:one-source-of-truth] the wall clock Claude Code stamps its statuses and records with: a Stop is heard on
