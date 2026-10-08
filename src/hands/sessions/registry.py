@@ -287,12 +287,20 @@ class Sessions:
         match request:
             case driving.DriveSend(session=session, text=text):
                 decidable: driving.Decidable = driving.DriveSending(session, text, await self._pane(session))
-            case driving.StartDrive() | driving.StopDrive():
+            case driving.StartDrive() | driving.StopDrive() | driving.HandedBack():
                 decidable = request
-        self._registry, decided = driving.decide(self._registry, decidable)
+        before = self._registry
+        self._registry, decided = driving.decide(before, decidable)
         match decided:
             case driving.Send(type=effect):
-                return await self._type(effect)
+                typed = await self._type(effect)
+                match typed:
+                    case NotTyped():
+                        # Nothing reached the session, so the send is not counted: the drive stands as it was handed.
+                        self._registry = self._registry.drive(effect.session, before.drives[effect.session])
+                    case Typed():
+                        pass
+                return typed
             case driving.LastSend(type=effect, drive=spent):
                 return driving.DriveSpent(await self._type(effect), spent)
             case outcome:

@@ -1559,10 +1559,14 @@ home, and the session's end drops it. While it holds, `delivery` hands each turn
 session finishes to the brain as `Steering`, whatever quiet, the overlay, or finished
 turns are set to, so a drive never stalls on a setting meant for the ear; those settings
 still decide whether the brain says anything of it. The turn is taken in hands' lane like
-any telling, without moving the user's focus, and its `voice.turn` event's asker carries
-the drive. The brain answers it with `drive_send`, which types the next prompt through
-the same Type effect as a draft, or with `stop_driving`; a turn that asks the user
-something tells it to stop and ask, and one that cannot be read ends the drive aloud.
+any telling, and `speech.Handed` says what for: `ToAct` leaves the user's focus where it
+is, `ToAsk` (a driven turn that asks the user something) moves it and tells the brain to
+stop and ask, and the `voice.turn` event's asker carries it. The brain answers with
+`drive_send`, which types the next prompt through the same Type effect as a draft, or
+with `stop_driving`. However its turn ends, answered, failed, or barged in on, the stage
+then hands the drive back (`HandedBack`): a drive still exactly as it was handed ends,
+said aloud, so no drive is held with nobody driving it. A send that fails to type is not
+counted, and a turn that cannot be read ends the drive aloud.
 `drive.decide` is the one place a prompt reaches a session without the user's "send
 it": it refuses any session with no drive, never touches a staged draft, refuses a
 session at a dialog (`reach.prompter`, shared with drafts and commands), and ends the

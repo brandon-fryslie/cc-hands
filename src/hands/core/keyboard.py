@@ -54,10 +54,8 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
         case Gone():
             return SessionEnded(id)
         case Session(state=state, membership=member, background=background) as session:
-            match (request, state, writer(member, pane)):
-                case (_, _, Unwrapped() as unwrapped):
-                    return unwrapped
-                case (SendCommand(command=command), _, _):
+            match (request, state):
+                case (SendCommand(command=command), _):
                     match prompter(session, pane):
                         case Unwrapped() | AtItsDialog() as unreached:
                             # A dialog takes the command's characters and its Return as the answer to what it asked.
@@ -66,11 +64,15 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
                             # A working session queues it, and runs it as a command once its turn ends (measured on
                             # 2.1.283); one at its prompt runs it at once, though a subagent works in the background.
                             return Type(id, by, command)
-                case (Interrupt(), Idle(), _):
+                case (Interrupt(), Idle()):
                     return NothingRunning(id)
-                case (Interrupt(), _, _) if delegating(session):
+                case (Interrupt(), _) if delegating(session):
                     return InBackground(id, len(background))
-                case (Interrupt(), _, Fritter() | Pane() as by):
-                    # [LAW:types-are-the-program] Escape is the one key a request can press, and at a dialog it is the
-                    # dialog's own "no": it closes and the turn stops, which is what stop means (a question, 2.1.283).
-                    return Type(id, by, Key("escape"))
+                case (Interrupt(), _):
+                    match writer(member, pane):
+                        case Unwrapped() as unwrapped:
+                            return unwrapped
+                        case Fritter() | Pane() as by:
+                            # [LAW:types-are-the-program] Escape is the one key a request can press, and at a dialog it is
+                            # the dialog's own "no": it closes and the turn stops, which is what stop means (a question, 2.1.283).
+                            return Type(id, by, Key("escape"))

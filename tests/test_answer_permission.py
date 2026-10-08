@@ -30,7 +30,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.wide import WideEvent
-from hands.voice.speech import Aloud, Narrated, Unprompted, frames, relay, sent
+from hands.voice.speech import ToTell, Aloud, Narrated, Unprompted, frames, relay, sent
 from hands.voice.utterance import Utterances
 
 from test_shim import STARTED
@@ -301,7 +301,7 @@ def test_the_brain_takes_what_a_session_asks_as_a_turn_of_its_own_after_the_user
     # Said as written if the brain cannot take it, so a session waiting on the user is still heard waiting.
     assert narrated.unsaid == f"{SID} is waiting on you about Bash."
     # Told the user once the brain takes it, so what they say next is taken as their answer to it.
-    assert narrated.session == SID
+    assert narrated.handed == ToTell(SID)
 
 
 def test_under_the_brain_an_announcement_waits_in_hands_lane_behind_the_question_it_counts_down() -> None:
@@ -317,7 +317,7 @@ def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() ->
         AskedQuestion("Name it?", (), several=False),
     )
     [narrated] = rendered(Narrate(Asking(SID, RequestId("q-7"), Question(asked, {}))), names=lambda id: id)
-    assert isinstance(narrated, Narrated) and narrated.session == SID
+    assert isinstance(narrated, Narrated) and narrated.handed == ToTell(SID)
     content = narrated.text
     assert f"1. Which color? Options: red ({long}); green." in content
     assert f"2. Which fruits? Options: pear ({long}); plum ({long}). More than one may be chosen." in content

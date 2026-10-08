@@ -47,6 +47,35 @@ _AFTER_PLAN: Mapping[ModeAfterPlan, str] = {
 }
 
 
+@dataclass(frozen=True)
+class ToTell:
+    """A session's turn or question, told to the user: their focus moves to it as the brain takes it."""
+
+    session: SessionId
+
+
+@dataclass(frozen=True)
+class ToAct:
+    """A driven session's turn, for the brain to act on under the drive: the user's focus stays where they put it."""
+
+    session: SessionId
+    drive: Drive
+
+
+@dataclass(frozen=True)
+class ToAsk:
+    """A driven session's turn that asks the user something, theirs to answer: the brain stops the drive and asks it,
+    and the user's focus moves to the session that asked."""
+
+    session: SessionId
+    drive: Drive
+
+
+# What the brain is handed a telling for. [LAW:types-are-the-program] whether the focus moves and whether a drive waits on
+# the brain's turn are read off the variant, never off a flag set beside it.
+Handed = ToTell | ToAct | ToAsk
+
+
 @dataclass
 class Narrated(DataFrame, UninterruptibleFrame):
     """A message from hands the brain takes as a turn of its own, once no turn of the user's is waiting.
@@ -54,16 +83,14 @@ class Narrated(DataFrame, UninterruptibleFrame):
     Never put in Pipecat's context, where it would be one message with whatever the user said beside it: the brain keeps
     its own history. Kept through a barge-in, which stops what is said, not what is still to be told. `unsaid` is what
     hands says as written if the brain cannot take the turn: that it could not be told, never the turn's own words.
-    `session` is the one whose turn or question it tells, which is told to the user as the brain takes it, and
-    `utterances` what it says of the sessions, which the brain's stage sends what it says of them with. `drive` is the
-    standing order a turn is handed to the brain under, to act on rather than tell, so the user's focus stays where it is.
+    `handed` is whose turn or question it is and what the brain takes it for, and `utterances` what it says of the
+    sessions, which the brain's stage sends what it says of them with.
     """
 
     text: str
     unsaid: str
-    session: SessionId
+    handed: Handed
     utterances: tuple[Utterance, ...]
-    drive: Drive | None
 
 
 @dataclass
@@ -94,13 +121,12 @@ class AsWritten:
 
 @dataclass(frozen=True)
 class InOwnWords:
-    """A message from hands, telling of `session`, for the model to say in its own words; `unsaid` is what hands says as
-    written where the brain cannot take it."""
+    """A message from hands, for the model to say in its own words or act on as `handed` says; `unsaid` is what hands
+    says as written where the brain cannot take it."""
 
     text: str
     unsaid: str
-    session: SessionId
-    drive: Drive | None
+    handed: Handed
 
 
 # How something hands tells is said. [LAW:one-type-per-behavior] `sent` is the one place that decides the frames each makes.
@@ -113,9 +139,9 @@ def sent(saying: Saying, utterances: tuple[Utterance, ...]) -> Sequence[Frame]:
         case AsWritten(spoken=spoken):
             # In hands' lane, in order with what it hands the brain: the brain's stage sends it with what tells it was heard.
             return (Aloud(spoken, utterances),)
-        case InOwnWords(text=text, unsaid=unsaid, session=session, drive=drive):
+        case InOwnWords(text=text, unsaid=unsaid, handed=handed):
             # The brain's stage puts the user's words ahead of hands', so it moves the focus itself as it takes the telling.
-            return (Narrated(text, unsaid, session, utterances, drive),)
+            return (Narrated(text, unsaid, handed, utterances),)
 
 
 # How a session is attended to as its progress is relayed: what hands is set to say unprompted, whether the session is
@@ -187,11 +213,11 @@ def frames(pending: Pending, names: Names) -> Saying:
             # In hands' lane, so a deadline is heard after the question it counts down, never ahead of it.
             return AsWritten(TTSSpeakFrame(announcement_text(announcement, names)))
         case Narrate(moment=moment):
-            return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session, None)
+            return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", ToTell(moment.session))
         case Finished(session=session, news=news, telling=telling):
             name = names(session)
-            acting = _acting(telling, news[-1].asked)
-            return InOwnWords(told(session, name, news, telling), _untold(name, news, acting), session, acting)
+            handed = _handed(session, telling, news[-1].asked)
+            return InOwnWords(told(session, name, news, telling), _untold(name, news, handed), handed)
         case Unread(session=session, stopped=stopped):
             ended = "" if stopped is None else ", so I stopped driving it"
             return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it{ended}.", append_to_context=False))
@@ -215,23 +241,25 @@ def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:
             return name
 
 
-def _acting(telling: Amount | Steering, asked: str) -> Drive | None:
-    """The drive the brain acts on the turn under; None when it tells the user, as it does a driven session's question,
-    which is theirs to answer and so moves their focus to the session that asked it."""
+def _handed(session: SessionId, telling: Amount | Steering, asked: str) -> Handed:
+    """What the brain takes finished turns for: told to the user; or, under a drive, acted on, unless the session asks
+    the user something, which is theirs to answer."""
     match steered(telling), asked:
+        case None, _:
+            return ToTell(session)
         case Drive() as drive, "":
-            return drive
-        case _:
-            return None
+            return ToAct(session, drive)
+        case Drive() as drive, _:
+            return ToAsk(session, drive)
 
 
-def _untold(name: str, news: Sequence[News], acting: Drive | None) -> str:
-    """What hands says as written when the brain cannot take the turn; under a drive, that the drive waits on the user."""
-    match acting:
-        case None:
+def _untold(name: str, news: Sequence[News], handed: Handed) -> str:
+    """What hands says as written when the brain cannot take the turn; under a drive, that the drive ended with it."""
+    match handed:
+        case ToTell():
             return f"{name} finished {_turns(news)}, and I could not tell it."
-        case Drive():
-            return f"{name} finished {_turns(news)} while I was driving it, and I could not act on it: tell me to go on, or to stop driving it."
+        case ToAct() | ToAsk():
+            return f"{name} finished {_turns(news)} while I was driving it, and I could not act on it."
 
 
 def told(session: SessionId, name: str, news: Sequence[News], telling: Amount | Steering) -> str:

@@ -27,7 +27,7 @@ from hands.sessions.attention import attention
 from hands.sessions.tail import Tails
 from hands.core.pending import Finished, News, Pending
 from hands.voice.narrator import Recount, Recounts, narrate, recount
-from hands.voice.speech import REPLY_SHOWN, Aloud, Names, Narrated, Unprompted, frames, sent, told
+from hands.voice.speech import ToAct, ToAsk, ToTell, REPLY_SHOWN, Aloud, Names, Narrated, Unprompted, frames, sent, told
 from hands.voice.utterance import Utterance, Utterances
 
 from hands.core.status import Stamp
@@ -428,7 +428,7 @@ async def test_a_driven_sessions_turn_is_handed_to_the_brain_to_act_on_with_fini
     finally:
         narrating.cancel()
     frame = said(unprompted(queued))
-    assert isinstance(frame, Narrated) and frame.drive is not None
+    assert isinstance(frame, Narrated) and isinstance(frame.handed, ToAct)
     assert 'You are driving cc-hands under the user\'s standing order: "keep fixing tests until they pass". You have sent it 0 of the 20 prompts' in frame.text
     assert f"call drive_send with session {SID}" in frame.text
     [utterance] = cast(Unprompted, queued).utterances
@@ -438,7 +438,7 @@ async def test_a_driven_sessions_turn_is_handed_to_the_brain_to_act_on_with_fini
 def test_an_undriven_turn_is_not_marked_driven() -> None:
     news = News(PromptId("p1"), "Fixed it.", "", "", (), frozenset())
     frame = said(Finished(SID, (news,), "full"))
-    assert isinstance(frame, Narrated) and frame.drive is None
+    assert isinstance(frame, Narrated) and frame.handed == ToTell(SID)
 
 
 def test_a_driven_turn_that_asks_the_user_stops_the_drive_and_puts_the_question() -> None:
@@ -480,6 +480,6 @@ def test_a_driven_turn_that_asks_the_user_moves_their_focus_and_a_failed_one_say
     steering = Steering(Drive("keep billing going", 2), Spoken("brief", "finished"))
     asked = said(Finished(SID, (asks,), steering))
     acted = said(Finished(SID, (plain,), steering))
-    assert isinstance(asked, Narrated) and asked.drive is None
-    assert isinstance(acted, Narrated) and acted.drive == Drive("keep billing going", 2)
-    assert acted.unsaid == "cc-hands finished a turn while I was driving it, and I could not act on it: tell me to go on, or to stop driving it."
+    assert isinstance(asked, Narrated) and asked.handed == ToAsk(SID, Drive("keep billing going", 2))
+    assert isinstance(acted, Narrated) and acted.handed == ToAct(SID, Drive("keep billing going", 2))
+    assert acted.unsaid == "cc-hands finished a turn while I was driving it, and I could not act on it."

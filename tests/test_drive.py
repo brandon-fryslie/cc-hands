@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.attention import Attention, Overlay, Spoken, Steering, Withheld, delivery
-from hands.core.drive import SENDS, DriveSending, DriveStopped, Driving, LastSend, NotDriven, Send, StartDrive, StopDrive, decide
+from hands.core.drive import SENDS, DriveDropped, DriveSending, DriveWentOn, HandedBack, DriveStopped, Driving, LastSend, NotDriven, Send, StartDrive, StopDrive, decide
 from hands.core.effects import Fritter, Text, Type
 from hands.core.events import Died
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
@@ -110,3 +110,12 @@ def test_a_driven_turn_reaches_the_brain_whatever_is_set_for_the_ear(attention: 
 def test_without_a_drive_the_settings_decide_as_before() -> None:
     assert delivery(Attention(), "normal", None) == Withheld("off")
     assert delivery(Attention(finished="brief"), "normal", None) == Spoken("brief", "finished")
+
+
+def test_a_driven_turn_the_brain_left_as_handed_ends_the_drive() -> None:
+    assert decide(driven(2), HandedBack(ONE.id, Drive(ORDER, 2))) == (registry(), DriveDropped(ONE.id, Drive(ORDER, 2)))
+
+
+@pytest.mark.parametrize("now", [driven(3), registry(), registry(drives={ONE.id: Drive("ship it", 2)})])
+def test_a_driven_turn_the_brain_sent_stopped_or_reordered_leaves_the_drive_as_it_is(now: Registry) -> None:
+    assert decide(now, HandedBack(ONE.id, Drive(ORDER, 2))) == (now, DriveWentOn(ONE.id))

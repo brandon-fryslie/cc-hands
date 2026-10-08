@@ -451,7 +451,7 @@ async def test_a_driven_session_is_sent_each_prompt_with_no_draft_and_the_users_
     await call(draft_tools(sessions), "stage_draft", session=id, text="push it", resolutions=[])
     tools = drive_tools(sessions)
     assert await call(tools, "drive_session", session=id, order="keep fixing tests until they pass") == {
-        "readback": "Driving cc-hands: keep fixing tests until they pass. I'll send it up to 20 prompts and tell you what I send."
+        "readback": "Driving cc-hands: keep fixing tests until they pass. I'll send it up to 20 prompts."
     }
     assert await call(tools, "drive_send", session=id, text="fix the parser test") == {"readback": "Sent it to cc-hands."}
     assert [effect.input for effect in typed] == [Text(PromptText("fix the parser test"))]

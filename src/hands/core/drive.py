@@ -37,7 +37,15 @@ class DriveSend:
     text: PromptText
 
 
-DriveRequest = StartDrive | StopDrive | DriveSend
+@dataclass(frozen=True)
+class HandedBack:
+    """The brain's turn on a driven session's finished turn is over: `handed` is the drive as the turn was handed under."""
+
+    session: SessionId
+    handed: Drive
+
+
+DriveRequest = StartDrive | StopDrive | DriveSend | HandedBack
 
 
 @dataclass(frozen=True)
@@ -49,7 +57,7 @@ class DriveSending:
     pane: Keyboard
 
 
-Decidable = StartDrive | StopDrive | DriveSending
+Decidable = StartDrive | StopDrive | DriveSending | HandedBack
 
 
 @dataclass(frozen=True)
@@ -80,7 +88,23 @@ class DriveSpent:
     drive: Drive
 
 
-DriveOutcome = Driving | DriveStopped | NotDriven | DriveSpent | Unreached | Typed[Text] | NotTyped[Text]
+@dataclass(frozen=True)
+class DriveDropped:
+    """The brain's turn on a driven turn ended with the drive as it was handed: no prompt sent, no stop, no new order.
+    No turn will come back to act on, so the drive ended with it."""
+
+    session: SessionId
+    drive: Drive
+
+
+@dataclass(frozen=True)
+class DriveWentOn:
+    """The brain's turn on a driven turn moved the drive on: it sent, stopped, or the order changed."""
+
+    session: SessionId
+
+
+DriveOutcome = Driving | DriveStopped | NotDriven | DriveSpent | DriveDropped | DriveWentOn | Unreached | Typed[Text] | NotTyped[Text]
 
 
 @dataclass(frozen=True)
@@ -102,6 +126,12 @@ def decide(registry: Registry, request: Decidable) -> tuple[Registry, DriveOutco
     """One drive request in; the next registry and what came of it out, or what to type. No I/O."""
     id = request.session
     match (request, registry.sessions.get(id), registry.drives.get(id)):
+        case (HandedBack(handed=handed), _, now) if now == handed:
+            # [LAW:single-enforcer] the one check that a drive is live: every turn handed to the brain ends in a send,
+            # a stop, or this, so a drive is never held with nobody driving it, however the brain's turn ended.
+            return registry.undrive(id), DriveDropped(id, handed)
+        case (HandedBack(), _, _):
+            return registry, DriveWentOn(id)
         case (_, None, _):
             return registry, UnknownSession(id)
         case (StopDrive(), _, Drive() as drive):

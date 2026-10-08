@@ -20,7 +20,7 @@ from loguru import logger
 
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
-from hands.core.drive import SENDS, DriveOutcome, DriveRequest, DriveSend, StartDrive, StopDrive
+from hands.core.drive import SENDS, DriveDropped, DriveOutcome, DriveRequest, DriveSend, HandedBack, StartDrive, StopDrive
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
@@ -137,7 +137,6 @@ def intermediary_tools(
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
-        *drive_tools(sessions),
         *keyboard_tools(sessions),
         read_screen_tool(sessions, environment),
         set_overlay_tool(sessions, overlays),
@@ -146,6 +145,8 @@ def intermediary_tools(
         list_sessions_tool(sessions, overlays, home, environment),
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
+        # A driven turn leaves the focus where the user put it, so a send under a drive always names its session.
+        *drive_tools(sessions),
         *permission_tools(sessions),
         catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
         attention_tool(home),
@@ -1344,6 +1345,20 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
     ]
 
 
+def handed_back(sessions: Sessions) -> Callable[[SessionId, Drive], Awaitable[str | None]]:
+    """What settles a drive once the brain's turn on its session's finished turn is over: the line hands says when the
+    drive ended there, since nothing would come back to act on; None when the drive went on."""
+
+    async def settle(session: SessionId, drive: Drive) -> str | None:
+        match await sessions.drive(HandedBack(session, drive)):
+            case DriveDropped() as dropped:
+                return drive_readback(dropped, spoken_name(sessions, session))
+            case _:
+                return None
+
+    return settle
+
+
 def drive_tools(sessions: Sessions) -> list[Tool]:
     """drive_session, stop_driving, drive_send: a session kept going on the user's standing order, each prompt sent with
     no "send it", since the order was their word for all of them."""
@@ -1358,7 +1373,8 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
     async def drive_session(session: str, order: str) -> Result:
         """Drive a session on the user's standing order: from now on each turn it finishes is handed to you to act on,
         and you send its next prompt yourself with drive_send, until the order is met or the user stops it. Call it only
-        when the user tells you to drive a session or keep one going, and never on your own judgment.
+        when the user tells you to drive a session or keep one going, and never on your own judgment. A session at its
+        prompt does nothing until prompted, so send its first prompt with drive_send right after.
 
         Say the returned readback to the user.
 

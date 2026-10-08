@@ -10,7 +10,7 @@ import re
 from collections.abc import Iterable, Mapping
 
 from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftStaged, NothingStaged
-from hands.core.drive import SENDS, DriveOutcome, DriveSpent, DriveStopped, Driving, NotDriven
+from hands.core.drive import SENDS, DriveDropped, DriveOutcome, DriveSpent, DriveStopped, DriveWentOn, Driving, NotDriven
 from hands.core.effects import Command, Key, NotTyped, Text, Typed
 from hands.core.keyboard import InBackground, KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
@@ -58,11 +58,15 @@ def drive_readback(outcome: DriveOutcome, name: str) -> str:
     order."""
     match outcome:
         case Driving(drive=drive, replaced=None):
-            return f"Driving {name}: {drive.order}. I'll send it up to {SENDS} prompts and tell you what I send."
+            return f"Driving {name}: {drive.order}. I'll send it up to {SENDS} prompts."
         case Driving(drive=drive):
             return f"Driving {name} on a new order, replacing the last one: {drive.order}."
         case DriveStopped(drive=drive):
             return f"Stopped driving {name}, after {counted(drive.sends, 'prompt')} sent."
+        case DriveDropped():
+            return f"I stopped driving {name}: its last turn came and went with no prompt sent."
+        case DriveWentOn():
+            return f"{name} is still being driven."
         case NotDriven():
             return f"{name} is not being driven, so nothing was sent: what is sent to it waits for the user's word."
         case DriveSpent(typed=typed, drive=drive):

@@ -73,7 +73,7 @@ from hands.sessions.wide import annotate, child, continuing, count, fail, here, 
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
-from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
+from hands.voice.speech import Aloud, Handed, Narrated, ToAct, ToAsk, ToTell, brain_asks, brain_refused
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tool import Result, Tool, silent, whole
 
@@ -103,9 +103,9 @@ class UserAsked:
 
 @dataclass(frozen=True)
 class HandsAsked:
-    """What hands handed the brain to tell, or, under `drive`, to act on as the user's standing order for a session."""
+    """What hands handed the brain, and what for."""
 
-    drive: Drive | None
+    handed: Handed
 
 
 # Whose turn the brain answered.
@@ -257,6 +257,7 @@ class BrainStage(FrameProcessor):
         tools: Sequence[Tool],
         tail: Callable[[], str],
         refocus: Callable[[SessionId], Awaitable[None]],
+        handed_back: Callable[[SessionId, Drive], Awaitable[str | None]],
         front: Callable[[], Awaitable[InFront]],
         modality: Callable[[], Modality],
         opened: Callable[[], Edge],
@@ -275,6 +276,8 @@ class BrainStage(FrameProcessor):
         self._opened = opened
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
+        # Ends a drive the brain's turn left as it was handed, and says what hands says of that, if anything.
+        self._handed_back = handed_back
         # What hands appends to each request of a turn, composed as that request leaves.
         self._tail = tail
         self._record = record
@@ -368,20 +371,20 @@ class BrainStage(FrameProcessor):
                 case (str() as text, reading):
                     asker = await reading
                     await self._ask(f"{text}\n\n{beside(asker.front, asker.modality)}", asker, (), (), arrived, released, taken)
-                case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances, drive=drive):
+                case Narrated(text=text, unsaid=unsaid, handed=handed, utterances=utterances):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
                     # A driven turn is the brain's to act on, not the user's to answer, so their focus stays where it is.
-                    match drive:
-                        case None:
+                    match handed:
+                        case ToTell(session=session) | ToAsk(session=session):
                             await self._refocus(session)
-                        case Drive():
+                        case ToAct():
                             pass
                     # The turn is what says them, sent with what tells what of them was heard, and a part of the first
                     # of them, in its trace.
                     await self.push_frame(Uttering(utterances))
                     with continuing(utterances[0].begun.span if utterances else None):
-                        failure = await self._ask(text, HandsAsked(drive), (unsaid,), utterances, arrived, None, taken)
+                        failure = await self._ask(text, HandsAsked(handed), (unsaid,), utterances, arrived, None, taken)
                     match failure:
                         case str():
                             for utterance in utterances:
@@ -390,6 +393,18 @@ class BrainStage(FrameProcessor):
                         case None:
                             pass
                     await self.push_frame(Uttered(utterances))
+                    # [LAW:single-enforcer] however the brain's turn ended, answered, failed, or barged in on, a drive it
+                    # handed is settled here: it went on, or it ends, said aloud.
+                    match handed:
+                        case ToAct(session=session, drive=drive) | ToAsk(session=session, drive=drive):
+                            line = await self._handed_back(session, drive)
+                            match line:
+                                case str():
+                                    await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
+                                case None:
+                                    pass
+                        case ToTell():
+                            pass
                 case Aloud(spoken=spoken, utterances=utterances):
                     # In hands' lane no turn of the brain's is under way.
                     for frame in uttering(utterances, (spoken,)):
