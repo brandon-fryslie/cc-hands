@@ -315,20 +315,20 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, datetime.now(UTC)))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, datetime.now(UTC))}; start it with `hands run`")
-    # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
-    # as a stage, and no stage's time goes on the load.
-    annotate(model=transcription.MODEL)
-    await asyncio.to_thread(transcription.load)
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
     # [LAW:one-source-of-truth] the check `hands check` makes of this folder: a session that would open on a first-run
-    # question or with no login never takes what is typed into it.
-    match readiness.first_run(home, as_from_a_terminal(environment)):
+    # question or with no login never takes what is typed into it, so the run stops before it loads anything.
+    match await asyncio.to_thread(readiness.first_run, home, environment):
         case readiness.Missing(said=said) | readiness.Unknown(said=said):
             raise NotReached("joined", said)
         case readiness.Ready():
             pass
+    # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
+    # as a stage, and no stage's time goes on the load.
+    annotate(model=transcription.MODEL)
+    await asyncio.to_thread(transcription.load)
     said = [await _synthesized(text) for text in SAID]
     # The folder holds the one file, named for this run's word, and nothing else.
     try:

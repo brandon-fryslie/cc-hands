@@ -20,8 +20,10 @@ from typing import Any
 
 import pytest
 
+from hands.sessions import firstrun
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
+from hands.sessions.payload import Rejected
 
 CLAUDE = r"""#!/bin/bash
 echo "claude $* in $(pwd -P)" >>"$ROOT/calls"
@@ -163,3 +165,42 @@ def test_with_no_claude_code_to_ask_it_exits_2_and_asks_nothing(root: Path) -> N
     exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
     assert exit == 2
     assert "hands first-run: there is no Claude Code on this PATH" in shown and "now starts" not in shown
+
+
+def test_with_no_terminal_to_ask_at_it_exits_2_and_never_starts_claude_code(root: Path) -> None:
+    environment = {"PATH": f"{root / 'bin'}:/usr/bin:/bin", "ROOT": str(root), "HANDS_HOME": str(home(root).root), "CLAUDE_CONFIG_DIR": str(root / "config"), "HOME": str(root)}
+    ran = subprocess.run([sys.executable, "-m", "hands.daemon", "first-run"], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    assert ran.returncode == 2
+    assert ran.stderr == "hands first-run: Claude Code asks its first-run questions at a terminal, and this command's input is not one\n"
+    assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status"]
+    [event] = events(root)
+    assert (event["outcome"], event["facts"]["terminal"]) == ("failed", False)
+
+
+def test_an_empty_api_key_is_none_and_one_settings_sets_is_used_over_the_environments(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    key = "sk-ant-api03-0123456789abcdefghijklmn"
+    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": ""}) is None
+    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": key}) == firstrun.Key(key, "ANTHROPIC_API_KEY in your environment")
+    # Claude Code puts settings.json's env over the process's, so an empty one there leaves it no key at all.
+    settings.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}))
+    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": key}) is None
+    settings.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "sk-ant-api03-settings"}}))
+    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": key}) == firstrun.Key("sk-ant-api03-settings", str(settings))
+
+
+def test_a_state_or_settings_hands_cannot_read_is_rejected_not_taken_for_a_first_run(tmp_path: Path) -> None:
+    state = tmp_path / ".claude.json"
+    state.mkdir()
+    with pytest.raises(Rejected, match=f"^{state} unreadable: "):
+        firstrun.unanswered(state, tmp_path, None)
+    settings = tmp_path / "settings.json"
+    settings.mkdir()
+    with pytest.raises(Rejected, match=f"^{settings} unreadable: "):
+        firstrun.api_key(settings, {})
+
+
+def test_the_state_is_in_the_config_directory_claude_config_dir_names_else_beside_it_in_the_home(tmp_path: Path) -> None:
+    config = tmp_path / "cwd" / "relative"
+    assert firstrun.state_of({"CLAUDE_CONFIG_DIR": "relative", "HOME": str(tmp_path)}, config) == config / ".claude.json"
+    assert firstrun.state_of({"HOME": str(tmp_path)}, tmp_path / ".claude") == tmp_path / ".claude.json"

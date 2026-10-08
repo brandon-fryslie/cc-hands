@@ -32,6 +32,7 @@ from hands.sessions import firstrun, heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import MARKETPLACE, MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.startsession import as_from_a_terminal
 from hands.sessions.processes import process_starts
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
 from hands.voice import backends
@@ -230,7 +231,10 @@ class FirstRun:
 
 
 def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Unknown:
-    """What `claude` on this environment's PATH, past any hands shim, would ask first in `home.smoke`."""
+    """What `claude` on this environment's PATH, past any hands shim, would ask first in `home.smoke`, run there as `hands
+    smoke` runs it."""
+    # [LAW:one-source-of-truth] the environment `hands smoke` starts its session in, whichever command looks.
+    environment = as_from_a_terminal(environment)
     claude = wrapper.real_claude(environment.get("PATH", ""))
     if claude is None:
         return Unknown("there is no Claude Code on this PATH to ask whether it has been through its first run")
@@ -239,7 +243,7 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
     except Rejected as error:
         return Unknown(f"cannot tell what Claude Code would ask first: {error}")
     try:
-        status = subprocess.run([claude, "auth", "status"], env=dict(environment), stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
+        status = subprocess.run([claude, "auth", "status"], env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
     except (OSError, subprocess.TimeoutExpired) as error:
         return Unknown(f"cannot ask {claude} whether it is logged in: {error}")
     try:

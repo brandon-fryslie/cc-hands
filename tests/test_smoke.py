@@ -26,7 +26,6 @@ from hands.daemon.smoke import members, FOLDER, QUIET_SECS, WORDS, Caller, Ear, 
 from hands.sessions import heartbeat
 from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
-from hands.voice import transcription
 from hands.sessions.wide import Fact, Outcome, WideEvent
 
 SESSION = SessionId("5086f176-e3cf-4222-bdb9-d7993c507d33")
@@ -212,7 +211,8 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     [command] = events(home)
     facts = command["facts"]
     assert facts["word"] in WORDS and facts["folder"] == str((home.root / FOLDER).resolve())
-    assert facts["model"] == transcription.MODEL
+    # It stopped before the test's own ear was loaded.
+    assert "model" not in facts
     assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
 

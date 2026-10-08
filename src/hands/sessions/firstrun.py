@@ -13,6 +13,8 @@ from pathlib import Path
 
 from hands.sessions.payload import Payload, Rejected
 
+API_KEY = "ANTHROPIC_API_KEY"
+
 
 @dataclass(frozen=True)
 class Key:
@@ -37,21 +39,23 @@ class Unanswered:
 
 def unanswered(state: Path, cwd: Path, key: Key | None) -> Unanswered | None:
     """Whether a Claude Code with the .claude.json `state`, started in `cwd` with `key`, would open on one of its first-run
-    questions; None when it would not. `cwd` is trusted when it or a directory above it is."""
+    questions; None when it would not. `cwd` is trusted when it or a directory above it is. Raises Rejected when `state` is
+    there but cannot be read, which no first run mends."""
     onboarding = ("its onboarding unfinished", "a theme and a login")
     trust = (f"{cwd} untrusted", f"whether to trust {cwd}")
     use = [] if key is None else [(f"the API key {key.source} sets unanswered", f"whether to use the API key {key.source} sets")]
+    raw = _read(state)
+    if raw is None:
+        return Unanswered(f"no {state}", tuple(asks for _, asks in (onboarding, trust, *use)))
     try:
-        said = Payload.parse(state.read_bytes())
+        said = Payload.parse(raw)
         projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
         trusted = any(Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted") for place in map(str, (cwd, *cwd.parents)) if place in projects)
         responses = Payload.of(said.fields.get("customApiKeyResponses", {}), "its API key answers")
         answered = {*responses.optional_items("approved"), *responses.optional_items("rejected")}
         finished = said.optional_flag("hasCompletedOnboarding")
-    except FileNotFoundError:
-        return Unanswered(f"no {state}", tuple(asks for _, asks in (onboarding, trust, *use)))
     except Rejected as error:
-        # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot read.
+        # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot parse.
         return Unanswered(f"{state} unreadable: {error}", tuple(asks for _, asks in (onboarding, trust, *use)))
     # [LAW:dataflow-not-control-flow] each question is open or not by its own record; the run asks every open one.
     open_ = [question for question, done in ((onboarding, finished), (trust, trusted), *((question, key.value[-20:] in answered) for question in use if key)) if not done]
@@ -60,25 +64,35 @@ def unanswered(state: Path, cwd: Path, key: Key | None) -> Unanswered | None:
     return Unanswered("; ".join(why for why, _ in open_), tuple(asks for _, asks in open_))
 
 
-def settings_key(settings: Path) -> Key | None:
-    """The API key `settings` puts in Claude Code's environment, over any the process has; raises Rejected when it cannot be read."""
+def api_key(settings: Path, environment: Mapping[str, str]) -> Key | None:
+    """The API key Claude Code would use: the one `settings` puts in its environment, over any `environment` has, where an
+    empty one is none (2.1.289). Raises Rejected when `settings` cannot be read."""
+    raw = _read(settings)
     try:
-        raw = settings.read_bytes()
-    except FileNotFoundError:
-        return None
-    value = Payload.of(Payload.parse(raw).fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
-    return None if value is None else Key(value, str(settings))
+        written = None if raw is None else Payload.of(Payload.parse(raw).fields.get("env", {}), "its env").optional_text(API_KEY)
+    except Rejected as error:
+        raise Rejected(f"{settings} unreadable: {error}") from error
+    value, source = (environment.get(API_KEY), f"{API_KEY} in your environment") if written is None else (written, str(settings))
+    return Key(value, source) if value else None
 
 
-def state_of(environment: Mapping[str, str]) -> Path:
-    """The .claude.json a Claude Code with this environment keeps its first-run answers in: in CLAUDE_CONFIG_DIR when it is
-    set, else in the home, beside .claude, not in it (2.1.289)."""
-    return Path(environment.get("CLAUDE_CONFIG_DIR") or environment.get("HOME") or Path.home()) / ".claude.json"
+def state_of(environment: Mapping[str, str], config_dir: Path) -> Path:
+    """The .claude.json a Claude Code with this environment, under `config_dir`, keeps its first-run answers in: in that
+    directory when CLAUDE_CONFIG_DIR names it, else in the home, beside .claude, not in it (2.1.289)."""
+    return (config_dir if environment.get("CLAUDE_CONFIG_DIR") else Path(environment.get("HOME") or Path.home())) / ".claude.json"
 
 
 def persons(environment: Mapping[str, str], cwd: Path, config_dir: Path) -> Unanswered | None:
     """What the person's own Claude Code, run with this environment under `config_dir`, would ask first in `cwd`; raises
-    Rejected when its settings.json cannot be read, which no first run mends."""
-    environmental = environment.get("ANTHROPIC_API_KEY")
-    key = settings_key(config_dir / "settings.json") or (None if environmental is None else Key(environmental, "ANTHROPIC_API_KEY in your environment"))
-    return unanswered(state_of(environment), cwd.resolve(), key)
+    Rejected when its settings.json or .claude.json is there but cannot be read, which no first run mends."""
+    return unanswered(state_of(environment, config_dir), cwd.resolve(), api_key(config_dir / "settings.json", environment))
+
+
+def _read(path: Path) -> bytes | None:
+    """`path`'s bytes, or None when there is no such file; raises Rejected when there is one hands cannot read."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise Rejected(f"{path} unreadable: {error}") from error

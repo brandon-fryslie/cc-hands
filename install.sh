@@ -138,7 +138,7 @@ if [ "$(terminal_claude)" != "$shims/claude" ]; then
   [ "$(terminal_claude)" = "$shims/claude" ] || fail "a new terminal's claude is $(terminal_claude), not hands' $shims/claude, though $rc has $line: a startup file read after it puts another claude first; put that line after this one"
 fi
 
-# Claude Code's first-run questions and its login, asked once here, so no session hands starts waits on them.
+# Claude Code's first-run questions and its login, asked once here, so the session `hands smoke` starts waits on none of them.
 first_run=0
 hands first-run || first_run=$?
 case $first_run in

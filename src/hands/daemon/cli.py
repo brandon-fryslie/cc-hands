@@ -790,33 +790,39 @@ def first_run(home: Home, record: audit.Record) -> int:
     # something is still unanswered, as when the person quits before the last question; 2 when Claude Code could not be
     # asked, which asking again does not mend.
     # [LAW:one-source-of-truth] the environment `hands smoke` starts its session in, so the questions answered here are
-    # the ones that session would ask.
+    # the ones that session would ask; first_run_state looks in the same one.
     environment = as_from_a_terminal(os.environ)
     with wide.unit("claude.first_run", record):
         before = readiness.first_run_state(home, environment)
-        wide.annotate(before=before)
-        match before:
-            case readiness.Unknown(said=said):
-                return not_first_run(said, 2)
-            case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
-                home.smoke.mkdir(parents=True, exist_ok=True)
-                print(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit", flush=True)
-                typed_ahead_dropped()
-                ran = subprocess.run([claude], cwd=home.smoke, env=environment)
-                wide.annotate(first_run_exit=ran.returncode)
-            case readiness.FirstRun():
-                pass
-        between = readiness.first_run_state(home, environment)
-        match between:
-            case readiness.Unknown(said=said):
-                return not_first_run(said, 2)
-            case readiness.FirstRun(claude=claude, logged_in=False):
-                print("Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account", flush=True)
-                typed_ahead_dropped()
-                signed = subprocess.run([claude, "auth", "login"], env=environment)
-                wide.annotate(login_exit=signed.returncode)
-            case readiness.FirstRun():
-                pass
+        wide.annotate(before=before, terminal=sys.stdin.isatty())
+        try:
+            match before:
+                case readiness.Unknown(said=said):
+                    return not_first_run(said, 2)
+                case readiness.FirstRun(unanswered=firstrun.Unanswered()) if not sys.stdin.isatty():
+                    # Claude Code with no terminal to read prints an answer to a prompt instead of asking its questions.
+                    return not_first_run("Claude Code asks its first-run questions at a terminal, and this command's input is not one", 2)
+                case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
+                    home.smoke.mkdir(parents=True, exist_ok=True)
+                    print(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit", flush=True)
+                    typed_ahead_dropped()
+                    ran = subprocess.run([claude], cwd=home.smoke, env=environment)
+                    wide.annotate(first_run_exit=ran.returncode)
+                case readiness.FirstRun():
+                    pass
+            between = readiness.first_run_state(home, environment)
+            match between:
+                case readiness.Unknown(said=said):
+                    return not_first_run(said, 2)
+                case readiness.FirstRun(claude=claude, logged_in=False):
+                    print("Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account", flush=True)
+                    typed_ahead_dropped()
+                    signed = subprocess.run([claude, "auth", "login"], env=environment)
+                    wide.annotate(login_exit=signed.returncode)
+                case readiness.FirstRun():
+                    pass
+        except OSError as error:
+            return not_first_run(f"Claude Code could not be started to ask: {error}", 2)
         after = readiness.first_run(home, environment)
         wide.annotate(after=after)
         match after:
