@@ -243,8 +243,9 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
         asked = firstrun.persons(environment, home.smoke, config_dir(environment, home.smoke))
     except Rejected as error:
         return Unknown(f"cannot tell what Claude Code would ask first: {error}")
-    # `auth status` takes any API key in its environment for a login, one it was told not to use among them (2.1.294), so
-    # the account's login is asked of it without one, and a key is a login only where its first run approved it.
+    # `auth status` takes an ANTHROPIC_API_KEY for a login, one it was told not to use among them (2.1.294), so it is asked
+    # without the environment's, and a login from that key, as one settings.json sets, counts only where its first run
+    # approved it. A Console login is an API key too, from another source, and counts.
     unkeyed = {name: value for name, value in environment.items() if name != firstrun.API_KEY}
     try:
         status = subprocess.run([claude, "auth", "status"], env=unkeyed, stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
@@ -253,7 +254,7 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
     try:
         # It exits 1 when logged out, saying so in its JSON as when logged in (2.1.289).
         said = Payload.parse(status.stdout)
-        account = said.flag("loggedIn") and said.optional_text("authMethod") != "api_key"
+        account = said.flag("loggedIn") and said.optional_text("apiKeySource") != firstrun.API_KEY
     except Rejected as error:
         return Unknown(f"`{claude} auth status` answered {status.stdout[:200]!r} {status.stderr[:200]!r}, not its status: {error}")
     return FirstRun(claude, asked.unanswered, account or asked.keyed)

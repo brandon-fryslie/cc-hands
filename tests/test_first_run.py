@@ -30,7 +30,8 @@ CLAUDE = r"""#!/bin/bash
 echo "claude $* in $(pwd -P)" >>"$ROOT/calls"
 case "$1 $2" in
   "auth status")
-    if [ -n "$ANTHROPIC_API_KEY" ]; then echo '{"loggedIn": true, "authMethod": "api_key"}'
+    if [ -n "$ANTHROPIC_API_KEY" ]; then echo '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}'
+    elif [ -e "$ROOT/console" ]; then echo '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "/login managed key"}'
     elif [ -e "$ROOT/logged-in" ]; then echo '{"loggedIn": true, "authMethod": "claude.ai"}'
     else echo '{"loggedIn": false}'; exit 1; fi ;;
   "auth login")
@@ -153,14 +154,14 @@ def test_a_claude_code_through_its_first_run_but_logged_out_logs_in_with_its_own
     assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status", "claude auth status", "claude auth login", "claude auth status"]
 
 
-def test_a_first_run_quit_before_its_last_question_fails_saying_a_second_run_asks_again(root: Path) -> None:
-    (root / "login-fails").touch()
+def test_a_first_run_quit_before_its_last_question_fails_saying_a_second_run_asks_again_and_asks_no_login(root: Path) -> None:
     exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"q\n")
     assert exit == 1
     assert "hands first-run: Claude Code would first ask a theme and a login" in shown and "has no login" in shown
     assert shown.rstrip().endswith("running this again asks again")
+    assert "claude auth login" not in "\n".join(calls(root))
     [event] = events(root)
-    assert (event["outcome"], event["facts"]["first_run_exit"], event["facts"]["login_exit"]) == ("failed", 0, 1)
+    assert (event["outcome"], event["facts"]["first_run_exit"], "login_exit" in event["facts"]) == ("failed", 0, False)
 
 
 def test_with_no_claude_code_to_ask_it_exits_2_and_asks_nothing(root: Path) -> None:
@@ -170,11 +171,15 @@ def test_with_no_claude_code_to_ask_it_exits_2_and_asks_nothing(root: Path) -> N
     assert "hands first-run: there is no Claude Code on this PATH" in shown and "now starts" not in shown
 
 
-def test_with_no_terminal_to_ask_at_it_exits_2_and_never_starts_claude_code(root: Path) -> None:
+@pytest.mark.parametrize("onboarded", [False, True], ids=["first-run", "login-only"])
+def test_with_no_terminal_to_ask_at_it_exits_2_and_never_starts_claude_code(root: Path, onboarded: bool) -> None:
+    if onboarded:
+        answered_before(root, home(root).smoke.resolve())
+        (root / "logged-in").unlink()
     environment = {"PATH": f"{root / 'bin'}:/usr/bin:/bin", "ROOT": str(root), "HANDS_HOME": str(home(root).root), "CLAUDE_CONFIG_DIR": str(root / "config"), "HOME": str(root)}
     ran = subprocess.run([sys.executable, "-m", "hands.daemon", "first-run"], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     assert ran.returncode == 2
-    assert ran.stderr == "hands first-run: Claude Code asks its first-run questions at a terminal, and this command's input is not one\n"
+    assert ran.stderr == "hands first-run: Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one\n"
     assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status"]
     [event] = events(root)
     assert (event["outcome"], event["facts"]["terminal"]) == ("failed", False)
@@ -227,3 +232,19 @@ def test_an_api_key_it_was_told_to_use_is_its_login_and_nothing_is_asked(root: P
     exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key=KEY)
     assert exit == 0, shown
     assert "FIRST SCREEN" not in shown and "now logs in" not in shown
+
+
+def test_a_console_login_is_a_login_though_it_is_an_api_key(root: Path) -> None:
+    answered_before(root, home(root).smoke.resolve())
+    (root / "logged-in").unlink()
+    (root / "console").touch()
+    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
+    assert exit == 0, shown
+    assert "now logs in" not in shown
+
+
+def test_a_project_entry_this_cannot_read_is_no_trust_and_leaves_the_rest_read(tmp_path: Path) -> None:
+    state = tmp_path / ".claude.json"
+    state.write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {"/elsewhere": [], str(tmp_path): {"hasTrustDialogAccepted": True}, "/odd": {"hasTrustDialogAccepted": "yes"}}}))
+    assert firstrun.recorded(state) == firstrun.Recorded(True, frozenset({str(tmp_path)}), frozenset(), frozenset())
+    assert firstrun.unanswered(firstrun.recorded(state), tmp_path / "below", None) is None

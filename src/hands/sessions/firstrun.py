@@ -10,6 +10,7 @@ The brain's first run is `hands login`'s; the person's own, in the folder `hands
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from hands.sessions.payload import Payload, Rejected
 
@@ -63,7 +64,9 @@ def recorded(state: Path) -> Recorded | Blank:
     try:
         said = Payload.parse(raw)
         projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
-        trusted = frozenset(place for place in projects if Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted"))
+        # One entry per directory Claude Code was started in: one this cannot read is no trust, which the first run there
+        # writes again, and leaves every other entry readable.
+        trusted = frozenset(place for place, entry in projects.items() if isinstance(entry, dict) and cast(dict[str, object], entry).get("hasTrustDialogAccepted") is True)
         responses = Payload.of(said.fields.get("customApiKeyResponses", {}), "its API key answers")
         return Recorded(said.optional_flag("hasCompletedOnboarding"), trusted, frozenset(map(str, responses.optional_items("approved"))), frozenset(map(str, responses.optional_items("rejected"))))
     except Rejected as error:

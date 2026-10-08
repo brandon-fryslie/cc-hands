@@ -799,9 +799,11 @@ def first_run(home: Home, record: audit.Record) -> int:
             match before:
                 case readiness.Unknown(said=said):
                     return not_first_run(said, 2)
-                case readiness.FirstRun(unanswered=firstrun.Unanswered()) if not sys.stdin.isatty():
-                    # Claude Code with no terminal to read prints an answer to a prompt instead of asking its questions.
-                    return not_first_run("Claude Code asks its first-run questions at a terminal, and this command's input is not one", 2)
+                case readiness.FirstRun(unanswered=None, logged_in=True):
+                    pass
+                case readiness.FirstRun() if not sys.stdin.isatty():
+                    # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
+                    return not_first_run("Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one", 2)
                 case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
                     home.smoke.mkdir(parents=True, exist_ok=True)
                     print(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit", flush=True)
@@ -814,7 +816,8 @@ def first_run(home: Home, record: audit.Record) -> int:
             match between:
                 case readiness.Unknown(said=said):
                     return not_first_run(said, 2)
-                case readiness.FirstRun(claude=claude, logged_in=False):
+                # Only after a first run that finished: one quit part-way was walked away from, login and all.
+                case readiness.FirstRun(claude=claude, unanswered=None, logged_in=False):
                     print("Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account", flush=True)
                     typed_ahead_dropped()
                     signed = subprocess.run([claude, "auth", "login"], env=environment)
