@@ -245,23 +245,39 @@ def test_a_live_key_starts_hands_and_polar_hears_only_the_key_and_the_organizati
     assert (tmp_path / "license.json").stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("detail", ["License key is no longer active.", "License key has expired.", "Not found"])
-def test_a_key_polar_refuses_does_not_start_hands_and_the_person_is_told_why(opened: Open, tmp_path: Path, polar: Polar, detail: str) -> None:
-    polar.status, polar.body = 404, {"error": "ResourceNotFound", "detail": detail}
+@pytest.mark.parametrize(
+    ("status", "body", "said"),
+    [
+        (404, {"error": "ResourceNotFound", "detail": "License key is no longer active."}, "License key is no longer active."),
+        (404, {"error": "ResourceNotFound", "detail": "License key has expired."}, "License key has expired."),
+        (404, {"error": "ResourceNotFound", "detail": "Not found"}, "Not found"),
+        (200, {"status": "revoked", "key": LIVE}, "the key is revoked"),
+    ],
+)
+def test_a_key_polar_refuses_does_not_start_hands_and_the_person_is_told_why(
+    opened: Open, tmp_path: Path, polar: Polar, status: int, body: object, said: str
+) -> None:
+    polar.status, polar.body = status, body
     app = opened("", "echo hands ran")
     text = logged(tmp_path, "license: asking for a key: ")
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=5) == 0
-    assert f"Polar did not accept the license key ending E304DA; if your subscription ended, renew it and start hands again. Polar says: {detail}\n" in text
-    assert "started hands run" not in logged(tmp_path, "asking for a key")
+    assert f"Polar did not accept the license key ending E304DA; if your subscription ended, renew it and start hands again. Polar says: {said}\n" in text
+    assert "started hands run" not in logged(tmp_path, "asking for a key") and LIVE not in text
+    # A refused key is not kept, so no later start runs it on the grace period while Polar cannot be reached.
+    assert not (tmp_path / "license.json").exists()
 
 
-@pytest.mark.parametrize("status", [None, 503], ids=["unreachable", "down"])
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(None, None), (503, {"error": "ServiceUnavailable"}), (200, "<html>Sign in to the hotel Wi-Fi</html>"), (407, "Proxy Authentication Required")],
+    ids=["unreachable", "down", "captive-portal", "proxy"],
+)
 def test_a_key_last_seen_live_within_the_grace_period_starts_hands_while_polar_cannot_be_reached(
-    opened: Open, tmp_path: Path, polar: Polar, status: int | None
+    opened: Open, tmp_path: Path, polar: Polar, status: int | None, body: object
 ) -> None:
     kept(tmp_path, LIVE, datetime.now(UTC) - timedelta(days=13, hours=1))
-    polar.status, polar.body = status, {"error": "ServiceUnavailable"}
+    polar.status, polar.body = status, body
     app = opened("", "exit 0")
     assert app.wait(timeout=30) == 0
     text = logged(tmp_path, "hands exited 0")
@@ -277,7 +293,7 @@ def test_a_key_not_seen_live_within_the_grace_period_does_not_start_hands_while_
     text = logged(tmp_path, "license: asking for a key: ")
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=5) == 0
-    assert "hands has not been able to check your subscription with Polar since" in text and "Polar answered HTTP 503" in text
+    assert "hands has not been able to check your subscription with Polar since" in text and "HTTP 503, with no word from Polar on the key" in text
     assert "started hands run" not in logged(tmp_path, "asking for a key")
 
 

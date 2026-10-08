@@ -84,19 +84,20 @@ final class Launcher: NSObject, NSApplicationDelegate {
     func check(_ key: String, held: License?) {
         said("license: asking Polar about the key ending \(key.suffix(6))")
         validate(key) { answer in
-            switch verdict(answer, key: key, held: held, now: Date.now) {
-            case .run(let license, let why):
+            let decided = verdict(answer, key: key, held: held, now: Date.now)
+            do {
+                try keep(decided.kept)
+            } catch {
+                self.stopped("hands.app could not keep your license key in \(licenseFile.path): \(error.localizedDescription)")
+                return
+            }
+            switch decided {
+            case .run(_, let why):
                 // [LAW:nothing-unseen] which way the check went, and on whose word: Polar's, or the grace period's.
                 self.said("license: \(why)")
-                do {
-                    try save(license)
-                } catch {
-                    self.stopped("hands.app could not keep your license key in \(licenseFile.path): \(error.localizedDescription)")
-                    return
-                }
                 self.begin()
-            case .ask(let why):
-                self.ask(why, key: key, held: held)
+            case .ask(let why, let kept):
+                self.ask(why, key: key, held: kept)
             }
         }
     }
@@ -120,7 +121,12 @@ final class Launcher: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Quit")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            check(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), held: held)
+            let entered = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !entered.isEmpty else {
+                ask("No license key was entered.", key: "", held: held)
+                return
+            }
+            check(entered, held: held)
         case .alertSecondButtonReturn:
             NSWorkspace.shared.open(merchant.portal)
             ask(why, key: field.stringValue, held: held)
@@ -320,7 +326,12 @@ func stored() throws -> License? {
     return try decoder.decode(License.self, from: data)
 }
 
-func save(_ license: License) throws {
+// The license the app keeps from here on; none, when Polar refused the one it kept.
+func keep(_ license: License?) throws {
+    guard let license else {
+        guard unlink(licenseFile.path) == 0 || errno == ENOENT else { throw POSIXError(POSIXErrorCode(rawValue: errno)!) }
+        return
+    }
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     try FileManager.default.createDirectory(at: licenseFile.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -355,24 +366,30 @@ func validate(_ key: String, then: @escaping (Answer) -> Void) {
 struct Validated: Decodable { let status: String }
 struct Detail: Decodable { let detail: String }
 
+// [LAW:parse-dont-validate] Polar's word on a key is one of two answers: 200 with the key's status, or 404 saying why it
+// has none, an unknown, revoked, disabled or expired key. Anything else, Polar busy or down, a captive portal's page, a
+// proxy's refusal, is not Polar saying the subscription ended. The body is never repeated: Polar's carries the key.
 func answered(_ status: Int, _ body: Data) -> Answer {
-    switch status {
-    case 200:
-        let said = try? JSONDecoder().decode(Validated.self, from: body)
-        return said?.status == "granted" ? .granted : .refused("Polar answered a key that is not granted: \(String(decoding: body, as: UTF8.self))")
-    // Polar busy or down is not the person's subscription ending.
-    case 429, 500...:
-        return .unreachable("Polar answered HTTP \(status)")
-    // Polar answers an unknown, revoked, disabled or expired key 404 and says which.
-    default:
-        return .refused((try? JSONDecoder().decode(Detail.self, from: body))?.detail ?? "Polar answered HTTP \(status): \(String(decoding: body, as: UTF8.self))")
+    if status == 200, let said = try? JSONDecoder().decode(Validated.self, from: body) {
+        return said.status == "granted" ? .granted : .refused("the key is \(said.status)")
     }
+    if status == 404, let said = try? JSONDecoder().decode(Detail.self, from: body) {
+        return .refused(said.detail)
+    }
+    return .unreachable("HTTP \(status), with no word from Polar on the key")
 }
 
-// What the app does with Polar's answer: run hands on a license, or ask the person, saying why.
+// What the app does with Polar's answer: run hands on a license, or ask the person, saying why; and the license it keeps.
 enum Verdict {
     case run(License, String)
-    case ask(String)
+    case ask(String, kept: License?)
+
+    var kept: License? {
+        switch self {
+        case .run(let license, _): license
+        case .ask(_, let kept): kept
+        }
+    }
 }
 
 // A key Polar says is live runs hands. One it refuses never does. When Polar cannot be reached, the key the app last
@@ -382,14 +399,15 @@ func verdict(_ answer: Answer, key: String, held: License?, now: Date) -> Verdic
     case .granted:
         return .run(License(key: key, validated: now), "Polar says the key ending \(key.suffix(6)) is live")
     case .refused(let why):
-        return .ask("Polar did not accept the license key ending \(key.suffix(6)); if your subscription ended, renew it and start hands again. Polar says: \(why)")
+        // A refused key is no longer kept, so no later start runs it on the grace period.
+        return .ask("Polar did not accept the license key ending \(key.suffix(6)); if your subscription ended, renew it and start hands again. Polar says: \(why)", kept: held?.key == key ? nil : held)
     case .unreachable(let why):
         guard let held, held.key == key else {
-            return .ask("hands could not reach Polar to check your license key: \(why). Connect to the internet and try again.")
+            return .ask("hands could not reach Polar to check your license key: \(why). Connect to the internet and try again.", kept: held)
         }
         let left = (held.validated + GRACE).timeIntervalSince(now)
         guard left > 0 else {
-            return .ask("hands has not been able to check your subscription with Polar since \(held.validated.formatted(date: .long, time: .shortened)), and runs offline for \(Int(GRACE / 86_400)) days: \(why). Connect to the internet and try again.")
+            return .ask("hands has not been able to check your subscription with Polar since \(held.validated.formatted(date: .long, time: .shortened)), and runs offline for \(Int(GRACE / 86_400)) days: \(why). Connect to the internet and try again.", kept: held)
         }
         return .run(held, "could not reach Polar (\(why)); running on its word of \(held.validated.ISO8601Format()), \(Int(left / 86_400)) whole days of grace left")
     }
@@ -435,14 +453,6 @@ func appending(to url: URL) throws -> FileHandle {
 
 // The delegate is held here: NSApplication keeps only a weak reference to it.
 let launcher: Launcher
-let merchant: Merchant
-do {
-    merchant = try merchantOfBundle()
-} catch {
-    _ = NSApplication.shared
-    fail("hands.app cannot start hands: \(error.localizedDescription)")
-    exit(1)
-}
 do {
     try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
     var output = try appending(to: log)
@@ -460,7 +470,27 @@ do {
     fail("hands.app could not open its log, \(log.path): \(error.localizedDescription)")
     exit(1)
 }
+let merchant: Merchant
+do {
+    merchant = try merchantOfBundle()
+} catch {
+    _ = NSApplication.shared
+    launcher.stopped("hands.app cannot start hands: \(error.localizedDescription)")
+    exit(1)
+}
 NSApplication.shared.delegate = launcher
+
+// An LSUIElement app shows no menu bar, but its key equivalents still go through its main menu: without an Edit menu,
+// ⌘V would not paste a license key into the field that asks for one.
+let editing = NSMenu(title: "Edit")
+editing.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+editing.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+editing.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+editing.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+editing.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+let menus = NSMenu()
+menus.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = editing
+NSApplication.shared.mainMenu = menus
 
 // [LAW:single-enforcer] a SIGTERM (killall, pkill) quits the app as its Quit does, so hands is wound down, not orphaned.
 // The handler that does nothing keeps the signal from ending the app before the source hears it. It is not SIG_IGN,
