@@ -1339,6 +1339,15 @@ def test_hands_login_on_a_brain_reaching_claude_through_a_cloud_provider_exits_2
     assert "through bedrock, not the Anthropic API hands' proxy forwards to" in capsys.readouterr().err
 
 
+def test_hands_login_whose_claude_code_login_finishes_with_no_login_exits_1(terminal: None, tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("LOGGED_IN", "0")
+    onboard(tmp_path / "brain")
+    # Claude Code asked, and exited 0 without the login being made.
+    fake_claude.write_text(fake_claude.read_text().replace('if sys.argv[1:3] == ["auth", "login"] or first_run:', 'if sys.argv[1:3] == ["auth", "login"]:\n    sys.exit(0)\nif first_run:', 1))
+    assert main(["--home", str(tmp_path), "login"]) == 1
+    assert capsys.readouterr().err == "hands login: `claude auth login` for the brain finished, and the brain holds no login\n"
+
+
 def test_hands_login_that_would_ask_with_no_terminal_exits_2_running_no_claude_code(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")

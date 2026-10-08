@@ -409,7 +409,8 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     other = "" if method else ": `hands login --console` logs it in with an Anthropic Console account instead"
     starting(f"Claude Code now logs the brain in with its own login: it opens your browser, or prints a link to open, for {AUTH_PICKED[made]}{other}")
     _ran(subprocess.run([claude, "auth", "login", f"--{made}"], cwd=cwd, env=env), "`claude auth login` for the brain")
-    account = logged_in(config_dir, base_url, inherited)
+    if (account := holding(config_dir, base_url, inherited)) is None:
+        raise LoginFailed("`claude auth login` for the brain finished, and the brain holds no login")
     # [LAW:no-silent-failure] a login its settings.json sets ahead of the one made can leave the brain on another.
     if method is not None and account.method != AUTH_METHODS[method]:
         raise LoginFailed(f"the brain holds {account}, not the {AUTH_METHODS[method]} login asked for")
