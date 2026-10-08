@@ -66,6 +66,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         phase = .licensing
+        NSApp.activate(ignoringOtherApps: true)
         let held: License?
         do {
             held = try stored()
@@ -106,8 +107,10 @@ final class Launcher: NSObject, NSApplicationDelegate {
     // Polar's portal, where their key and subscription are.
     func ask(_ why: String?, key: String, held: License?) {
         said("license: asking for a key: \(why ?? "none is kept yet")")
-        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
+        // Above every app, not in front of them: it stays in sight beside the portal Manage Subscription… opens, where the
+        // person copies their key, and takes the keyboard from no one.
+        alert.window.level = .floating
         alert.messageText = "hands runs with a hands subscription"
         alert.informativeText = [why, "Enter the license key from your hands purchase. Your key and your subscription are at \(merchant.portal.absoluteString)."]
             .compactMap { $0 }.joined(separator: "\n\n")
@@ -250,6 +253,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         phase = .over
         said("stopped: \(message)")
         fail(message)
+        NSApp.terminate(nil)
     }
 
     func forget() {
@@ -296,7 +300,8 @@ func merchantOfBundle() throws -> Merchant {
     }
     func url(_ key: String) throws -> URL {
         let text = try named(key)
-        guard let url = URL(string: text) else { throw Unnamed(key: key) }
+        // [LAW:types-are-the-program] an http(s) URL, so every answer to it is an HTTPURLResponse.
+        guard let url = URL(string: text), ["http", "https"].contains(url.scheme) else { throw Unnamed(key: key) }
         return url
     }
     return Merchant(validate: try url("HandsLicenseValidate"), organization: try named("HandsLicenseOrganization"), portal: try url("HandsLicensePortal"))
@@ -304,7 +309,7 @@ func merchantOfBundle() throws -> Merchant {
 
 struct Unnamed: LocalizedError {
     let key: String
-    var errorDescription: String? { "this build of hands.app names no \(key) in its Info.plist; build-app.sh writes it" }
+    var errorDescription: String? { "this build of hands.app names no \(key) in its Info.plist, or one that is not an http(s) URL; build-app.sh writes it" }
 }
 
 // What a purchase gave the person, and when Polar last said it was live.
@@ -406,7 +411,8 @@ func verdict(_ answer: Answer, key: String, held: License?, now: Date) -> Verdic
         guard let held, held.key == key else {
             return .ask("hands could not reach Polar to check your license key: \(why). Connect to the internet and try again.", kept: held)
         }
-        let left = (held.validated + GRACE).timeIntervalSince(now)
+        // Never more than GRACE: a clock that ran ahead when Polar last answered does not lengthen it.
+        let left = min(GRACE, (held.validated + GRACE).timeIntervalSince(now))
         guard left > 0 else {
             return .ask("hands has not been able to check your subscription with Polar since \(held.validated.formatted(date: .long, time: .shortened)), and runs offline for \(Int(GRACE / 86_400)) days: \(why). Connect to the internet and try again.", kept: held)
         }
@@ -438,7 +444,6 @@ func fail(_ message: String) {
     alert.messageText = "hands stopped"
     alert.informativeText = message
     alert.runModal()
-    NSApp.terminate(nil)
 }
 
 // Past this many bytes a launch begins the log again, keeping the last one beside it, so launches do not grow it
@@ -476,7 +481,8 @@ do {
     merchant = try merchantOfBundle()
 } catch {
     _ = NSApplication.shared
-    launcher.stopped("hands.app cannot start hands: \(error.localizedDescription)")
+    launcher.said("stopped: hands.app cannot start hands: \(error.localizedDescription)")
+    fail("hands.app cannot start hands: \(error.localizedDescription)")
     exit(1)
 }
 NSApplication.shared.delegate = launcher

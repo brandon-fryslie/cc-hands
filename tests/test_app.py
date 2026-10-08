@@ -85,9 +85,11 @@ def executable(tmp_path_factory: pytest.TempPathFactory, stand_in: Polar) -> Pat
 Open = Callable[[str, str], subprocess.Popen[bytes]]
 
 
-def kept(tmp_path: Path, key: str, validated: datetime) -> None:
-    """A license the app kept, last seen live at `validated`."""
-    (tmp_path / "license.json").write_text(json.dumps({"key": key, "validated": validated.strftime("%Y-%m-%dT%H:%M:%SZ")}))
+def kept(tmp_path: Path, key: str, validated: datetime) -> str:
+    """A license the app kept, last seen live at `validated`, as the app writes that time."""
+    written = validated.strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "license.json").write_text(json.dumps({"key": key, "validated": written}))
+    return written
 
 
 @pytest.fixture
@@ -276,14 +278,14 @@ def test_a_key_polar_refuses_does_not_start_hands_and_the_person_is_told_why(
 def test_a_key_last_seen_live_within_the_grace_period_starts_hands_while_polar_cannot_be_reached(
     opened: Open, tmp_path: Path, polar: Polar, status: int | None, body: object
 ) -> None:
-    kept(tmp_path, LIVE, datetime.now(UTC) - timedelta(days=13, hours=1))
+    validated = kept(tmp_path, LIVE, datetime.now(UTC) - timedelta(days=13, hours=1))
     polar.status, polar.body = status, body
     app = opened("", "exit 0")
     assert app.wait(timeout=30) == 0
     text = logged(tmp_path, "hands exited 0")
     assert "could not reach Polar (" in text and "0 whole days of grace left" in text
     # Running on the grace period does not restart it.
-    assert json.loads((tmp_path / "license.json").read_text())["validated"].startswith((datetime.now(UTC) - timedelta(days=13, hours=1)).strftime("%Y-%m-%dT%H"))
+    assert json.loads((tmp_path / "license.json").read_text())["validated"] == validated
 
 
 def test_a_key_not_seen_live_within_the_grace_period_does_not_start_hands_while_polar_cannot_be_reached(opened: Open, tmp_path: Path, polar: Polar) -> None:
@@ -304,3 +306,47 @@ def test_with_no_key_kept_the_person_is_asked_for_one_and_polar_is_not(opened: O
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=5) == 0
     assert "license: asking for a key: none is kept yet" in text and polar.asked == []
+
+
+def test_the_grace_period_is_never_longer_than_14_days(opened: Open, tmp_path: Path, polar: Polar) -> None:
+    # A clock that ran ahead when Polar last said the key was live.
+    kept(tmp_path, LIVE, datetime.now(UTC) + timedelta(days=30))
+    polar.status = None
+    app = opened("", "exit 0")
+    assert app.wait(timeout=30) == 0
+    assert "14 whole days of grace left" in logged(tmp_path, "hands exited 0")
+
+
+def test_a_kept_license_that_cannot_be_read_asks_for_a_key_and_says_why(opened: Open, tmp_path: Path, polar: Polar) -> None:
+    (tmp_path / "license.json").write_text("not a license")
+    app = opened("", "echo hands ran")
+    text = logged(tmp_path, "license: asking for a key: ")
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+    assert f"license: asking for a key: The license key hands keeps in {tmp_path / 'license.json'} could not be read" in text
+    assert polar.asked == []
+
+
+def test_a_live_key_the_app_cannot_keep_does_not_start_hands_and_says_why(opened: Open, tmp_path: Path, polar: Polar) -> None:
+    # The app writes the license beside it first; a directory stands there.
+    (tmp_path / "license.json.new").mkdir()
+    app = opened("", "echo hands ran")
+    text = logged(tmp_path, "stopped: ")
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+    assert f"stopped: hands.app could not keep your license key in {tmp_path / 'license.json'}" in text
+    assert "started hands run" not in text
+
+
+def test_a_build_that_names_no_merchant_does_not_start_and_says_why(executable: Path, tmp_path: Path) -> None:
+    contents = tmp_path / "hands.app" / "Contents"
+    (contents / "MacOS").mkdir(parents=True)
+    shutil.copy(ROOT / "app" / "Info.plist", contents / "Info.plist")
+    shutil.copy(executable, contents / "MacOS" / "hands")
+    app = subprocess.Popen([contents / "MacOS" / "hands"], env={**os.environ, "HANDS_APP_LOG": str(tmp_path / "hands.log")})
+    try:
+        text = logged(tmp_path, "stopped: ")
+    finally:
+        app.kill()
+        app.wait()
+    assert "stopped: hands.app cannot start hands: this build of hands.app names no HandsLicenseValidate in its Info.plist" in text
