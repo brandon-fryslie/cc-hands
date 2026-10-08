@@ -109,6 +109,60 @@ class HoldHeard:
 
 
 @dataclass(frozen=True)
+class ByHand:
+    """A hold the owner's hand opened, at the key, a button, or the phone: theirs, whoever else is in the room. `taught`
+    says it taught the owner's voiceprint, a hold of the desk's key long enough to; `similarity` is how like the print
+    it was before, by cosine, the owner's own measure for tuning SAME_VOICE, none where it was not heard or no print yet."""
+
+    taught: bool
+    similarity: float | None
+
+
+@dataclass(frozen=True)
+class Matched:
+    """A hold the voice opened, whose voice is the user's: as like their voiceprint as `similarity`, by cosine."""
+
+    similarity: float
+
+
+@dataclass(frozen=True)
+class Other:
+    """A hold the voice opened, whose voice is someone else's in the room: only as like the user's voiceprint as
+    `similarity`, by cosine."""
+
+    similarity: float
+
+
+@dataclass(frozen=True)
+class Untold:
+    """A hold the voice opened that could not be told apart, and is taken as the user's, as every hold was before hands
+    told voices apart: no voiceprint has been taught yet."""
+
+    why: Literal["no voiceprint"]
+
+
+@dataclass(frozen=True)
+class Untellable:
+    """A hold whose voice could not be told for `error`: its words are given as the user's, as an Untold hold's are, and
+    the failure is an error in the log rather than the words lost."""
+
+    error: str
+
+
+# Whose voice a hold was in (hands.voice.speakers).
+Speaker = ByHand | Matched | Other | Untold | Untellable
+
+
+@dataclass(frozen=True)
+class Voiced:
+    """Whose voice one hold with words in it was in, and how many seconds of it were heard to say so."""
+
+    hold: int
+    speaker: Speaker
+    seconds: float
+
+
+@dataclass(frozen=True)
 class Primed:
     """The words Whisper was primed with for one hold, oldest first, the prompt tokens they come to, and how long reading
     them took. `focus` is the session whose repository was read, None where no running session is focused; `failed`
@@ -254,6 +308,7 @@ Entry = (
     | Exchanged
     | Transcribed
     | HoldHeard
+    | Voiced
     | Primed
     | Replied
     | CutOff
@@ -277,7 +332,7 @@ def level(entry: Entry) -> Level:
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | Exported(error=str()):
+        case Failure() | TypingFailed() | Exported(error=str()) | Voiced(speaker=Untellable()):
             return "error"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -289,7 +344,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
+            | Transcribed() | HoldHeard() | Voiced() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

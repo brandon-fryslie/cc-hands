@@ -51,7 +51,7 @@ def test_an_engaged_desk_is_heard_between_turns_and_each_turn_ends_back_to_liste
     assert turn.after("stop", "engaged conversation").key == "listening"
     assert engaged.after("arm", "engaged conversation").after("disarm", "engaged conversation").key == "listening"
     # And listens on; the turn it threw away was opened by the voice.
-    assert turn.after("expire", "engaged conversation") == Gate("listening", "desk", listens=True, dropped=1, opened="engaged conversation")
+    assert turn.after("expire", "engaged conversation") == Gate("listening", "desk", listens=True, dropped=1, opened="engaged conversation", conversation=1)
 
 
 @pytest.mark.parametrize(("before", "after"), [("listening", "up"), ("arming", "arming"), ("down", "down")])
@@ -186,3 +186,12 @@ async def test_set_modality_switches_it_says_so_and_refuses_what_is_neither() ->
     assert key.modality == "screen"
     assert "error" in await switch.body(modality="video")
     assert key.modality == "screen"
+
+
+def test_each_time_the_desk_starts_listening_a_new_conversation_begins_and_its_audio_says_which() -> None:
+    gate = Gate()
+    for move in ("listen", "arm", "start", "stop", "listen", "deafen"):
+        gate = gate.after(move, "engaged conversation")
+    assert gate.conversation == 1
+    gate = gate.after("listen", "engaged conversation")
+    assert gate.framed(b"\x00\x00", b"\x00\x00", 16_000, 1, "desk").conversation == 2

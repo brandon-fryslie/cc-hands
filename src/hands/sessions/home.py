@@ -61,6 +61,11 @@ class Home:
         return self.root / "wake-word"
 
     @property
+    def speakers(self) -> Path:
+        """The model voices are told apart with, and the user's voiceprint, both the daemon's alone (hands.voice.speakers)."""
+        return self.root / "speakers"
+
+    @property
     def focus(self) -> Path:
         """The session the user is talking to when they name none, written by the daemon alone; absent for none."""
         return self.root / "focus"

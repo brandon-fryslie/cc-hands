@@ -1,5 +1,7 @@
 """The system channel: what hands says about itself, and where it goes when speech or the model is what failed."""
 
+import wave
+from io import BytesIO
 import asyncio
 import os
 import time
@@ -13,7 +15,7 @@ from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import unprimed
+from conftest import by_hand, unprimed
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry, HoldHeard, Levels
@@ -316,6 +318,20 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
     assert said(tts) == ["Speech recognition failed for that turn."]
 
 
+def _silent_wav() -> bytes:
+    out = BytesIO()
+    with wave.open(out, "wb") as file:
+        file.setnchannels(1)
+        file.setsampwidth(2)
+        file.setframerate(16_000)
+        file.writeframes(b"\x00\x00" * 320)
+    return out.getvalue()
+
+
+# What the pipeline hands Whisper for a hold: its samples, as a WAV.
+SILENT_WAV = _silent_wav()
+
+
 async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
     said: list[str | None | Exception] = []
 
@@ -327,7 +343,7 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
                 return HoldHeard(hold, text, (), levels)
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
-    whisper = Whisper(prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(prompt=unprimed, told=by_hand, record=lambda _: None)
     # What the pipeline's start sets: a sent hold is wrapped as a WAV at this rate.
     whisper._sample_rate = 16_000  # pyright: ignore[reportPrivateUsage]
 
@@ -343,11 +359,11 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
     # Every transcription ends with Whisper done with its hold, and one it heard nothing in yields nothing else: no
     # frame that could reach the speaker. (Every frame has an id of its own, so frames made here are told by their kind.)
     said.append(None)
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [TurnResolved]
+    assert [type(frame) async for frame in whisper.run_stt(SILENT_WAV)] == [TurnResolved]
     said.append("what time is it")
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [Words, TurnResolved]
+    assert [type(frame) async for frame in whisper.run_stt(SILENT_WAV)] == [Words, TurnResolved]
     said.append(RuntimeError("model failed"))
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [ErrorFrame, TurnResolved]
+    assert [type(frame) async for frame in whisper.run_stt(SILENT_WAV)] == [ErrorFrame, TurnResolved]
 
 
 def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:

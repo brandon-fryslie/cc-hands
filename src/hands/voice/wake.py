@@ -15,10 +15,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-import aiohttp
 import numpy as np
 from openwakeword.model import Model
 
+from hands.voice import fetch
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice.engaged import Act, Begun, Conversation, Disengaged, Engagement, Event, Listening, SpeechStarted, SpeechStopped, Talking, TurnEnded, TurnTooLong, Woke, Woken, in_turn, released
 from hands.voice.wakeword import Pretrained, Trained, Word, model_of
@@ -71,16 +71,7 @@ async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str
             own: tuple[str, ...] = (model_of(word, models).name,)
         case Trained():
             own = ()
-    missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, *own) if not (models / name).exists())
-    models.mkdir(parents=True, exist_ok=True)
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True) as http:
-        for name in missing:
-            async with http.get(f"{release}/{name}") as response:
-                partial = models / f"{name}.partial"
-                partial.write_bytes(await response.read())
-            # [LAW:one-source-of-truth] a file under its own name is the whole of it, so one there is never fetched again.
-            partial.replace(models / name)
-    return missing
+    return await fetch.fetched(models, release, (MELSPECTROGRAM, EMBEDDING, *own), FETCH_SECONDS)
 
 
 class Unheard(Exception):

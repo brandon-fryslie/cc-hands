@@ -54,6 +54,8 @@ class KeyedAudio(InputAudioRawFrame):
     place: Place
     # The edge that opened the last hold, as it opened it.
     opened: Edge
+    # Which of the desk's conversations the audio is in: one each time the desk starts listening between turns.
+    conversation: int
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,9 @@ class Gate:
     # [LAW:no-ambient-temporal-coupling] the edge that opened the last turn travels with the audio, as the key does, so
     # what reads a hold's opening reads the edge that opened it, whichever is in use by the time its words arrive.
     opened: Edge = "held key"
+    # [LAW:no-ambient-temporal-coupling] the conversation travels with the audio too, so a hold told after the user
+    # disengaged is told as one of the conversation it was said in.
+    conversation: int = 0
 
     def took(self, move: Move, at: Place) -> Move | None:
         """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
@@ -107,7 +112,8 @@ class Gate:
                 # The desk's listening moves only where the key rests: a press or a turn open is left to end as it ends.
                 listens = listening == "listen"
                 resting = self.key in ("up", "listening")
-                return replace(self, key=self._rest(self.place, listens) if resting else self.key, listens=listens)
+                began = listens and not self.listens
+                return replace(self, key=self._rest(self.place, listens) if resting else self.key, listens=listens, conversation=self.conversation + began)
             case "arm":
                 return replace(self, key="arming", place=at)
             case "disarm":
@@ -152,6 +158,7 @@ class Gate:
         return KeyedAudio(
             audio=self.audible(audio), captured=self.audible(captured), sample_rate=sample_rate, num_channels=num_channels,
             key=self.key, sent=self.sent, dropped=self.dropped, place=place, opened=self.opened,
+            conversation=self.conversation,
         )
 
 

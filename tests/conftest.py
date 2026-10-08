@@ -21,7 +21,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
-from hands.sessions.audit import Entry, SettingsEdited
+from hands.sessions.audit import ByHand, Entry, SettingsEdited, Speaker
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
@@ -352,3 +352,8 @@ async def unedited() -> SettingsEdited:
     """Settings a run's start watches that are never edited."""
     await asyncio.Event().wait()
     raise AssertionError("an event nothing sets was set")
+
+
+def by_hand(_samples: bytes, _opener: object) -> Speaker:
+    """Whose voice a hold is in, for a Whisper whose test is not about voices: the user's hand, as every hold was."""
+    return ByHand(taught=False, similarity=None)

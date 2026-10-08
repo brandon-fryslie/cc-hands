@@ -35,12 +35,13 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt  # pyright: ignore[reportUnknownVariableType]  (untyped in Pipecat)
 
-from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
+from hands.sessions.audit import HoldHeard, Levels, Record, Speaker, Unsaid, Untellable, Voiced
 from hands.sessions.wide import annotate, fail, unit
 from hands.core.place import Place
 from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.ptt import Key, KeyedAudio
+from hands.voice.speakers import seconds, spoken_as
 from hands.voice.trigger import turn_start
 from hands.voice.turnstop import Hold, HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
 
@@ -145,7 +146,7 @@ class Whisper(SegmentedSTTService):
     never disagree about where a hold is.
     """
 
-    def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
+    def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], told: Callable[[bytes, Hold], Speaker], record: Record) -> None:
         # Pipecat checks at start that the settings say every field; these are what each hold is transcribed with.
         super().__init__(settings=STTSettings(model=transcription.MODEL, language=LANGUAGE))  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
@@ -154,6 +155,8 @@ class Whisper(SegmentedSTTService):
             annotate(model=transcription.MODEL)
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
+        # Whose voice a hold's samples are in (hands.voice.speakers), told on the model's thread.
+        self._told = told
         self._record = record
         # The one thread the model transcribes on: a transcription given up on (TRANSCRIBING_SECONDS) is still running,
         # and the next must not run beside it.
@@ -166,7 +169,7 @@ class Whisper(SegmentedSTTService):
         self._dropped = 0
         # How many holds have opened, the key's and those typed; and the last the key opened, hold 0 until one has.
         self._holds = 0
-        self._opened = _Open(Hold(0, "held key"), 0, 0, "over")
+        self._opened = _Open(Hold(0, "held key", 0), 0, 0, "over")
         # The holds queued to be heard, oldest first, the key's, those typed and those thrown away, and hearings of the hold
         # still open.
         # Pipecat takes its queue one segment at a time, in order, so each it takes is the oldest, and a hold typed is
@@ -195,7 +198,7 @@ class Whisper(SegmentedSTTService):
         """A hold that opens and ends at once, and is heard in line behind the holds queued ahead of it, as one the key
         sent would be: it joins a turn a hold of the key's has open, and leaves the key's hold and its audio as they were."""
         self._holds += 1
-        hold = Hold(self._holds, "typed")
+        hold = Hold(self._holds, "typed", self._opened.hold.conversation)
         await self.push_frame(TurnOpened(hold=hold))
         await self.push_frame(VADUserStoppedSpeakingFrame())
         self._transcribing.append(_Written(hold, text))
@@ -253,7 +256,7 @@ class Whisper(SegmentedSTTService):
                 self._user_speaking = False
             case "up" | "listening" | "arming", "down":
                 self._holds += 1
-                hold = Hold(self._holds, frame.opened)
+                hold = Hold(self._holds, frame.opened, frame.conversation)
                 # The second the desk heard before it is its first hop.
                 self._opened = _Open(hold, len(self._audio_buffer), 0, _overhearing(hold))
                 opened = TurnOpened(hold=hold)
@@ -376,19 +379,37 @@ class Whisper(SegmentedSTTService):
         try:
             async with bound:
                 heard = await self._heard(hold.number, levels, audio, await self._prompt())
-            # Recorded, so "I spoke and nothing happened" can be looked into.
-            self._record(heard)
-            match heard.said:
-                case None:
+                # Recorded, so "I spoke and nothing happened" can be looked into.
+                self._record(heard)
+                match heard.said:
+                    case None:
+                        given = None
+                    case said:
+                        # Told inside the bound too: a speaker model that never returns holds the turn open as surely.
+                        given = spoken_as(said, await self._speaker(hold, audio))
+            match heard.said, given:
+                case str() as said, str() as given:
+                    await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
+                    yield Words(given, self._user_id, time_now_iso8601(), LANGUAGE)
+                case _:
                     # Not said: Brandon does not need to hear it (2026-09-27).
                     pass
-                case said:
-                    await self._handle_transcription(said, True, LANGUAGE)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's tracing decorator is untyped)
-                    yield Words(said, self._user_id, time_now_iso8601(), LANGUAGE)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
             why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
+
+    async def _speaker(self, hold: Hold, audio: bytes) -> Speaker:
+        """Whose voice the hold in `audio` is in, recorded; told on the voice alone, without the silence Pipecat pads a
+        hold's WAV with."""
+        samples = _samples(audio)[: -len(self._trailing_silence()) or None]
+        try:
+            speaker = await self._model.run(lambda: self._told(samples, hold))
+        except Exception as error:
+            # [LAW:no-silent-failure] the failure is an error line; the words Whisper heard still reach the brain.
+            speaker = Untellable(f"{type(error).__name__}: {error}")
+        self._record(Voiced(hold.number, speaker, round(seconds(samples), 3)))
+        return speaker
 
     async def _heard(self, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
         """What was said in a hold's WAV, primed with `prompt`, the vocabulary.
