@@ -29,7 +29,7 @@ from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
 from hands.sessions import heartbeat, liveness, wrapper
-from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.hookconfig import MARKETPLACE, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
@@ -183,7 +183,7 @@ def plugin_listed(raw: str) -> Finding:
         return Missing(f"the plugin {PLUGIN_ID} is disabled, so no session joins hands: `claude plugin enable --scope user {PLUGIN_ID}`, then /reload-plugins in each running session")
     return Missing(
         f"the plugin {PLUGIN_ID} is not installed for every session, so only the sessions of a project it is installed in "
-        f"join hands: `claude plugin install {PLUGIN_ID}` (after `claude plugin marketplace add brandon-fryslie/cc-hands`), then "
+        f"join hands: `claude plugin install {PLUGIN_ID}` (after `claude plugin marketplace add {MARKETPLACE}`), then "
         f"/reload-plugins in each running session"
     )
 

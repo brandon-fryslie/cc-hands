@@ -34,6 +34,8 @@ HOOKS_FILE = "hooks/hooks.json"
 # The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name in
 # .claude-plugin/marketplace.json.
 PLUGIN_ID = "hands@cc-hands"
+# Where Claude Code adds that marketplace from: this repository, on GitHub.
+MARKETPLACE = "brandon-fryslie/cc-hands"
 
 # [LAW:one-source-of-truth] where MessageDisplay is posted: Claude Code dispatches it synchronously for every batch of
 # lines it displays (2.1.270), so it is an HTTP hook, with no process spawned per batch. Its URL takes no variables

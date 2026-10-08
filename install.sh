@@ -3,10 +3,12 @@
 #
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"
 #
-# It installs what is missing of Claude Code, Homebrew, PortAudio, uv, and the newest released hands, and leaves what
-# is there; a run stopped part-way is finished by running it again. It puts each one's directory on the PATH of the
-# person's login shell, and ends in a fresh login shell, so this terminal has them too. The only input it asks for is the
-# administrator password Homebrew's own install needs, said before it is asked.
+# It installs what is missing of Claude Code, Homebrew, PortAudio, uv, the newest released hands, the claude shim that
+# starts every session under fritter, and hands' plugin, and leaves what is there; a run stopped part-way is finished by
+# running it again. It puts each one's directory on the PATH of the person's login shell, the shim's first, and ends in a
+# fresh login shell, so this terminal has them too. The only input it asks for is the administrator password Homebrew's
+# own install needs, and the yes Claude Code asks for to install a plugin by running a command, each said before it is
+# asked.
 set -euo pipefail
 
 REPO=brandon-fryslie/cc-hands
@@ -74,6 +76,13 @@ else
   # the versions the release was tested on. --reinstall replaces a hands that is there but does not answer its version.
   uv tool install --reinstall --python 3.12 --constraints "$release/constraints.txt" "$release/hands-$version-$WHEEL_TAG.whl"
 fi
+# Claude Code runs `hands plugin` from this PATH to install the plugin.
+export PATH="$bin:$PATH"
+
+# hands' home as hands finds it (hands.sessions.home.default_home): HANDS_HOME, or ~/.hands. Its bin holds the claude
+# shim, which hands writes and which says it is installed only when it is the claude PATH finds.
+shims=${HANDS_HOME:-$HOME/.hands}/bin
+PATH="$shims:$PATH" hands install-fritter
 
 # The login shell's PATH is the one every new terminal starts with: a directory it lacks gets one line in the profile
 # it reads, and one it has is left as it is.
@@ -94,11 +103,17 @@ lines=()
 on_login_path "$HOMEBREW_PREFIX/bin" || lines+=("eval \"\$($HOMEBREW_PREFIX/bin/brew shellenv)\"")
 on_login_path "$HOME/.local/bin" || lines+=("export PATH=\"\$HOME/.local/bin:\$PATH\"")
 [ "$bin" = "$HOME/.local/bin" ] || on_login_path "$bin" || lines+=("export PATH=\"$bin:\$PATH\"")
+# The shim runs the claude after it on PATH, so it must be the claude a new terminal finds, not only on its PATH: its line
+# goes last, which puts it first.
+[ "$(PATH=$login_path command -v claude)" = "$shims/claude" ] || lines+=("export PATH=\"$shims:\$PATH\"")
 if [ ${#lines[@]} -gt 0 ]; then
   [ -n "$profile" ] || fail "your shell, $SHELL, is not zsh or bash; add these lines to its login profile and open a new terminal: ${lines[*]}"
   printf '%s\n' "${lines[@]}" >>"$profile"
   say "added to $profile, for your login shell's PATH: ${lines[*]}"
 fi
 
-say "done: Claude Code, PortAudio, uv and hands $version are installed; this terminal is now a login shell that finds them"
+# Last, so that declining it leaves every step before it done.
+hands install-plugin || fail "hands' Claude Code plugin is not installed, so no session joins hands; running this command again asks again"
+
+say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed; this terminal is now a login shell that finds them"
 exec "$SHELL" -l
