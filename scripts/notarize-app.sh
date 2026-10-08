@@ -10,7 +10,8 @@ upload=$(mktemp -d)
 trap 'rm -rf "$upload"' EXIT
 # notarytool takes a zip, not a bundle; ditto keeps the bundle's signature intact in it.
 ditto -c -k --keepParent "$app" "$upload/hands.zip"
-xcrun notarytool submit "$upload/hands.zip" --keychain-profile "$HANDS_NOTARY_PROFILE" --wait --output-format json > "$upload/result.json"
+xcrun notarytool submit "$upload/hands.zip" --keychain-profile "$HANDS_NOTARY_PROFILE" --wait --output-format json > "$upload/result.json" \
+  || { cat "$upload/result.json" >&2; echo "notarize-app: notarytool could not submit $app" >&2; exit 1; }
 # [LAW:no-silent-failure] notarytool's exit says the submission finished, not that Apple accepted it.
 status=$(plutil -extract status raw "$upload/result.json")
 [ "$status" = "Accepted" ] || { echo "notarize-app: Apple's verdict was $status; \`xcrun notarytool log $(plutil -extract id raw "$upload/result.json") --keychain-profile $HANDS_NOTARY_PROFILE\` says why" >&2; exit 1; }

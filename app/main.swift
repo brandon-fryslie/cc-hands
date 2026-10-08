@@ -4,8 +4,10 @@
 // when the daemon ends in failure.
 import AppKit
 
-// Opened from Finder the app has no arguments; a test names the shell and the log it runs with.
-let given = CommandLine.arguments.dropFirst()
+// Opened from Finder the app runs on the user's login shell and logs to ~/Library/Logs; a test names its own shell and
+// log in HANDS_APP_SHELL and HANDS_APP_LOG.
+let given = ProcessInfo.processInfo.environment
+let home = FileManager.default.homeDirectoryForCurrentUser
 
 // [LAW:one-source-of-truth] the environment a terminal gives hands is the one the app gives it: the user's login
 // shell, interactive so it reads the same rc files a terminal does, says its environment, and `hands` is found on the
@@ -13,25 +15,30 @@ let given = CommandLine.arguments.dropFirst()
 // takes it, not from the environment a GUI app inherits. The shell only says the environment and is never the
 // daemon: an interactive shell ignores SIGTERM, so one standing where hands will be would not hear a quit while it
 // reads its rc files.
-let shell = given.first ?? String(cString: getpwuid(getuid())!.pointee.pw_shell)
+let shell = given["HANDS_APP_SHELL"] ?? String(cString: getpwuid(getuid())!.pointee.pw_shell)
 // env writes the environment to a file only it holds: the shell's own output goes to the log, and a background job its
 // rc files start, which keeps the shell's stdout open, holds nothing the app waits on.
 let environmentFile = FileManager.default.temporaryDirectory.appending(path: "hands.app-environment-\(getpid())")
 let environmentSaid = [shell, "-l", "-i", "-c", "exec /usr/bin/env -0 > '\(environmentFile.path)'"]
 
 // ~/Library/Logs is where a Mac app's log lives, so Console.app shows it.
-let log = given.dropFirst().first.map { URL(fileURLWithPath: $0) }
-    ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/hands/hands.log")
+let log = given["HANDS_APP_LOG"].map { URL(fileURLWithPath: $0) } ?? home.appending(path: "Library/Logs/hands/hands.log")
+
+// What Terminal gives a shell before its rc files run, which they may change: the user's locale, and their home as the
+// directory it starts in.
+let terminalGives = ["LANG": "\(Locale.current.identifier.prefix { $0 != "@" }).UTF-8"]
 
 // How many of this launch's last lines a failure shows; the reason a start was refused is its last.
 let SHOWN_LINES = 12
+let TAIL: UInt64 = 64_000
 
 enum Phase {
     // The login shell saying its environment: nothing to wind down, so a quit ends it at once.
     case reading(Process)
     case running(Process)
-    // Quit by the person or the system: hands is told to stop, and the app ends once it has.
-    case quitting
+    // Quit by the person or the system: hands is told to stop, and the app ends once it has. Quit again, hands is
+    // killed: one that does not end on SIGTERM would otherwise hold the app, and a logout, open for good.
+    case quitting(Process)
     case over
 }
 
@@ -51,6 +58,8 @@ final class Launcher: NSObject, NSApplicationDelegate {
         let reader = Process()
         reader.executableURL = URL(fileURLWithPath: shell)
         reader.arguments = Array(environmentSaid.dropFirst())
+        reader.environment = given.merging(terminalGives) { _, gives in gives }
+        reader.currentDirectoryURL = home
         reader.standardInput = FileHandle.nullDevice
         reader.standardOutput = output
         reader.standardError = output
@@ -66,13 +75,14 @@ final class Launcher: NSObject, NSApplicationDelegate {
     }
 
     func read(_ reader: Process) {
+        // The user's whole environment, its tokens among them, is not left on disk once read, or not.
+        defer { forget() }
         let told: Data
         do {
             guard reader.terminationReason == .exit && reader.terminationStatus == 0 else {
                 throw Ended(how: how(reader))
             }
             told = try Data(contentsOf: environmentFile)
-            try FileManager.default.removeItem(at: environmentFile)
         } catch {
             stopped("hands.app could not read the environment of your login shell, \(shell): \(error.localizedDescription).\n\n\(lastLines())\n\nIts full log is \(log.path).")
             return
@@ -89,6 +99,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         daemon.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         daemon.arguments = ["hands", "run"]
         daemon.environment = environment
+        daemon.currentDirectoryURL = home
         daemon.standardInput = FileHandle.nullDevice
         daemon.standardOutput = output
         daemon.standardError = output
@@ -108,16 +119,30 @@ final class Launcher: NSObject, NSApplicationDelegate {
         switch phase {
         case .reading(let reader):
             kill(reader.processIdentifier, SIGKILL)
+            forget()
             return .terminateNow
         case .running(let daemon):
             // [LAW:single-enforcer] the daemon's own SIGTERM handling winds it down; the app waits for it to have.
-            phase = .quitting
+            phase = .quitting(daemon)
             daemon.terminate()
             return .terminateLater
-        case .quitting:
+        case .quitting(let daemon):
+            said("hands has not ended on SIGTERM, and the app was quit again: killing it")
+            kill(daemon.processIdentifier, SIGKILL)
             return .terminateLater
         case .over:
             return .terminateNow
+        }
+    }
+
+    // A SIGTERM. A second terminate while AppKit waits on the first one's reply would end the app at once, leaving
+    // hands running, so a quit already under way is the launcher's to carry on.
+    func terminated() {
+        switch phase {
+        case .quitting:
+            _ = applicationShouldTerminate(NSApp)
+        case .reading, .running, .over:
+            NSApp.terminate(nil)
         }
     }
 
@@ -144,11 +169,19 @@ final class Launcher: NSObject, NSApplicationDelegate {
         fail(message)
     }
 
-    // This launch's lines from the shell and the daemon, the newest SHOWN_LINES of them.
+    func forget() {
+        // [LAW:no-silent-failure] only a file env never wrote is expected to be missing.
+        if unlink(environmentFile.path) != 0 && errno != ENOENT {
+            said("could not remove \(environmentFile.path): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    // This launch's lines from the shell and the daemon, the newest SHOWN_LINES of them, from its last TAIL bytes.
     func lastLines() -> String {
         do {
             let reading = try FileHandle(forReadingFrom: log)
-            try reading.seek(toOffset: start)
+            let end = try reading.seekToEnd()
+            try reading.seek(toOffset: max(start, end - min(end, TAIL)))
             let text = String(decoding: try reading.readToEnd() ?? Data(), as: UTF8.self)
             return text.split(separator: "\n").filter { !$0.hasPrefix("hands.app: ") }.suffix(SHOWN_LINES).joined(separator: "\n")
         } catch {
@@ -188,7 +221,8 @@ func fail(_ message: String) {
     NSApp.terminate(nil)
 }
 
-// Past this many bytes a launch begins the log again, keeping the last one beside it, so it does not grow without end.
+// Past this many bytes a launch begins the log again, keeping the last one beside it, so launches do not grow it
+// without end.
 let LOG_LIMIT: UInt64 = 10_000_000
 
 func appending(to url: URL) throws -> FileHandle {
@@ -224,7 +258,7 @@ NSApplication.shared.delegate = launcher
 // which every child would inherit: hands would ignore the SIGTERM a quit sends it. A caught signal is reset by exec.
 signal(SIGTERM) { _ in }
 let terminated = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-terminated.setEventHandler { onMain { NSApp.terminate(nil) } }
+terminated.setEventHandler { onMain { launcher.terminated() } }
 terminated.resume()
 
 NSApplication.shared.run()

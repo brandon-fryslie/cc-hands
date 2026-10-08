@@ -233,7 +233,7 @@ def test_the_grant_is_ready_when_given_and_missing_with_where_to_give_it_when_no
 def test_a_running_hands_has_the_grant_of_the_app_it_runs_in_though_this_one_has_none() -> None:
     # hands.app holds the grant; the terminal a check runs in does not.
     held = readiness.hears(False, Ready("hands is running: pid 7"))
-    assert isinstance(held, Ready) and "hands is running, so the app it runs in has the Input Monitoring grant" in held.said
+    assert isinstance(held, Ready) and "hands is running, so it started with the Input Monitoring grant of the app it runs in" in held.said
 
 
 # The running sessions

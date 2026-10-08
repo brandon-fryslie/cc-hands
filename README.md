@@ -70,8 +70,8 @@ is not, what does it; it exits 0 only when every step is done.
    hands login
    ```
 
-7. The Input Monitoring grant for the app hands runs in, hands.app (`make app`) or the
-   terminal app, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
+7. The Input Monitoring grant for the app hands runs in, the terminal app or hands.app if
+   you have one, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
 8. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first

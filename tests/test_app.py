@@ -44,13 +44,18 @@ def opened(executable: Path, tmp_path: Path) -> Iterator[Open]:
             f"#!/bin/sh\necho \"an rc file's own output\"\nPATH={bin_}:/usr/bin:/bin; export PATH\nFROM_RC=yes; export FROM_RC\n{rc}\nexec /bin/sh -c \"$4\"\n"
         )
         shell.chmod(0o755)
-        apps.append(subprocess.Popen([executable, shell, tmp_path / "hands.log"]))
+        apps.append(subprocess.Popen([executable], env={**os.environ, "HANDS_APP_SHELL": str(shell), "HANDS_APP_LOG": str(tmp_path / "hands.log")}))
         return apps[-1]
 
     yield open_
+    # Quit, so a hands a failed test left running is wound down with its app, not orphaned.
     for app in apps:
-        app.kill()
-        app.wait()
+        app.send_signal(signal.SIGTERM)
+        try:
+            app.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            app.kill()
+            app.wait()
 
 
 def logged(tmp_path: Path, line: str, within: float = 10) -> str:
@@ -65,10 +70,11 @@ def logged(tmp_path: Path, line: str, within: float = 10) -> str:
 
 
 def test_hands_runs_on_the_login_shells_environment_and_its_clean_exit_ends_the_app(opened: Open, tmp_path: Path) -> None:
-    app = opened("", 'echo "hands saw FROM_RC=$FROM_RC, run with $1"; exit 0')
+    app = opened("", 'echo "hands saw FROM_RC=$FROM_RC, run with $1, in $PWD, LANG=$LANG"; exit 0')
     assert app.wait(timeout=10) == 0
     text = logged(tmp_path, "hands exited 0")
-    assert "hands saw FROM_RC=yes, run with run" in text
+    # The home Terminal starts in, and a locale as Terminal sets one.
+    assert f"hands saw FROM_RC=yes, run with run, in {Path.home()}, LANG=" in text and ".UTF-8\n" in text
     assert "started hands run as pid" in text and f"PATH {tmp_path / 'bin'}:/usr/bin:/bin" in text
 
 
@@ -79,6 +85,18 @@ def test_a_quit_winds_hands_down_and_the_app_ends_once_it_has(opened: Open, tmp_
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=10) == 0
     assert "hands was ended by signal 15" in logged(tmp_path, "hands was ended")
+
+
+def test_a_hands_that_does_not_end_on_sigterm_is_killed_when_the_app_is_quit_again(opened: Open, tmp_path: Path) -> None:
+    app = opened("", "trap '' TERM; echo up; while :; do sleep 0.1; done")
+    logged(tmp_path, "up")
+    app.send_signal(signal.SIGTERM)
+    with pytest.raises(subprocess.TimeoutExpired):
+        app.wait(timeout=1)
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+    text = logged(tmp_path, "hands was ended by signal 9")
+    assert "hands has not ended on SIGTERM, and the app was quit again: killing it" in text
 
 
 def test_a_failed_hands_is_told_with_this_launchs_lines(opened: Open, tmp_path: Path) -> None:
@@ -92,8 +110,9 @@ def test_a_failed_hands_is_told_with_this_launchs_lines(opened: Open, tmp_path: 
 
 
 def test_a_shell_that_cannot_say_its_environment_is_told_with_its_words(opened: Open, tmp_path: Path) -> None:
-    opened('echo "open terminal failed: not a terminal" >&2; exit 1', "exit 0")
+    app = opened('echo "open terminal failed: not a terminal" >&2; exit 1', "exit 0")
     told = logged(tmp_path, "stopped: hands.app could not read the environment").split("stopped: ", 1)[1]
+    app.send_signal(signal.SIGTERM)
     assert "it exited 1" in told and "open terminal failed: not a terminal" in told
     assert "started hands run" not in logged(tmp_path, "stopped: ")
 
