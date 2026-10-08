@@ -75,12 +75,12 @@ class Sandbox:
     def log(self) -> Path:
         return self.root / "log"
 
-    def run(self, release: str = "v9.9.9") -> subprocess.CompletedProcess[str]:
+    def run(self, release: str = "v9.9.9", shell: str = "/bin/zsh") -> subprocess.CompletedProcess[str]:
         self.log.write_text("")
         environment = {
             "HOME": str(self.home),
             "PATH": f"{self.root / 'stubs'}:{LOGIN_PATH}",
-            "SHELL": "/bin/zsh",
+            "SHELL": shell,
             "HOMEBREW_PREFIX": str(self.root / "brew"),
             "STUBS": str(self.root / "stubs"),
             "LOG": str(self.log),
@@ -91,10 +91,10 @@ class Sandbox:
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines()
 
-    def login_finds(self, command: str) -> str:
+    def login_finds(self, command: str, shell: str = "/bin/zsh") -> str:
         """Where a new terminal's login shell finds `command`, or the empty string."""
-        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", "/bin/zsh", "-lc", f"command -v {command}"], capture_output=True, text=True)
-        return found.stdout.strip()
+        found = subprocess.run(["env", "-i", f"HOME={self.home}", f"PATH={LOGIN_PATH}", shell, "-lc", f"command -v {command}"], capture_output=True, text=True)
+        return found.stdout.strip().splitlines()[-1] if found.stdout.strip() else ""
 
 
 def executable(path: Path, text: str) -> None:
@@ -121,7 +121,7 @@ def test_a_bare_mac_gets_claude_code_portaudio_uv_and_the_newest_hands(sandbox: 
     assert "claude installer" in calls and "homebrew installer NONINTERACTIVE=1" in calls
     assert "brew install portaudio" in calls and "brew install uv" in calls
     release = "https://github.com/brandon-fryslie/cc-hands/releases/download/v9.9.9"
-    assert f"uv tool install --python 3.12 --constraints {release}/constraints.txt {release}/hands-9.9.9-py3-none-macosx_12_0_arm64.whl" in calls
+    assert f"uv tool install --reinstall --python 3.12 --constraints {release}/constraints.txt {release}/hands-9.9.9-py3-none-macosx_12_0_arm64.whl" in calls
     # A new terminal finds each of them without the person touching a profile.
     assert sandbox.login_finds("claude") == str(sandbox.home / ".local/bin/claude")
     assert sandbox.login_finds("hands") == str(sandbox.home / ".local/bin/hands")
@@ -182,3 +182,42 @@ def test_the_readme_and_hands_check_name_the_same_one_command() -> None:
     command = readiness.INSTALL.strip("`")
     assert command in (REPO / "README.md").read_text()
     assert command in INSTALL.read_text()
+
+
+def test_a_bash_login_shell_gets_its_lines_in_the_one_profile_it_reads(sandbox: Sandbox) -> None:
+    # A bash login shell reads only the first of .bash_profile, .bash_login and .profile that exists: a person's own
+    # .profile stays the one it reads, rather than being shadowed by a new .bash_profile.
+    (sandbox.home / ".profile").write_text("export OWN=1\n")
+    ran = sandbox.run(shell="/bin/bash")
+    assert ran.returncode == 0, ran.stderr
+    assert not (sandbox.home / ".bash_profile").exists()
+    assert (sandbox.home / ".profile").read_text().startswith("export OWN=1\n")
+    assert sandbox.login_finds("hands", shell="/bin/bash") == str(sandbox.home / ".local/bin/hands")
+
+
+def test_a_bash_login_shell_with_no_profile_gets_a_new_bash_profile(sandbox: Sandbox) -> None:
+    assert sandbox.run(shell="/bin/bash").returncode == 0
+    assert sandbox.login_finds("brew", shell="/bin/bash") == str(sandbox.root / "brew/bin/brew")
+    assert (sandbox.home / ".bash_profile").exists()
+
+
+def test_a_shell_that_is_neither_zsh_nor_bash_is_told_the_lines_and_gets_no_profile(sandbox: Sandbox) -> None:
+    ran = sandbox.run(shell="/bin/sh")
+    assert ran.returncode == 1 and "is not zsh or bash" in ran.stderr and "brew shellenv" in ran.stderr
+    assert not [path for path in sandbox.home.iterdir() if path.name in (".zprofile", ".bash_profile", ".bash_login", ".profile")]
+
+
+def test_a_profile_that_prints_leaves_a_second_run_s_profile_byte_for_byte(sandbox: Sandbox) -> None:
+    # What a profile prints comes before the PATH the probe reads, with no newline of its own.
+    (sandbox.home / ".zprofile").write_text("printf welcome\n")
+    assert sandbox.run().returncode == 0
+    profile = (sandbox.home / ".zprofile").read_bytes()
+    assert sandbox.run().returncode == 0
+    assert (sandbox.home / ".zprofile").read_bytes() == profile
+
+
+def test_the_newest_release_is_held_to_the_tag_rule_a_release_is_built_under() -> None:
+    rule = re.compile(r"grep -Eqx '([^']+)'")
+    release = rule.findall((REPO / ".github/workflows/release.yml").read_text())
+    install = rule.findall(INSTALL.read_text())
+    assert len(release) == 1 and install == release

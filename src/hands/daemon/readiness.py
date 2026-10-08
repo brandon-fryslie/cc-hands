@@ -2,8 +2,8 @@
 
     hands check     # one line a step; exits 0 only when every step is done
 
-The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
-installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
+The steps, in the README's order: what its one install command puts in, which is Claude Code, PortAudio, which the
+microphone opens through, and the installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
 the plugin that joins sessions to hands; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
@@ -77,7 +77,7 @@ def claude(path: str) -> Finding:
     """Whether this PATH has a Claude Code of its own, apart from any hands shim, installed as its installer puts it."""
     match claude_code(wrapper.real_claude(path)):
         case Unfindable(said):
-            return Missing(f"no Claude Code that hands can join its sessions of: {said}. The install command puts it in: {INSTALL}")
+            return Missing(f"no Claude Code that hands can join its sessions of: {said}")
         case executable:
             return Ready(f"Claude Code is installed: {executable}")
 
@@ -302,7 +302,7 @@ def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | 
 def claude_code(claude: Path | None) -> Path | Unfindable:
     """The executable a session of the real `claude` on PATH runs as."""
     if claude is None:
-        return Unfindable("this PATH has no `claude` of its own, apart from any hands shim")
+        return Unfindable(f"this PATH has no `claude` of its own, apart from any hands shim; the install command puts it in: {INSTALL}")
     executable = claude.resolve()
     try:
         with executable.open("rb") as start:

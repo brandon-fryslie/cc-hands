@@ -715,7 +715,7 @@ def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> Non
 def test_a_claude_that_is_a_script_is_missing_and_names_the_native_one(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\n")
     found = readiness.claude(f"{root / 'real'}:/usr/bin:/bin")
-    assert isinstance(found, Missing) and "is a script" in found.said and readiness.INSTALL in found.said
+    assert isinstance(found, Missing) and "is a script" in found.said and "`claude install`" in found.said
 
 
 # PortAudio

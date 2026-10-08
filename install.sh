@@ -37,8 +37,9 @@ else
   say "installing Homebrew, which needs your administrator password to create $HOMEBREW_PREFIX"
   sudo -v
   # Homebrew asks sudo without a prompt in its non-interactive mode, so the password given above is kept fresh until it
-  # is done; its own install of the Command Line Tools can outlast sudo's five minutes.
-  while sudo -n -v 2>/dev/null; do sleep 60; done &
+  # is done; its own install of the Command Line Tools can outlast sudo's five minutes. The keeper ends with this run
+  # however it ends, a failed or interrupted install included, and is stopped here when Homebrew is in.
+  while kill -0 $$ 2>/dev/null && sudo -n -v 2>/dev/null; do sleep 60; done &
   keeper=$!
   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   kill "$keeper" 2>/dev/null || true
@@ -68,19 +69,24 @@ else
   say "installing hands $version, the newest release"
   release=https://github.com/$REPO/releases/download/$tag
   # A Mac has its own Python, 3.9, which uv would otherwise take; hands needs 3.12, which uv fetches. The constraints are
-  # the versions the release was tested on.
-  uv tool install --python 3.12 --constraints "$release/constraints.txt" "$release/hands-$version-$WHEEL_TAG.whl"
+  # the versions the release was tested on. --reinstall replaces a hands that is there but does not answer its version.
+  uv tool install --reinstall --python 3.12 --constraints "$release/constraints.txt" "$release/hands-$version-$WHEEL_TAG.whl"
 fi
 
 # The login shell's PATH is the one every new terminal starts with: a directory it lacks gets one line in the profile
 # it reads, and one it has is left as it is.
 case $(basename "$SHELL") in
   zsh) profile=$HOME/.zprofile ;;
-  bash) profile=$HOME/.bash_profile ;;
+  bash)
+    # A bash login shell reads only the first of these that exists, so the line goes in that one; with none, a new
+    # .bash_profile.
+    profile=$HOME/.bash_profile
+    for name in .profile .bash_login .bash_profile; do [ ! -e "$HOME/$name" ] || profile=$HOME/$name; done ;;
   *) profile= ;;
 esac
-# A new terminal's login shell starts from launchd's PATH, not this run's, which already has every directory.
-login_path=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" -lc 'printf %s "$PATH"' </dev/null)
+# A new terminal's login shell starts from launchd's PATH, not this run's, which already has every directory. Its PATH is
+# the last line it prints, after whatever the profile itself prints.
+login_path=$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SHELL" -lc 'printf "\n%s" "$PATH"' </dev/null | tail -n 1)
 on_login_path() { case ":$login_path:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
 lines=()
 on_login_path "$HOMEBREW_PREFIX/bin" || lines+=("eval \"\$($HOMEBREW_PREFIX/bin/brew shellenv)\"")
