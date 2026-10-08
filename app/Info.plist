@@ -17,6 +17,13 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<!-- Polar, the merchant of record hands is sold through: build-app.sh fills these in from HANDS_POLAR_*. -->
+	<key>HandsLicenseValidate</key>
+	<string></string>
+	<key>HandsLicenseOrganization</key>
+	<string></string>
+	<key>HandsLicensePortal</key>
+	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>hands hears what you say while you hold the talk key, and types it into your Claude Code sessions.</string>
 </dict>

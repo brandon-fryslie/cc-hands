@@ -388,7 +388,7 @@ uv run hands phone                      # the addresses a phone opens the talk p
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # pytest, pyright, fritter's Go tests, and a type check of hands.app's launcher; fails when any of them fails
-make app                                # build/hands.app, which runs `hands run` from the user's login shell and holds hands' Microphone and Input Monitoring grants itself; signed with this Mac's Developer ID; its log is ~/Library/Logs/hands/hands.log
+make app                                # build/hands.app, which runs `hands run` from the user's login shell and holds hands' Microphone and Input Monitoring grants itself; signed with this Mac's Developer ID; its log is ~/Library/Logs/hands/hands.log; HANDS_POLAR_ORGANIZATION and HANDS_POLAR_PORTAL name the Polar organization it is sold by, HANDS_POLAR_API=https://sandbox-api.polar.sh builds it against Polar's sandbox
 make notarized-app                      # the same, notarized by Apple and stapled, so Gatekeeper opens it on any Mac; HANDS_NOTARY_PROFILE names the notarytool keychain profile
 ```
 
@@ -401,6 +401,12 @@ knows of that cannot be typed into, through its fritter or the tmux pane it is i
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 says the same lines as it starts, the brain as it reached it. An up daemon is not a
 working hands: `hands status` says only whether the daemon is running.
+
+hands.app starts hands only on a license key Polar says is live: it asks for the key from the person's purchase on its
+first start, keeps it in ~/Library/Application Support/hands/license.json, and checks it with Polar on every start. A key
+Polar refuses, revoked when a subscription ends or expired, does not start hands, and the app says Polar's reason. When
+Polar cannot be reached, the app starts hands for 14 days after Polar last said the key was live. The check sends Polar
+the key and the organization's id, nothing else.
 
 `hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
