@@ -54,6 +54,7 @@ from hands.voice.player import Player
 from hands.voice.sentences import SummaryStore
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
+from hands.voice.speakers import Room
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
 from hands.threads import off_loop
@@ -118,7 +119,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, wake: Word, own: "OwnModel", catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], triggers: Triggers, wake: Word, own: "OwnModel", catalogue: spotify.Catalogue, room: Room, environment: Mapping[str, str], acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act. `environment` is the run's, which says where tmux keeps its
@@ -152,6 +153,7 @@ def intermediary_tools(
         *model_tools(own, player),
         *playback_tools(player),
         *spotify_tools(spotify.Player(), catalogue),
+        name_voice_tool(room),
     ]
     return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
 
@@ -186,6 +188,24 @@ def playback_tools(player: Player) -> list[Tool]:
         return {"said": await player.act(playback.repeat), "waiting": player.waiting}
 
     return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
+
+
+def name_voice_tool(room: Room) -> Tool:
+    async def name_voice(voice: int, name: str) -> Result:
+        """Give someone else in the room the name they told you, so that from now on, in this conversation and every
+        later one, their words come to you marked with it.
+
+        Args:
+            voice: The number their words were marked with.
+            name: Their name, as they said it.
+        """
+        try:
+            await asyncio.to_thread(room.named, voice, name)
+        except KeyError as error:
+            return {"error": str(error.args[0])}
+        return {"named": name}
+
+    return tool(name_voice)
 
 
 def stay_silent_tool() -> Tool:

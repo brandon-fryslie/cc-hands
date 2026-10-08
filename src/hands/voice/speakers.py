@@ -1,5 +1,6 @@
 """Whose voice each hold is in: the owner's, or someone else's in the room, so that two people can talk with hands among
-them and hands knows which of them said what. Anyone who is not the owner is someone else.
+them and hands knows which of them said what. Anyone who is not the owner is someone else, and each of them is known
+by a voiceprint of their own and, once they have said it, their name: the Room keeps both across runs.
 
 The owner's voiceprint is learnt without asking anyone to enrol, only from what can only be theirs: a hold of the desk's
 key, and an engaged conversation at the desk with one voice in it. A hold the voice opened, in an engaged conversation
@@ -10,6 +11,8 @@ with ONNX Runtime through sherpa-onnx: about 55 ms a hold on an M-series Mac.
 """
 
 import asyncio
+import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +20,7 @@ from typing import Literal
 
 import numpy as np
 
-from hands.sessions.audit import ByHand, Matched, Other, Record, Speaker, Untellable, Untold
+from hands.sessions.audit import ByHand, Guest, Matched, Other, Record, Speaker, Untellable, Untold
 from hands.sessions.wide import annotate, unit
 from hands.voice import fetch
 from hands.voice.transcription import RATE
@@ -32,6 +35,8 @@ RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recon
 FETCH_SECONDS = 120
 # The owner's voiceprint: the sum of every embedding it was taught, whose direction is the print.
 VOICEPRINT = "voiceprint.npy"
+# Everyone else's voiceprints and names (Room).
+ROOM = "room.json"
 
 # The cosine at and above which two voices are one: a hold's to the owner's print, and each hold's to every other in a
 # conversation learnt from. CAM++'s own verification threshold sits about here; not yet measured on two people in one
@@ -70,7 +75,7 @@ class Speakers:
     can only be the owner's teaches the print, kept in `directory` across runs. It blocks while the model runs, so it is
     called off the event loop, on the one thread Whisper runs on."""
 
-    def __init__(self, directory: Path, record: Record) -> None:
+    def __init__(self, directory: Path, room: "Room", record: Record) -> None:
         # [LAW:nothing-unseen] the load is a unit of work of its own: whether it fetched the model, and whether a
         # voiceprint was already taught.
         with unit("speakers.loaded", record):
@@ -86,6 +91,7 @@ class Speakers:
             self._voiceprint = directory / VOICEPRINT
             self._taught = _loaded(self._voiceprint)
             annotate(voiceprint=self._taught is not None)
+        self._room = room
         self._record = record
         self._conversation = _Conversation(0)
 
@@ -116,7 +122,9 @@ class Speakers:
                 if self._taught is None:
                     return Untold("no voiceprint")
                 similarity = _cosine(embedding, self._taught)
-                return Matched(similarity) if similarity >= SAME_VOICE else Other(similarity)
+                if similarity >= SAME_VOICE:
+                    return Matched(similarity)
+                return Other(similarity, self._room.placed(embedding, long_enough))
 
     def _learn(self, conversation: _Conversation) -> None:
         """Teach the print from `conversation` if it was the owner's alone: every hold in it one voice, and that voice
@@ -157,12 +165,93 @@ class Speakers:
         self._taught = print_
 
 
-def teller(directory: Path, record: Record) -> Callable[[bytes, Hold], Speaker]:
+@dataclass
+class _Known:
+    """One of the others in the room: their number, the name they gave, and the sum of every embedding that taught
+    their print, whose direction is the print."""
+
+    voice: int
+    name: str | None
+    print_: np.ndarray
+
+
+class Room:
+    """The one owner of everyone else's voiceprints and names [LAW:single-enforcer], kept in `directory` across runs,
+    so a voice heard in a new run is known by its print and its name without asking again. A voice that is like none of
+    them, held long enough to make a print of, is someone new. Told on the speaker model's thread and named from the
+    brain's tools, so each is under one lock; read the first time either needs it, so a room that does not load fails
+    those, not the daemon."""
+
+    def __init__(self, directory: Path, record: Record) -> None:
+        self._path = directory / ROOM
+        self._record = record
+        self._lock = threading.Lock()
+        self._known: list[_Known] | None = None
+
+    def placed(self, embedding: np.ndarray, long_enough: bool) -> Guest | None:
+        """Which of the others unit `embedding` is: the one whose print it is most like, taught by it if it is
+        `long_enough`, or someone new where it is like none and long enough to be a print. None where it is too short
+        to tell whose it is."""
+        with self._lock:
+            known = self._loaded()
+            likeness, nearest = max(((_cosine(embedding, guest.print_), guest) for guest in known), key=lambda pair: pair[0], default=(0.0, None))
+            if nearest is not None and likeness >= SAME_VOICE:
+                if long_enough:
+                    nearest.print_ = nearest.print_ + embedding
+                    self._save(known)
+                return Guest(nearest.voice, nearest.name, likeness, long_enough)
+            if not long_enough:
+                return None
+            new = _Known(max((guest.voice for guest in known), default=0) + 1, None, embedding)
+            self._save([*known, new])
+            return Guest(new.voice, None, None, True)
+
+    def named(self, voice: int, name: str) -> None:
+        """Give the voice numbered `voice` the name `name`, kept with its print."""
+        with self._lock:
+            known = self._loaded()
+            guest = next((guest for guest in known if guest.voice == voice), None)
+            if guest is None:
+                raise KeyError(f"no one in the room has voice {voice}: the voices are {[guest.voice for guest in known]}")
+            guest.name = name
+            self._save(known)
+
+    def _loaded(self) -> list[_Known]:
+        if self._known is None:
+            # [LAW:nothing-unseen] the room is read once a run: how many voices it keeps, and how many have names.
+            with unit("speakers.room", self._record):
+                self._known = _room(self._path)
+                annotate(voices=len(self._known), named=sum(guest.name is not None for guest in self._known))
+        return self._known
+
+    def _save(self, known: list[_Known]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        partial = self._path.with_name(f"{ROOM}.partial")
+        partial.write_text(json.dumps([{"voice": guest.voice, "name": guest.name, "print": guest.print_.tolist()} for guest in known]))
+        partial.replace(self._path)
+        # Only once kept: a room that failed to save is not the one told by.
+        self._known = known
+
+
+def _room(path: Path) -> list[_Known]:
+    """The voices kept at `path`, none where none was ever heard; a file that is no room fails, naming it."""
+    if not path.exists():
+        return []
+    try:
+        known = [_Known(int(guest["voice"]), guest["name"], np.array(guest["print"], dtype=np.float32)) for guest in json.loads(path.read_text())]
+    except (ValueError, KeyError, TypeError) as error:
+        raise ValueError(f"{path} is not a room of voices ({error}): delete it, and the others in the room are heard anew") from error
+    if any(guest.print_.ndim != 1 or not np.isfinite(guest.print_).all() or not np.linalg.norm(guest.print_) for guest in known):
+        raise ValueError(f"{path} holds a voice that is no voiceprint: delete it, and the others in the room are heard anew")
+    return known
+
+
+def teller(directory: Path, room: Room, record: Record) -> Callable[[bytes, Hold], Speaker]:
     """What tells each hold's voice: Speakers in `directory`, or, where they could not be loaded, a teller that takes a
     hold the owner's hand opened as theirs, as it would be anyway, and fails each the voice opened with why, so its words
     still reach the brain as an Untellable hold's do and the voice is not lost with the model."""
     try:
-        return Speakers(directory, record).told
+        return Speakers(directory, room, record).told
     except Exception as error:
         # [LAW:no-silent-failure] the load failed on speakers.loaded, and each hold that needed it says so again.
         unloaded = f"the speaker model did not load: {type(error).__name__}: {error}"
@@ -202,8 +291,13 @@ def _cosine(vector: np.ndarray, print_: np.ndarray) -> float:
 
 def spoken_as(said: str, speaker: Speaker) -> str:
     """What the brain is given of words `said` in `speaker`'s voice: someone else's are marked as theirs from start to
-    end, so words of theirs and the owner's in one turn are told apart, and the owner's are given as they always were."""
+    end, by their name or, until they have given one, by their voice's number, so words of theirs and the owner's in one
+    turn are told apart, and the owner's are given as they always were."""
     match speaker:
+        case Other(guest=Guest(name=str() as name)):
+            return f"[{name}, someone else in the room: {said}]"
+        case Other(guest=Guest(voice=voice)):
+            return f"[someone else in the room, voice {voice}, name not yet known: {said}]"
         case Other():
             return f"[someone else in the room: {said}]"
         case ByHand() | Matched() | Untold() | Untellable():

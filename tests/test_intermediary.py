@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from hands.voice.speakers import Room
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
 from hands.spotify import Catalogue, Missing
@@ -36,7 +37,7 @@ FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "stat
 
 def names(sessions: Sessions) -> list[str]:
     with tempfile.TemporaryDirectory() as home:
-        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(lambda _entry: None).switch, Triggers(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), lambda _config: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": home}, lambda: None)]
+        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(lambda _entry: None).switch, Triggers(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), lambda _config: None), Catalogue(Missing("no credentials in tests")), Room(Path(home), lambda _entry: None), {"TMUX_TMPDIR": home}, lambda: None)]
 
 
 def test_the_tail_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools_and_says_it_is_current() -> None:

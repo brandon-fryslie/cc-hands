@@ -126,11 +126,25 @@ class Matched:
 
 
 @dataclass(frozen=True)
+class Guest:
+    """Someone else in the room, by their voiceprint: `voice` numbers them in the order hands first heard them, and
+    `name` is the one they gave, none until they have. `likeness` is how like their print the hold was, by cosine,
+    none where the hold is the first heard of them; `taught` says it taught their print."""
+
+    voice: int
+    name: str | None
+    likeness: float | None
+    taught: bool
+
+
+@dataclass(frozen=True)
 class Other:
     """A hold the voice opened, whose voice is someone else's in the room: only as like the user's voiceprint as
-    `similarity`, by cosine."""
+    `similarity`, by cosine. `guest` is which of the others it was, none for a hold too short to tell by, or to first
+    hear someone by."""
 
     similarity: float
+    guest: Guest | None
 
 
 @dataclass(frozen=True)
