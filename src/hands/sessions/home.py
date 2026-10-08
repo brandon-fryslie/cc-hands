@@ -7,6 +7,9 @@ from pathlib import Path
 from hands.core.session import SessionId
 from hands.sessions.payload import Rejected
 
+# The name of the folder `hands smoke` runs its session in, which is also the name hands calls that session by.
+SMOKE = "smoke"
+
 
 @dataclass(frozen=True)
 class Home:
@@ -97,6 +100,12 @@ class Home:
     def brain(self) -> Path:
         """The brain's CLAUDE_CONFIG_DIR: its login, settings, and skills, and under it the empty directory it runs in."""
         return self.root / "brain"
+
+    @property
+    def smoke(self) -> Path:
+        """The folder `hands smoke` starts its session in, emptied for each run, which Claude Code is told once to trust
+        (`hands first-run`)."""
+        return self.root / SMOKE
 
     @property
     def phone(self) -> Path:

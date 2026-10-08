@@ -22,11 +22,13 @@ is not, what does it; it exits 0 only when every step is done.
 
    It installs whichever of them is missing and leaves the rest, so a run stopped part-way is finished by running it
    again. On a Mac without Homebrew it says it needs your administrator password, and asks for it, to install Homebrew.
-   Last, Claude Code shows the command `hands plugin` and asks whether to run it, which the command says just before:
-   answer y. It puts each on your login shell's `PATH`, hands' `claude` first, and leaves the terminal in a fresh login
-   shell, where they are found.
-
-   Then run `claude` once to answer what it asks only the first time, a theme and a login, and exit it.
+   Then Claude Code starts in `~/.hands/smoke`, the folder the smoke test runs in, to ask what it asks only once: a
+   theme, your login, whether to trust that folder, and, with `ANTHROPIC_API_KEY` set, whether to use that key (no
+   keeps it on your login). The command names each before Claude Code shows it: answer them and type `/exit`. Claude
+   Code that has answered them already asks nothing, and one with no login logs in with its own login. Last, Claude
+   Code shows the command `hands plugin` and asks whether to run it, which the command says just before: answer y. It
+   puts each on your login shell's `PATH`, hands' `claude` first, and leaves the terminal in a fresh login shell,
+   where they are found.
 
 2. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
    plan or, with `--console`, an Anthropic Console key. It runs Claude Code's first screens in
@@ -58,12 +60,6 @@ is not, what does it; it exits 0 only when every step is done.
    ```
    hands smoke
    ```
-
-   The first time, Claude Code asks there whether to trust the folder and, with
-   `ANTHROPIC_API_KEY` set, whether to use that key (no keeps the turn on your login).
-   The session cannot join hands until they are answered, so after a minute the run stops
-   at `joined` with the end of what Claude Code showed. Run `claude` once in the folder
-   that line names, answer, exit it, and run the smoke test again.
 
 ## The intermediary
 
@@ -360,8 +356,8 @@ make notarized-app                      # the same, notarized by Apple and stapl
 `hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)
 and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
-`claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-brain's login; the Input Monitoring grant of the app it runs in; hands running; each running session hands
+`claude` on this `PATH` being hands' shim; the plugin, installed and enabled; Claude Code
+logged in and with nothing left to ask first in the smoke test's folder; the brain's login; the Input Monitoring grant of the app it runs in; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 says the same lines as it starts, the brain as it reached it. An up daemon is not a

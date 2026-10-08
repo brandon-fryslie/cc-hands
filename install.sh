@@ -7,8 +7,8 @@
 # starts every session under fritter, and hands' plugin, and leaves what is there; a run stopped part-way is finished by
 # running it again. It puts each one's directory on the PATH of the person's login shell, the shim's first, and ends in a
 # fresh login shell, so this terminal has them too. The only input it asks for is the administrator password Homebrew's
-# own install needs, and the yes Claude Code asks for to install a plugin by running a command, each said before it is
-# asked.
+# own install needs, what Claude Code asks only once (its theme, its login, and whether to trust the folder `hands smoke`
+# runs in), and the yes Claude Code asks for to install a plugin by running a command, each said before it is asked.
 set -euo pipefail
 
 REPO=brandon-fryslie/cc-hands
@@ -138,6 +138,15 @@ if [ "$(terminal_claude)" != "$shims/claude" ]; then
   [ "$(terminal_claude)" = "$shims/claude" ] || fail "a new terminal's claude is $(terminal_claude), not hands' $shims/claude, though $rc has $line: a startup file read after it puts another claude first; put that line after this one"
 fi
 
+# Claude Code's first-run questions and its login, asked once here, so the session `hands smoke` starts waits on none of them.
+first_run=0
+hands first-run || first_run=$?
+case $first_run in
+  0) ;;
+  1) fail "Claude Code's first run is not finished, so the session \`hands smoke\` starts would wait on its questions; running this command again asks again" ;;
+  *) fail "Claude Code's first run is not finished: Claude Code could not be asked, as said above" ;;
+esac
+
 # Last, so that declining it leaves every step before it done.
 plugin=0
 hands install-plugin || plugin=$?
@@ -147,5 +156,5 @@ case $plugin in
   *) fail "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked, as said above" ;;
 esac
 
-say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed; this terminal is now a login shell that finds them"
+say "done: Claude Code, PortAudio, uv, hands $version, its claude shim and its plugin are installed, and Claude Code has been through its first run; this terminal is now a login shell that finds them"
 exec "$SHELL" -l

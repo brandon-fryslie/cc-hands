@@ -39,9 +39,10 @@ from av import AudioFrame, AudioResampler
 from hands.core.session import Membership, SessionId
 from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.terminals import process_table
+from hands.daemon import readiness
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
-from hands.sessions.home import Home
+from hands.sessions.home import SMOKE, Home
 from hands.sessions.membership import parse_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
@@ -59,7 +60,7 @@ Logged = Literal["heard", "typed", "finished", "told"]
 
 # What the user says, in order: the request, the go-ahead for the draft hands reads back, and the question whose answer
 # carries the word. The session is named by its project, the folder it runs in, as hands names every session.
-FOLDER = "smoke"
+FOLDER = SMOKE
 SAID = (
     f"Tell the {FOLDER} session to reply with only the name of the one file in its folder.",
     "Send it.",
@@ -287,7 +288,7 @@ async def until[T](stage: Stage, seconds: float, found: Callable[[], Awaitable[T
 async def smoke(home: Home, environment: Mapping[str, str]) -> int:
     """Run the test, printing each stage as it is reached; 0 once every stage is, 1 at the first that is not."""
     word = random.choice(WORDS)
-    folder = (home.root / FOLDER).resolve()
+    folder = home.smoke.resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
     smoked = Run(home, word, offset)
@@ -314,13 +315,20 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, datetime.now(UTC)))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, datetime.now(UTC))}; start it with `hands run`")
+    claude = shutil.which("claude", path=environment.get("PATH"))
+    if claude is None:
+        raise NotReached("joined", "there is no `claude` on PATH")
+    # [LAW:one-source-of-truth] the check `hands check` makes of this folder: a session that would open on a first-run
+    # question or with no login never takes what is typed into it, so the run stops before it loads anything.
+    match await asyncio.to_thread(readiness.first_run, home, environment):
+        case readiness.Missing(said=said) | readiness.Unknown(said=said):
+            raise NotReached("joined", said)
+        case readiness.Ready():
+            pass
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL)
     await asyncio.to_thread(transcription.load)
-    claude = shutil.which("claude", path=environment.get("PATH"))
-    if claude is None:
-        raise NotReached("joined", "there is no `claude` on PATH")
     said = [await _synthesized(text) for text in SAID]
     # The folder holds the one file, named for this run's word, and nothing else.
     try:

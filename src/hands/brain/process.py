@@ -38,6 +38,7 @@ from hands.core.trace import Span
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
+from hands.sessions import firstrun
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
@@ -327,45 +328,14 @@ class Login:
 
 
 def unanswered(config_dir: Path) -> str | None:
-    """Why the brain would start on one of Claude Code's first screens, or None when it would not: Claude Code records
-    in its own .claude.json that its onboarding finished, that the directory the brain runs in, or one above it, is
-    trusted, and its answer on an API key its settings.json sets, by the key's last 20 characters (2.1.289). A config
-    directory made by anything else, `claude auth status` among them, has none of them."""
-    state = config_dir / ".claude.json"
-    settings = config_dir / "settings.json"
-    cwd = _cwd(config_dir).resolve()
+    """Why the brain would start on one of Claude Code's first screens, or None when it would not, as Claude Code records
+    them in the brain's own .claude.json. A config directory made by anything else, `claude auth status` among them, has
+    none of them. Its API key is the one its settings.json sets: hands' never reaches it (FOREIGN_LOGINS)."""
     try:
-        key = _settings_key(settings)
+        open_ = firstrun.unanswered(firstrun.recorded(config_dir / ".claude.json"), _cwd(config_dir).resolve(), firstrun.api_key(config_dir / "settings.json", {}))
     except Rejected as error:
-        return f"{settings} unreadable: {error}"
-    try:
-        said = Payload.parse(state.read_bytes())
-        projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
-        trusted = any(Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted") for place in map(str, (cwd, *cwd.parents)) if place in projects)
-        onboarding = said.optional_flag("hasCompletedOnboarding")
-        responses = Payload.of(said.fields.get("customApiKeyResponses", {}), "its API key answers")
-        keys_answered = {*responses.optional_items("approved"), *responses.optional_items("rejected")}
-    except FileNotFoundError:
-        return f"no {state}"
-    except Rejected as error:
-        # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot read.
-        return f"{state} unreadable: {error}"
-    if not onboarding:
-        return "its onboarding unfinished"
-    if not trusted:
-        return f"{cwd} untrusted"
-    if key is not None and key[-20:] not in keys_answered:
-        return f"the API key {settings} sets unanswered"
-    return None
-
-
-def _settings_key(settings: Path) -> str | None:
-    """The API key `settings` puts in the brain's environment, where the brain's own is set: hands' never reaches it (FOREIGN_LOGINS)."""
-    try:
-        raw = settings.read_bytes()
-    except FileNotFoundError:
-        return None
-    return Payload.of(Payload.parse(raw).fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
+        return str(error)
+    return None if open_ is None else open_.why
 
 
 def answered(config_dir: Path) -> None:
