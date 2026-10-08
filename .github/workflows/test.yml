@@ -33,6 +33,6 @@ jobs:
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
-      # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright and fritter's go tests.
+      # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright, fritter's go tests, and the app launcher's type check.
       - name: make check
         run: make check

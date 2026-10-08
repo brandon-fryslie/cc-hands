@@ -387,7 +387,9 @@ uv run hands phone                      # the addresses a phone opens the talk p
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
-make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
+make check                              # pytest, pyright, fritter's Go tests, and a type check of hands.app's launcher; fails when any of them fails
+make app                                # build/hands.app, which runs `hands run` from the user's login shell and holds hands' Microphone and Input Monitoring grants itself; signed with this Mac's Developer ID; its log is ~/Library/Logs/hands/hands.log
+make notarized-app                      # the same, notarized by Apple and stapled, so Gatekeeper opens it on any Mac; HANDS_NOTARY_PROFILE names the notarytool keychain profile
 ```
 
 `hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)
