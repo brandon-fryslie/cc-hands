@@ -709,13 +709,13 @@ def test_a_native_claude_on_path_is_ready(root: Path) -> None:
 
 def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> None:
     found = readiness.claude(f"{root / 'empty'}:/usr/bin:/bin")
-    assert isinstance(found, Missing) and "no `claude` of its own" in found.said and "https://claude.ai/install.sh" in found.said
+    assert isinstance(found, Missing) and "no `claude` of its own" in found.said and readiness.INSTALL in found.said
 
 
 def test_a_claude_that_is_a_script_is_missing_and_names_the_native_one(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\n")
     found = readiness.claude(f"{root / 'real'}:/usr/bin:/bin")
-    assert isinstance(found, Missing) and "is a script" in found.said and "https://claude.ai/install.sh" in found.said
+    assert isinstance(found, Missing) and "is a script" in found.said and "`claude install`" in found.said
 
 
 # PortAudio
@@ -730,7 +730,7 @@ def test_a_pyaudio_that_cannot_load_is_missing_and_names_homebrews_portaudio(mon
     # As when Homebrew's portaudio is gone: importing PyAudio's extension fails.
     monkeypatch.setitem(sys.modules, "pyaudio", None)
     found = readiness.portaudio()
-    assert isinstance(found, Missing) and "`brew install portaudio`" in found.said
+    assert isinstance(found, Missing) and readiness.INSTALL in found.said
 
 
 # hands on PATH
@@ -747,9 +747,9 @@ def test_this_hands_on_path_is_ready(root: Path) -> None:
     assert isinstance(found, Ready) and str(root / "tools" / "hands") in found.said
 
 
-def test_no_hands_on_path_is_missing_and_says_how_uv_puts_it_there(root: Path) -> None:
+def test_no_hands_on_path_is_missing_and_says_the_install_command_puts_it_there(root: Path) -> None:
     found = readiness.installed(f"{root / 'empty'}:/usr/bin:/bin")
-    assert isinstance(found, Missing) and "`hands plugin`" in found.said and "`uv tool update-shell`" in found.said
+    assert isinstance(found, Missing) and "`hands plugin`" in found.said and readiness.INSTALL in found.said
 
 
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:

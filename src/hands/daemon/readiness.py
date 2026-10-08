@@ -2,8 +2,8 @@
 
     hands check     # one line a step; exits 0 only when every step is done
 
-The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
-installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
+The steps, in the README's order: what its one install command puts in, which is Claude Code, PortAudio, which the
+microphone opens through, and the installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
 the plugin that joins sessions to hands; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
@@ -61,7 +61,8 @@ Keyboards = Callable[[Sequence[int]], list[Keyboard]]
 LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
 VERSION_TIMEOUT_SECONDS = 30.0
-INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
+# [LAW:one-source-of-truth] the README's one install command, which installs whichever of Claude Code, PortAudio and hands is missing.
+INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"`'
 
 
 def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
@@ -76,7 +77,7 @@ def claude(path: str) -> Finding:
     """Whether this PATH has a Claude Code of its own, apart from any hands shim, installed as its installer puts it."""
     match claude_code(wrapper.real_claude(path)):
         case Unfindable(said):
-            return Missing(f"no Claude Code that hands can join its sessions of: {said}. Claude Code's installer puts it in: {INSTALL_CLAUDE}")
+            return Missing(f"no Claude Code that hands can join its sessions of: {said}")
         case executable:
             return Ready(f"Claude Code is installed: {executable}")
 
@@ -86,7 +87,7 @@ def portaudio() -> Finding:
     try:
         import pyaudio
     except ImportError as error:
-        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: `brew install portaudio`, with Homebrew from https://brew.sh")
+        return Missing(f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone: the install command puts it in: {INSTALL}")
     return Ready(f"PortAudio is there for the microphone: {pyaudio.get_portaudio_version_text()}")
 
 
@@ -97,7 +98,7 @@ def installed(path: str) -> Finding:
     if found is None:
         return Missing(
             "this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks: "
-            "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH"
+            f"the install command puts it there: {INSTALL}"
         )
     try:
         said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)
@@ -301,7 +302,7 @@ def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | 
 def claude_code(claude: Path | None) -> Path | Unfindable:
     """The executable a session of the real `claude` on PATH runs as."""
     if claude is None:
-        return Unfindable("this PATH has no `claude` of its own, apart from any hands shim")
+        return Unfindable(f"this PATH has no `claude` of its own, apart from any hands shim; the install command puts it in: {INSTALL}")
     executable = claude.resolve()
     try:
         with executable.open("rb") as start:
