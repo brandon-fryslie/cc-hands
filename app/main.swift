@@ -364,16 +364,17 @@ func validate(_ key: String, then: @escaping (Answer) -> Void) {
 }
 
 struct Validated: Decodable { let status: String }
-struct Detail: Decodable { let detail: String }
+// Polar's own error, as it names its class; a 404 of a route Polar does not have names none.
+struct Refusal: Decodable { let error: String; let detail: String }
 
 // [LAW:parse-dont-validate] Polar's word on a key is one of two answers: 200 with the key's status, or 404 saying why it
-// has none, an unknown, revoked, disabled or expired key. Anything else, Polar busy or down, a captive portal's page, a
+// has none, an unknown, revoked, disabled or expired key, as Polar's ResourceNotFound. Anything else, Polar busy or down, a captive portal's page, a
 // proxy's refusal, is not Polar saying the subscription ended. The body is never repeated: Polar's carries the key.
 func answered(_ status: Int, _ body: Data) -> Answer {
     if status == 200, let said = try? JSONDecoder().decode(Validated.self, from: body) {
         return said.status == "granted" ? .granted : .refused("the key is \(said.status)")
     }
-    if status == 404, let said = try? JSONDecoder().decode(Detail.self, from: body) {
+    if status == 404, let said = try? JSONDecoder().decode(Refusal.self, from: body), said.error == "ResourceNotFound" {
         return .refused(said.detail)
     }
     return .unreachable("HTTP \(status), with no word from Polar on the key")

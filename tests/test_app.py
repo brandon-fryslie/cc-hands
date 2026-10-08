@@ -250,7 +250,7 @@ def test_a_live_key_starts_hands_and_polar_hears_only_the_key_and_the_organizati
     [
         (404, {"error": "ResourceNotFound", "detail": "License key is no longer active."}, "License key is no longer active."),
         (404, {"error": "ResourceNotFound", "detail": "License key has expired."}, "License key has expired."),
-        (404, {"error": "ResourceNotFound", "detail": "Not found"}, "Not found"),
+        (404, {"error": "ResourceNotFound", "detail": "License key not found."}, "License key not found."),
         (200, {"status": "revoked", "key": LIVE}, "the key is revoked"),
     ],
 )
@@ -270,8 +270,8 @@ def test_a_key_polar_refuses_does_not_start_hands_and_the_person_is_told_why(
 
 @pytest.mark.parametrize(
     ("status", "body"),
-    [(None, None), (503, {"error": "ServiceUnavailable"}), (200, "<html>Sign in to the hotel Wi-Fi</html>"), (407, "Proxy Authentication Required")],
-    ids=["unreachable", "down", "captive-portal", "proxy"],
+    [(None, None), (503, {"error": "ServiceUnavailable"}), (200, "<html>Sign in to the hotel Wi-Fi</html>"), (407, "Proxy Authentication Required"), (404, {"detail": "Not Found"})],
+    ids=["unreachable", "down", "captive-portal", "proxy", "no-such-route"],
 )
 def test_a_key_last_seen_live_within_the_grace_period_starts_hands_while_polar_cannot_be_reached(
     opened: Open, tmp_path: Path, polar: Polar, status: int | None, body: object
