@@ -1638,8 +1638,11 @@ embedding's cosine to the owner's voiceprint (0.5), kept in the home's `speakers
 print is taught by holds of the desk's key and by each engaged conversation heard, once it is over, to have
 had the owner's voice alone in it (three holds of it at least for the first print), so it is learnt in solo conversations and used in shared ones. Each hold
 carries the conversation it was said in from the gate, since its telling can come after the owner disengaged.
-Someone else's words reach the brain inside `[someone else in the room: ...]`, and the prompt makes hands the third person
-at the table: silent unless spoken to, and moving a session only on the user's word. Each telling is a
+Everyone else is placed by the `Room` (`room.json` beside the print, mode 0600; delete it to hear the others anew):
+each has a voiceprint of their own, a number in the order first heard, and the name they gave through the brain's
+`name_voice` tool. Their words reach the brain as `[Sam, someone else in the room: ...]`, `[someone else in the room,
+voice 2, name not yet known: ...]`, or, for a hold too short to place or a Room that failed, `[someone else in the
+room: ...]`. Anyone may ask and talk the work over; only the owner's word acts, a guest's own name excepted. Each telling is a
 `Voiced` line with its similarity, which is what the threshold is tuned by.
 
 **The prompt.** The brain's prompt is `voice/intermediary_instruction.py`. It says when to

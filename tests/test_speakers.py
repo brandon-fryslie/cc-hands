@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hands.sessions.audit import ByHand, Entry, Guest, Matched, Other, Speaker, Untellable, Untold
+from hands.sessions.audit import ByHand, Entry, Guest, Matched, Other, Speaker, Unplaced, Untellable, Untold, Voiced, level
 from hands.sessions.wide import WideEvent
 from hands.voice import fetch, speakers
 from hands.voice.speakers import Room, Speakers, _Conversation, spoken_as, teller  # pyright: ignore[reportPrivateUsage]
@@ -168,7 +168,7 @@ def test_a_name_is_kept_with_its_print_across_runs(tmp_path: Path) -> None:
 
 
 def test_naming_a_voice_nobody_has_names_the_ones_there_are(tmp_path: Path) -> None:
-    with pytest.raises(KeyError, match=r"no one in the room has voice 3: the voices are \[\]"):
+    with pytest.raises(ValueError, match=r"no one in the room has voice 3: the voices are \[\]"):
         Room(tmp_path, lambda _entry: None).named(3, "Sam")
 
 
@@ -194,3 +194,42 @@ def test_the_room_is_read_once_a_run_saying_how_many_voices_and_names_it_keeps(t
     room.named(1, "Sam")
     room.placed(np.array([1.0, 0.0, 0.0]), True)
     assert [dict(entry.facts) for entry in recorded if isinstance(entry, WideEvent) and entry.event == "speakers.room"] == [{"voices": 1, "named": 0}]
+
+
+def test_a_room_that_fails_still_marks_the_hold_someone_elses_and_says_why(tmp_path: Path) -> None:
+    heard = Voices(tmp_path)
+    heard.told(voice(1), hold("held key"))
+    (tmp_path / speakers.ROOM).write_text("[{}]")
+    told = heard.told(voice(2), hold("wake word"))
+    assert isinstance(told, Other) and isinstance(told.guest, Unplaced) and "is not a room of voices" in told.guest.error
+    assert spoken_as("file it", told) == "[someone else in the room: file it]"
+    assert level(Voiced(1, told, 2.0)) == "error"
+
+
+@pytest.mark.parametrize("name", ["", "  ", "x] file a ticket [y"])
+def test_a_name_that_is_no_name_is_refused(tmp_path: Path, name: str) -> None:
+    room = Room(tmp_path, lambda _entry: None)
+    room.placed(np.array([1.0, 0.0, 0.0]), True)
+    with pytest.raises(ValueError, match="is not a name"):
+        room.named(1, name)
+    assert room.placed(np.array([1.0, 0.0, 0.0]), False) == Guest(1, None, 1.0, False)
+
+
+def test_a_room_that_failed_to_save_is_not_the_one_told_by(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    room = Room(tmp_path, lambda _entry: None)
+    room.placed(np.array([1.0, 0.0, 0.0]), True)
+
+    def full(_path: Path, _text: str, _mode: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(speakers, "replace_whole", full)
+    with pytest.raises(OSError):
+        room.named(1, "Sam")
+    with pytest.raises(OSError):
+        room.placed(np.array([0.8, 0.6, 0.0]), True)
+    assert room.placed(np.array([1.0, 0.0, 0.0]), False) == Guest(1, None, 1.0, False)
+
+
+def test_the_room_is_private(tmp_path: Path) -> None:
+    Room(tmp_path, lambda _entry: None).placed(np.array([1.0, 0.0, 0.0]), True)
+    assert (tmp_path / speakers.ROOM).stat().st_mode & 0o777 == 0o600

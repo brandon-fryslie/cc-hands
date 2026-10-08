@@ -201,8 +201,8 @@ def name_voice_tool(room: Room) -> Tool:
         """
         try:
             await asyncio.to_thread(room.named, voice, name)
-        except KeyError as error:
-            return {"error": str(error.args[0])}
+        except ValueError as error:
+            return {"error": str(error)}
         return {"named": name}
 
     return tool(name_voice)

@@ -20,7 +20,8 @@ from typing import Literal
 
 import numpy as np
 
-from hands.sessions.audit import ByHand, Guest, Matched, Other, Record, Speaker, Untellable, Untold
+from hands.sessions.audit import ByHand, Guest, Matched, Other, Record, Speaker, Unplaced, Untellable, Untold
+from hands.sessions.files import replace_whole
 from hands.sessions.wide import annotate, unit
 from hands.voice import fetch
 from hands.voice.transcription import RATE
@@ -124,7 +125,13 @@ class Speakers:
                 similarity = _cosine(embedding, self._taught)
                 if similarity >= SAME_VOICE:
                     return Matched(similarity)
-                return Other(similarity, self._room.placed(embedding, long_enough))
+                try:
+                    guest = self._room.placed(embedding, long_enough)
+                except Exception as error:
+                    # [LAW:no-silent-failure] the Room failing is an error line, and the hold is still someone else's:
+                    # an Untellable hold's words would reach the brain as the owner's.
+                    guest = Unplaced(f"{type(error).__name__}: {error}")
+                return Other(similarity, guest)
 
     def _learn(self, conversation: _Conversation) -> None:
         """Teach the print from `conversation` if it was the owner's alone: every hold in it one voice, and that voice
@@ -197,8 +204,7 @@ class Room:
             likeness, nearest = max(((_cosine(embedding, guest.print_), guest) for guest in known), key=lambda pair: pair[0], default=(0.0, None))
             if nearest is not None and likeness >= SAME_VOICE:
                 if long_enough:
-                    nearest.print_ = nearest.print_ + embedding
-                    self._save(known)
+                    self._save([_Known(guest.voice, guest.name, guest.print_ + embedding) if guest is nearest else guest for guest in known])
                 return Guest(nearest.voice, nearest.name, likeness, long_enough)
             if not long_enough:
                 return None
@@ -208,13 +214,16 @@ class Room:
 
     def named(self, voice: int, name: str) -> None:
         """Give the voice numbered `voice` the name `name`, kept with its print."""
+        # [LAW:parse-dont-validate] a name is what goes inside spoken_as's brackets: one that closes them would put a
+        # guest's words outside, where they read as the owner's.
+        name = name.strip()
+        if not name or any(mark in name for mark in "[]"):
+            raise ValueError(f"{name!r} is not a name: a name has words in it and no brackets")
         with self._lock:
             known = self._loaded()
-            guest = next((guest for guest in known if guest.voice == voice), None)
-            if guest is None:
-                raise KeyError(f"no one in the room has voice {voice}: the voices are {[guest.voice for guest in known]}")
-            guest.name = name
-            self._save(known)
+            if voice not in (guest.voice for guest in known):
+                raise ValueError(f"no one in the room has voice {voice}: the voices are {[guest.voice for guest in known]}")
+            self._save([_Known(guest.voice, name, guest.print_) if guest.voice == voice else guest for guest in known])
 
     def _loaded(self) -> list[_Known]:
         if self._known is None:
@@ -225,10 +234,8 @@ class Room:
         return self._known
 
     def _save(self, known: list[_Known]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        partial = self._path.with_name(f"{ROOM}.partial")
-        partial.write_text(json.dumps([{"voice": guest.voice, "name": guest.name, "print": guest.print_.tolist()} for guest in known]))
-        partial.replace(self._path)
+        # Private: voiceprints and names are the people's own.
+        replace_whole(self._path, json.dumps([{"voice": guest.voice, "name": guest.name, "print": guest.print_.tolist()} for guest in known]), 0o600)
         # Only once kept: a room that failed to save is not the one told by.
         self._known = known
 
