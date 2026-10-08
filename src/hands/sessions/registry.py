@@ -292,12 +292,12 @@ class Sessions:
         before = self._registry
         self._registry, decided = driving.decide(before, decidable)
         match decided:
-            case driving.Send(type=effect):
+            case driving.Send(type=effect, drive=sent):
                 typed = await self._type(effect)
                 match typed:
                     case NotTyped():
-                        # Nothing reached the session, so the send is not counted: the drive stands as it was handed.
-                        self._registry = self._registry.drive(effect.session, before.drives[effect.session])
+                        unsent = driving.Unsent(effect.session, sent, before.drives[effect.session])
+                        self._registry, _ = driving.decide(self._registry, unsent)
                     case Typed():
                         pass
                 return typed

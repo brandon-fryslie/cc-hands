@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.attention import Attention, Overlay, Spoken, Steering, Withheld, delivery
-from hands.core.drive import SENDS, DriveDropped, DriveSending, DriveWentOn, HandedBack, DriveStopped, Driving, LastSend, NotDriven, Send, StartDrive, StopDrive, decide
+from hands.core.drive import SENDS, DriveDropped, DriveSending, DriveWentOn, HandedBack, DriveStopped, Driving, LastSend, NotDriven, Send, StartDrive, StopDrive, Unsent, decide
 from hands.core.effects import Fritter, Text, Type
 from hands.core.events import Died
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
@@ -63,7 +63,7 @@ def test_a_session_never_driven_is_refused_and_nothing_is_typed(request_: StopDr
 
 
 def test_a_send_under_a_drive_types_the_prompt_and_counts_it() -> None:
-    assert decide(driven(), DriveSending(ONE.id, NEXT, PANE)) == (driven(1), Send(Type(ONE.id, FRITTER, Text(NEXT))))
+    assert decide(driven(), DriveSending(ONE.id, NEXT, PANE)) == (driven(1), Send(Type(ONE.id, FRITTER, Text(NEXT)), Drive(ORDER, 1)))
 
 
 def test_the_send_that_spends_the_order_ends_the_drive() -> None:
@@ -119,3 +119,12 @@ def test_a_driven_turn_the_brain_left_as_handed_ends_the_drive() -> None:
 @pytest.mark.parametrize("now", [driven(3), registry(), registry(drives={ONE.id: Drive("ship it", 2)})])
 def test_a_driven_turn_the_brain_sent_stopped_or_reordered_leaves_the_drive_as_it_is(now: Registry) -> None:
     assert decide(now, HandedBack(ONE.id, Drive(ORDER, 2))) == (now, DriveWentOn(ONE.id))
+
+
+def test_a_send_that_did_not_reach_the_session_is_not_counted() -> None:
+    assert decide(driven(1), Unsent(ONE.id, Drive(ORDER, 1), Drive(ORDER, 0))) == (driven(0), DriveWentOn(ONE.id))
+
+
+@pytest.mark.parametrize("now", [registry(), registry(drives={ONE.id: Drive("ship it", 1)})])
+def test_a_stop_or_new_order_made_while_a_send_was_typed_stands(now: Registry) -> None:
+    assert decide(now, Unsent(ONE.id, Drive(ORDER, 1), Drive(ORDER, 0))) == (now, DriveWentOn(ONE.id))

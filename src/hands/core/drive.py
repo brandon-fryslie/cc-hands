@@ -45,6 +45,15 @@ class HandedBack:
     handed: Drive
 
 
+@dataclass(frozen=True)
+class Unsent:
+    """A send under a drive did not reach the session: `sent` is the drive the send stored, `was` the one before it."""
+
+    session: SessionId
+    sent: Drive
+    was: Drive
+
+
 DriveRequest = StartDrive | StopDrive | DriveSend | HandedBack
 
 
@@ -57,7 +66,7 @@ class DriveSending:
     pane: Keyboard
 
 
-Decidable = StartDrive | StopDrive | DriveSending | HandedBack
+Decidable = StartDrive | StopDrive | DriveSending | HandedBack | Unsent
 
 
 @dataclass(frozen=True)
@@ -109,9 +118,10 @@ DriveOutcome = Driving | DriveStopped | NotDriven | DriveSpent | DriveDropped | 
 
 @dataclass(frozen=True)
 class Send:
-    """Type the prompt; the drive goes on."""
+    """Type the prompt; the drive goes on, as `drive`, with the send counted."""
 
     type: Type[Text]
+    drive: Drive
 
 
 @dataclass(frozen=True)
@@ -131,6 +141,12 @@ def decide(registry: Registry, request: Decidable) -> tuple[Registry, DriveOutco
             # a stop, or this, so a drive is never held with nobody driving it, however the brain's turn ended.
             return registry.undrive(id), DriveDropped(id, handed)
         case (HandedBack(), _, _):
+            return registry, DriveWentOn(id)
+        case (Unsent(sent=sent, was=was), _, now) if now == sent:
+            # Nothing reached the session, so the send is not counted: the drive stands as it was handed.
+            return registry.drive(id, was), DriveWentOn(id)
+        case (Unsent(), _, _):
+            # Stopped, reordered, or ended while the send was typed: that stands.
             return registry, DriveWentOn(id)
         case (_, None, _):
             return registry, UnknownSession(id)
@@ -158,6 +174,6 @@ def decide(registry: Registry, request: Decidable) -> tuple[Registry, DriveOutco
                     # [LAW:dataflow-not-control-flow] the count decides which send this is, never a flag set beside it.
                     match sent.sends < SENDS:
                         case True:
-                            return registry.drive(id, sent), Send(typed)
+                            return registry.drive(id, sent), Send(typed, sent)
                         case False:
                             return registry.undrive(id), LastSend(typed, sent)
