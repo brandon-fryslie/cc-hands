@@ -65,7 +65,9 @@ case "$1" in
   first-run)
     [ ! -e "$STUBS/first-run-unfinished" ] || exit 1
     [ ! -e "$STUBS/first-run-unaskable" ] || exit 2 ;;
-  login) [ ! -e "$STUBS/login-unfinished" ] || exit 1 ;;
+  login)
+    [ ! -e "$STUBS/login-unfinished" ] || exit 1
+    [ ! -e "$STUBS/login-unaskable" ] || exit 2 ;;
   install-plugin)
     [ ! -e "$STUBS/plugin-declined" ] || exit 1
     [ ! -e "$STUBS/claude-unaskable" ] || exit 2 ;;
@@ -287,6 +289,13 @@ def test_a_brain_left_logged_out_stops_the_run_before_the_plugin_saying_a_second
     assert "hands install-plugin" not in sandbox.calls()
     (sandbox.root / "stubs" / "login-unfinished").unlink()
     assert sandbox.run().returncode == 0
+
+
+def test_a_brain_login_claude_code_could_not_be_asked_for_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "login-unaskable").touch()
+    ran = sandbox.run()
+    assert ran.returncode == 1 and "the brain is not logged in" in ran.stderr and "could not be asked" in ran.stderr and "asks again" not in ran.stderr
+    assert "hands install-plugin" not in sandbox.calls()
 
 
 def test_a_first_run_claude_code_could_not_be_asked_for_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:

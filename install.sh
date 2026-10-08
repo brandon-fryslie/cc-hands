@@ -149,7 +149,13 @@ case $first_run in
 esac
 
 # The brain's login, which only the person can make: a brain that holds one keeps it, and nothing is asked.
-hands login || fail "the brain is not logged in, for the reason \`hands login\` said above, so hands has no model to talk with; running this command again asks again"
+login=0
+hands login || login=$?
+case $login in
+  0) ;;
+  1) fail "the brain is not logged in, so hands has no model to talk with; running this command again asks again" ;;
+  *) fail "the brain is not logged in, so hands has no model to talk with: Claude Code could not be asked, as said above" ;;
+esac
 
 # Last, so that declining it leaves every step before it done.
 plugin=0

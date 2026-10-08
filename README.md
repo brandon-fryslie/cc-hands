@@ -26,9 +26,10 @@ is not, what does it; it exits 0 only when every step is done.
    theme, your login, whether to trust that folder, and, with `ANTHROPIC_API_KEY` set, whether to use that key (no
    keeps it on your login). The command names each before Claude Code shows it: answer them and type `/exit`. Claude
    Code that has answered them already asks nothing, and one with no login logs in with its own login. Then the brain,
-   the Claude Code of hands' own that hands talks through, starts the same way in its own folder, `~/.hands/brain`: answer
+   the Claude Code of hands' own that hands talks through, starts the same way in its own folder, `~/.hands/brain/cwd`: answer
    its questions, log it in on a Claude plan or an Anthropic Console account, whichever you pick on its login screen, and
-   type `/exit`. A brain that holds a login already asks nothing. Last, Claude
+   type `/exit`. A brain that holds a login already asks nothing, and one with none logs in with Claude Code's own login on a
+   Claude plan, or with `hands login --console` on an Anthropic Console account. Last, Claude
    Code shows the command `hands plugin` and asks whether to run it, which the command says just before: answer y. It
    puts each on your login shell's `PATH`, hands' `claude` first, and leaves the terminal in a fresh login shell,
    where they are found.
