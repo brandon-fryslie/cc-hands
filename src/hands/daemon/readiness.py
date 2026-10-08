@@ -65,7 +65,7 @@ INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 
 def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
-    """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, this terminal's grant;
+    """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, the grant of the app this runs in;
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
@@ -143,7 +143,7 @@ def daemon(home: Home, now: datetime) -> Finding:
         case heartbeat.Unreadable():
             return Unknown(said)
         case heartbeat.NeverRan() | heartbeat.Down() | heartbeat.Unresponsive() | heartbeat.Stopped() | heartbeat.Refused():
-            return Missing(f"{said}: `hands run`, in a terminal that has the Input Monitoring grant")
+            return Missing(f"{said}: open hands.app, or `hands run` in a terminal that has the Input Monitoring grant")
 
 
 def plugin(path: str) -> Finding:
@@ -220,12 +220,12 @@ def shim(home: Home, path: str) -> Finding:
 
 
 def grant(granted: bool) -> Ready | Missing:
-    """Whether this terminal's app may show hands the keys typed in other apps."""
+    """Whether the app this runs in, hands.app or a terminal's, may show hands the keys typed in other apps."""
     if granted:
-        return Ready("this terminal has the Input Monitoring grant, so hands run here hears the talk key (Right Shift)")
+        return Ready("the app this runs in has the Input Monitoring grant, so hands run here hears the talk key (Right Shift)")
     return Missing(
-        "this terminal has no Input Monitoring grant, so hands run here cannot hear the talk key (Right Shift). Grant it "
-        "to the app this terminal runs in, in System Settings > Privacy & Security > Input Monitoring, and restart that app"
+        "the app this runs in has no Input Monitoring grant, so hands run here cannot hear the talk key (Right Shift). Grant it "
+        "to that app, hands.app or the terminal's, in System Settings > Privacy & Security > Input Monitoring, and restart it"
     )
 
 

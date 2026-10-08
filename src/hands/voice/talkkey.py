@@ -4,7 +4,7 @@
 """The talk key's edge: Right Shift, and every other key, as macOS reports them from whichever app has focus.
 
 A listen-only event tap: it sees keys and never holds one back, so Shift keeps working as Shift in every app. macOS
-shows it keys only with the Input Monitoring grant, which belongs to the app hands runs in, the terminal; without the
+shows it keys only with the Input Monitoring grant, which belongs to the app hands runs in, hands.app or a terminal's; without the
 grant no tap is made, so the grant is checked at the door (`granted`) and a tap that still cannot be made fails loudly.
 """
 

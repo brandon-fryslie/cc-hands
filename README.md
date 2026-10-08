@@ -70,11 +70,11 @@ is not, what does it; it exits 0 only when every step is done.
    hands login
    ```
 
-7. The Input Monitoring grant for the terminal app hands runs in, so it hears the talk
-   key from other apps: System Settings > Privacy & Security > Input Monitoring, then
+7. The Input Monitoring grant for the app hands runs in, hands.app (`make app`) or the
+   terminal app, so it hears the talk key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-8. hands itself, in that terminal; then hold Right Shift in any app to talk. Its first
+8. hands itself, by opening hands.app or in that terminal; then hold Right Shift in any app to talk. Its first
    start fetches Whisper's model, about 1.6 GB, from the Hugging Face hub:
 
    ```
@@ -396,13 +396,13 @@ make notarized-app                      # the same, notarized by Apple and stapl
 and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
+brain's login; the Input Monitoring grant of the app it runs in; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 says the same lines as it starts, the brain as it reached it. An up daemon is not a
 working hands: `hands status` says only whether the daemon is running.
 
-`hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &
+`hands run` needs the Input Monitoring grant for the app it runs in, hands.app or the terminal app (System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
 
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four

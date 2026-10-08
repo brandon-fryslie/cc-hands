@@ -4,78 +4,143 @@
 // when the daemon ends in failure.
 import AppKit
 
-// [LAW:one-source-of-truth] the hands a terminal runs is the one the app runs: the user's login shell, interactive so
-// it reads the same rc files a terminal does, finds `hands` on the PATH they set, and hands the daemon that PATH
-// (fritter's claude shim, tmux). The shell comes from the user database, as Terminal takes it, not from the
-// environment a GUI app inherits.
-let shell = String(cString: getpwuid(getuid())!.pointee.pw_shell)
-let command = [shell, "-l", "-i", "-c", "exec hands run"]
+// Opened from Finder the app has no arguments; a test names the shell and the log it runs with.
+let given = CommandLine.arguments.dropFirst()
+
+// [LAW:one-source-of-truth] the environment a terminal gives hands is the one the app gives it: the user's login
+// shell, interactive so it reads the same rc files a terminal does, says its environment, and `hands` is found on the
+// PATH they set and runs with it (fritter's claude shim, tmux). The shell comes from the user database, as Terminal
+// takes it, not from the environment a GUI app inherits. The shell only says the environment and is never the
+// daemon: an interactive shell ignores SIGTERM, so one standing where hands will be would not hear a quit while it
+// reads its rc files.
+let shell = given.first ?? String(cString: getpwuid(getuid())!.pointee.pw_shell)
+// The NUL marks where rc files' own output ends and the environment begins.
+let environmentSaid = [shell, "-l", "-i", "-c", "/usr/bin/printf '\\0'; exec /usr/bin/env -0"]
 
 // ~/Library/Logs is where a Mac app's log lives, so Console.app shows it.
-let log = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/hands/hands.log")
+let log = given.dropFirst().first.map { URL(fileURLWithPath: $0) }
+    ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/hands/hands.log")
 
-// How many of the daemon's last lines a failure shows; the reason a start was refused is its last.
+// How many of this launch's last lines a failure shows; the reason a start was refused is its last.
 let SHOWN_LINES = 12
 
 enum Phase {
-    case running
-    // Quit by the person or the system: the daemon is told to stop, and the app ends once it has.
+    // The login shell saying its environment: nothing to wind down, so a quit ends it at once.
+    case reading(Process)
+    case running(Process)
+    // Quit by the person or the system: hands is told to stop, and the app ends once it has.
     case quitting
+    case over
 }
 
 final class Launcher: NSObject, NSApplicationDelegate {
-    let daemon = Process()
-    var phase = Phase.running
-    // The log, open for appending; the daemon writes to it too.
+    var phase = Phase.over
+    // The log, open for appending; the shell and the daemon write to it too.
     let output: FileHandle
     // Where this launch's lines begin in the log, so a failure shows this run's and no earlier one's.
     let start: UInt64
 
     init(output: FileHandle) throws {
         self.output = output
-        start = try output.seekToEnd()
+        start = try output.offset()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        daemon.executableURL = URL(fileURLWithPath: shell)
-        daemon.arguments = Array(command.dropFirst())
+        let reader = Process()
+        reader.executableURL = URL(fileURLWithPath: shell)
+        reader.arguments = Array(environmentSaid.dropFirst())
+        reader.standardInput = FileHandle.nullDevice
+        let told = Pipe()
+        reader.standardOutput = told
+        reader.standardError = output
+        do {
+            try reader.run()
+        } catch {
+            // [LAW:no-silent-failure] an app that cannot start hands says so, rather than sitting with nothing running.
+            stopped("hands.app could not start your login shell, \(shell): \(error.localizedDescription)")
+            return
+        }
+        phase = .reading(reader)
+        DispatchQueue.global().async {
+            let environment = told.fileHandleForReading.readDataToEndOfFile()
+            reader.waitUntilExit()
+            onMain { self.read(reader, environment) }
+        }
+    }
+
+    func read(_ reader: Process, _ told: Data) {
+        guard reader.terminationReason == .exit && reader.terminationStatus == 0 else {
+            stopped("hands.app could not read the environment of your login shell, \(shell): it \(how(reader)).\n\n\(lastLines())\n\nIts full log is \(log.path).")
+            return
+        }
+        // What precedes the first NUL is the rc files' own output; each entry after it is NAME=value.
+        let entries = told.split(separator: 0, omittingEmptySubsequences: false).dropFirst().filter { !$0.isEmpty }
+        let environment = Dictionary(entries.map { entry in
+            let text = String(decoding: entry, as: UTF8.self)
+            let name = text.prefix { $0 != "=" }
+            return (String(name), String(text.dropFirst(name.count + 1)))
+        }, uniquingKeysWith: { _, last in last })
+        let daemon = Process()
+        // env finds `hands` on the shell's PATH, and becomes it: the pid the app signals is hands'.
+        daemon.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        daemon.arguments = ["hands", "run"]
+        daemon.environment = environment
         daemon.standardInput = FileHandle.nullDevice
         daemon.standardOutput = output
         daemon.standardError = output
-        daemon.terminationHandler = { ended in DispatchQueue.main.async { self.ended(ended) } }
+        daemon.terminationHandler = { ended in onMain { self.ended(ended) } }
         do {
             try daemon.run()
         } catch {
-            // [LAW:no-silent-failure] an app that cannot start hands says so, rather than sitting with nothing running.
-            fail("hands.app could not start \(shell): \(error.localizedDescription)")
+            stopped("hands.app could not start hands: \(error.localizedDescription)")
             return
         }
-        // [LAW:nothing-unseen] the launch and the daemon's end, in the log beside what the daemon itself says.
-        said("started \(command.joined(separator: " ")) as pid \(daemon.processIdentifier)")
+        phase = .running(daemon)
+        // [LAW:nothing-unseen] the launch, the PATH hands was found on, and its end, beside what the daemon itself says.
+        said("started hands run as pid \(daemon.processIdentifier), from \(shell)'s PATH \(environment["PATH"] ?? "(none)")")
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard daemon.isRunning else { return .terminateNow }
-        // [LAW:single-enforcer] the daemon's own SIGTERM handling winds it down; the app waits for it to have.
-        phase = .quitting
-        daemon.terminate()
-        return .terminateLater
+        switch phase {
+        case .reading(let reader):
+            kill(reader.processIdentifier, SIGKILL)
+            return .terminateNow
+        case .running(let daemon):
+            // [LAW:single-enforcer] the daemon's own SIGTERM handling winds it down; the app waits for it to have.
+            phase = .quitting
+            daemon.terminate()
+            return .terminateLater
+        case .quitting:
+            return .terminateLater
+        case .over:
+            return .terminateNow
+        }
     }
 
     func ended(_ ended: Process) {
-        let how = ended.terminationReason == .exit ? "exited \(ended.terminationStatus)" : "was ended by signal \(ended.terminationStatus)"
-        said("hands \(how)")
-        switch phase {
+        let was = phase
+        phase = .over
+        said("hands \(how(ended))")
+        switch was {
         case .quitting:
             NSApp.reply(toApplicationShouldTerminate: true)
         case .running where ended.terminationReason == .exit && ended.terminationStatus == 0:
             NSApp.terminate(nil)
         case .running:
-            fail("hands \(how).\n\n\(lastLines())\n\nIts full log is \(log.path).")
+            stopped("hands \(how(ended)).\n\n\(lastLines())\n\nIts full log is \(log.path).")
+        case .reading, .over:
+            preconditionFailure("hands ended while the app was \(was)")
         }
     }
 
-    // This launch's lines from the daemon, the newest SHOWN_LINES of them.
+    // [LAW:nothing-unseen] what the person is told, in the log too.
+    func stopped(_ message: String) {
+        phase = .over
+        said("stopped: \(message)")
+        fail(message)
+    }
+
+    // This launch's lines from the shell and the daemon, the newest SHOWN_LINES of them.
     func lastLines() -> String {
         do {
             let reading = try FileHandle(forReadingFrom: log)
@@ -92,6 +157,17 @@ final class Launcher: NSObject, NSApplicationDelegate {
     }
 }
 
+// Work for the main thread, done by its run loop in any mode: a quit waiting on hands and an alert each spin it in a
+// mode of their own, and the main dispatch queue not at all while either was entered from it.
+func onMain(_ work: @escaping () -> Void) {
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue, work)
+    CFRunLoopWakeUp(CFRunLoopGetMain())
+}
+
+func how(_ ended: Process) -> String {
+    ended.terminationReason == .exit ? "exited \(ended.terminationStatus)" : "was ended by signal \(ended.terminationStatus)"
+}
+
 func fail(_ message: String) {
     NSApp.activate(ignoringOtherApps: true)
     let alert = NSAlert()
@@ -102,18 +178,43 @@ func fail(_ message: String) {
     NSApp.terminate(nil)
 }
 
+// Past this many bytes a launch begins the log again, keeping the last one beside it, so it does not grow without end.
+let LOG_LIMIT: UInt64 = 10_000_000
+
+func appending(to url: URL) throws -> FileHandle {
+    // O_APPEND: every write lands at the log's end, whoever else writes to it.
+    let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o644)
+    guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno)!) }
+    return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+}
+
 // The delegate is held here: NSApplication keeps only a weak reference to it.
 let launcher: Launcher
 do {
     try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
-    if !FileManager.default.fileExists(atPath: log.path) {
-        FileManager.default.createFile(atPath: log.path, contents: nil)
+    var output = try appending(to: log)
+    let begun = try output.seekToEnd() > LOG_LIMIT
+    if begun {
+        guard rename(log.path, log.path + ".1") == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno)!) }
+        output = try appending(to: log)
     }
-    launcher = try Launcher(output: FileHandle(forWritingTo: log))
+    launcher = try Launcher(output: output)
+    if begun {
+        launcher.said("began this log again; the last one is \(log.path).1")
+    }
 } catch {
     _ = NSApplication.shared
     fail("hands.app could not open its log, \(log.path): \(error.localizedDescription)")
     exit(1)
 }
 NSApplication.shared.delegate = launcher
+
+// [LAW:single-enforcer] a SIGTERM (killall, pkill) quits the app as its Quit does, so hands is wound down, not orphaned.
+// The handler that does nothing keeps the signal from ending the app before the source hears it. It is not SIG_IGN,
+// which every child would inherit: hands would ignore the SIGTERM a quit sends it. A caught signal is reset by exec.
+signal(SIGTERM) { _ in }
+let terminated = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+terminated.setEventHandler { onMain { NSApp.terminate(nil) } }
+terminated.resume()
+
 NSApplication.shared.run()

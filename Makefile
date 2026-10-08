@@ -4,7 +4,7 @@ check:
 	uv run pytest
 	uv run pyright
 	cd fritter && go test -race ./...
-	swiftc -typecheck app/main.swift
+	scripts/swiftc-app.sh -typecheck
 
 app:
 	scripts/build-app.sh build
