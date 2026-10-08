@@ -32,7 +32,7 @@ def asks(session: SessionId, request: str, on: Permission = BASH) -> Narrate:
 def held(session: SessionId, request: str, on: Permission = BASH) -> Mapping[SessionId, Session]:
     """The session live, its dialog waiting on an answer to `request`."""
     member = Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
-    return {session: Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=Held(on, RequestId(request), deadline=60.0, warned=False, expiry="hook"))}
+    return {session: Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=Held(on, RequestId(request), deadline=60.0, warned=False, continues=None))}
 
 
 GONE = SessionGone(SessionId("old"))
@@ -91,9 +91,9 @@ GONE = SessionGone(SessionId("old"))
             id="a request nothing waits on any more is not told",
         ),
         pytest.param(
-            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)), Speak(Expired(API, BASH, "hook"))),
+            (Speak(DeadlineNear(API, RequestId("a1"), BASH, 10.0)), Speak(Expired(API, BASH))),
             {},
-            (Speak(Expired(API, BASH, "hook")),),
+            (Speak(Expired(API, BASH)),),
             id="a deadline counted down on a dialog that expired is not told, its expiry is",
         ),
         pytest.param(

@@ -9,12 +9,12 @@ from pathlib import PurePath
 from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell
+from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell, WentOn
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
 from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
-from hands.core.session import AskedQuestion, Blocker, Expiry, Permission, Plan, PromptId, Question, SessionId
+from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
 from hands.core.sentences import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
@@ -152,7 +152,7 @@ async def relay(
 
 def _teller(heard: Heard) -> SessionId:
     match heard:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
+        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session) | WentOn(session=session)) | Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
             return session
 
 
@@ -325,9 +325,11 @@ def announcement_text(announcement: Announcement, names: Names) -> str:
     match announcement:
         case DeadlineNear(session=session, on=on, remaining=remaining):
             return f"{round(remaining)} seconds left to answer {names(session)} about {_what(on)}."
-        case Expired(session=session, on=on, expiry=expiry):
+        case Expired(session=session, on=on):
             # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
-            return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on, expiry)}."
+            return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on)}."
+        case WentOn(session=session, on=on):
+            return f"Nobody answered {names(session)} about {_what(on)} in time, so it went on without an answer."
 
 
 def answer_readback(outcome: Outcome, names: Names) -> str:
@@ -354,14 +356,12 @@ def _done(decision: Decision, what: str, name: str) -> str:
             return f"Sent {what} back to keep planning for {name}"
 
 
-def _left(on: Blocker, expiry: Expiry) -> str:
-    match on, expiry:
-        case Permission(), _:
+def _left(on: Blocker) -> str:
+    match on:
+        case Permission():
             return "I told it no"
-        case Question() | Plan(), "hook":
+        case Question() | Plan():
             return "it is left waiting at its dialog"
-        case Question() | Plan(), "continued":
-            return "it goes on without an answer"
 
 
 def _what(on: Blocker) -> str:

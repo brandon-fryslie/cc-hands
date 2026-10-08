@@ -10,7 +10,7 @@ from loguru import logger
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Attached, Displayed, Ended, EndReason, Event, Joined, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
-from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, AutoContinued, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership, recorded_membership
@@ -154,7 +154,12 @@ def _ran(payload: Payload) -> FinishedCall:
             # Its input is what the approval sent, which is empty unless the plan was edited at the dialog (2.1.281).
             return PlanApproved()
         case _:
-            return _tool_call(payload)
+            match _tool_call(payload):
+                case Question(asked=asked, input=input) if "afkTimeoutMs" in input:
+                    # Claude Code went on from the question by itself, and says so in its input (2.1.289).
+                    return AutoContinued(asked)
+                case call:
+                    return call
 
 
 def _tool_call(payload: Payload) -> Permission | Question:

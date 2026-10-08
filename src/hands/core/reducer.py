@@ -33,6 +33,7 @@ from hands.core.effects import (
     Unclosed,
     Unregistered,
     Unsettled,
+    WentOn,
     Withdraw,
 )
 from hands.core.events import (
@@ -67,7 +68,7 @@ from hands.core.events import (
 )
 from hands.core.occurrences import Cleared
 from hands.core.progress import Doing, Gathering
-from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unnamed, Unreported, Untold, status_stamp
+from hands.core.session import ids, AutoContinued, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unnamed, Unreported, Untold, status_stamp
 from hands.core.status import AtPrompt, Going, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
 
@@ -232,13 +233,14 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     # is heard at the session's next hook, whatever that hook moves the session to.
     mode = held if reported is None else reported
     background, overtaken = _backgrounded(event, was)
-    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog, registry.permission_deadline), background=background)
+    dialog, said = _dialog(event, was, registry.permission_deadline)
+    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=dialog, background=background)
     moved, stopped = _stopped(moved, event)
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
     after = replace(after, earlier=was.earlier | (ids(was.turn) - ids(after.turn)))
     # A turn left untold is told before what the event calls for, so before a prompt marks the next.
-    return registry.put(after), [*_transition(was, after), *told, *stopped, *settled, *overtaken]
+    return registry.put(after), [*_transition(was, after), *said, *told, *stopped, *settled, *overtaken]
 
 
 def _stopped(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
@@ -331,31 +333,30 @@ def _since_idle(state: SessionState, written: Stamp | None) -> bool:
             return True
 
 
-def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | None:
-    """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it."""
-    match (event, dialog):
+def _dialog(event: Moving, was: Session, deadline: float) -> tuple[Dialog | None, list[Effect]]:
+    """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it, and what is said of it."""
+    match (event, was.dialog):
         case (StatusReported(report=Report(status=at)), _) if isinstance(at, AtPrompt):
             # At its prompt: no dialog is up, whether it was answered at the keyboard or escaped.
-            return None
+            return None, []
         case (PermissionRequested(request=request), Held(request=held)) if held == request:
             # The request it already waits on, heard again: its deadline and whether it was warned are its own, by request id.
-            return dialog
+            return was.dialog, []
         case (PermissionRequested(at=at, request=request, on=on, timeout=timeout), _):
-            # The wait ends at the sooner of hands' deadline for the hook and Claude Code's own for the dialog, so its
-            # warning is spoken before whichever comes first.
-            match timeout:
-                case float() if timeout < deadline:
-                    return Held(on=on, request=request, deadline=at + timeout, warned=False, expiry="continued")
-                case _:
-                    return Held(on=on, request=request, deadline=at + deadline, warned=False, expiry="hook")
+            # Claude Code's askUserQuestionTimeout runs beside the hook from the request, and restarts on any touch at the
+            # dialog. [LAW:single-enforcer] Claude Code alone goes on when it runs out; hands only warns before it.
+            return Held(on=on, request=request, deadline=at + deadline, warned=False, continues=None if timeout is None else at + timeout), []
+        case (ToolFinished(call=AutoContinued() as call), Held(on=Question() as asked) | LetGo(on=Question() as asked)) if _same_call(asked, call):
+            # [LAW:one-source-of-truth] Claude Code says it went on unanswered, rather than hands guessing it from its own clock.
+            return None, [Speak(WentOn(was.membership.id, asked))]
         case (ToolFinished(call=call), Held(on=asked) | LetGo(on=asked)) if _same_call(asked, call):
             # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
-            return None
+            return None, []
         case (Prompted(), _):
             # Typed at the session: a dialog it was typed past was answered, and one escaped is waited on no more.
-            return None
+            return None, []
         case _:
-            return dialog
+            return was.dialog, []
 
 
 def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
@@ -552,7 +553,7 @@ def _opens(session: Session, prompt: PromptId, written: Stamp | None) -> bool:
 
 def _same_call(asked: Blocker, call: FinishedCall) -> bool:
     match (asked, call):
-        case (Question(asked=questions), Question(asked=answered)):
+        case (Question(asked=questions), Question(asked=answered) | AutoContinued(asked=answered)):
             # A question answered at the keyboard comes back with the answers added to its input: it is the same
             # call when it asks the same questions.
             return questions == answered
@@ -686,10 +687,10 @@ def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effe
 
 def _expiring(session: SessionId, dialog: Dialog | None, at: Instant) -> tuple[Dialog | None, list[Effect]]:
     match dialog:
-        case Held(on=on, request=request, deadline=deadline, expiry=expiry) if at >= deadline:
+        case Held(on=on, request=request, deadline=deadline) if at >= deadline:
             left, reply = _expiry(on)
-            return left, [Reply(session, request, reply), Speak(Expired(session, on, expiry))]
-        case Held(on=on, request=request, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
-            return replace(dialog, warned=True), [Speak(DeadlineNear(session, request, on, remaining=deadline - at))]
+            return left, [Reply(session, request, reply), Speak(Expired(session, on))]
+        case Held(on=on, request=request, due=due, warned=False) if at >= due - WARNING_LEAD_SECONDS:
+            return replace(dialog, warned=True), [Speak(DeadlineNear(session, request, on, remaining=due - at))]
         case _:
             return dialog, []

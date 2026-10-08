@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.core.attention import Amount
-from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Speak
+from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Speak, WentOn
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
@@ -164,7 +164,7 @@ def current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> boo
 def _story(pending: Pending) -> SessionId:
     """Whose story `pending` is told in: its session's."""
     match pending:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)):
+        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session) | WentOn(session=session)):
             return session
         case Narrate(moment=moment):
             return moment.session

@@ -27,6 +27,7 @@ from hands.core.effects import (
     Snapshot,
     Summarise,
     Unregistered,
+    WentOn,
     Withdraw,
 )
 from hands.core.events import Abandoned, Attached, CarriedOut, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
@@ -34,8 +35,8 @@ from hands.core import progress
 from hands.core.reducer import EXPIRED_MESSAGE, UNTOLD, WARNING_LEAD_SECONDS, reduce
 from hands.core.session import (
     AskedQuestion,
+    AutoContinued,
     Dialog,
-    Expiry,
     Gone,
     Held,
     Idle,
@@ -83,7 +84,7 @@ NEXT = PromptId("p2")
 IDLE = Idle(status.Idle(), Stamp(900), after=None)
 BUSY = Running(Busy(), Stamp(1000), idled=Stamp(1000))
 AT_DIALOG = Running(Waiting("permission prompt"), Stamp(1100), idled=Stamp(1000))
-HELD = Held(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False, expiry="hook")
+HELD = Held(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False, continues=None)
 
 LIVE: list[SessionState] = [Unreported(), IDLE, BUSY, AT_DIALOG]
 SESSION_EVENTS: list[SessionEvent] = [
@@ -276,7 +277,7 @@ def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:
     edit = Permission(tool="Edit", input={"file_path": "a.py"})
     after, effects = reduce(holding(AT_DIALOG, dialog=HELD), PermissionRequested(ONE.id, at=7.0, request=RequestId("r1"), on=edit, mode=None, timeout=None))
-    assert after == holding(AT_DIALOG, dialog=Held(on=edit, request=RequestId("r1"), deadline=7.0 + TIMEOUT, warned=False, expiry="hook"))
+    assert after == holding(AT_DIALOG, dialog=Held(on=edit, request=RequestId("r1"), deadline=7.0 + TIMEOUT, warned=False, continues=None))
     assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw()), Narrate(Asking(ONE.id, RequestId("r1"), edit))]
 
 
@@ -295,7 +296,7 @@ def test_the_warning_is_spoken_once_as_the_deadline_nears() -> None:
 def test_at_the_deadline_the_request_is_denied_and_said_to_be(warned: bool) -> None:
     after, effects = reduce(holding(AT_DIALOG, dialog=replace(HELD, warned=warned)), Tick(at=61.0))
     assert after == holding(AT_DIALOG)
-    assert effects == [Reply(ONE.id, RequestId("r0"), Deny(EXPIRED_MESSAGE)), Speak(Expired(ONE.id, BASH, "hook"))]
+    assert effects == [Reply(ONE.id, RequestId("r0"), Deny(EXPIRED_MESSAGE)), Speak(Expired(ONE.id, BASH))]
 
 
 def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> None:
@@ -309,33 +310,43 @@ def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> N
         Narrate(Asking(ONE.id, RequestId("r"), BASH)),
         Speak(DeadlineNear(ONE.id, RequestId("r"), BASH, remaining=WARNING_LEAD_SECONDS)),
         Reply(ONE.id, RequestId("r"), Deny(EXPIRED_MESSAGE)),
-        Speak(Expired(ONE.id, BASH, "hook")),
+        Speak(Expired(ONE.id, BASH)),
     ]
 
 
+QUESTION = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), {"questions": []})
+
+
 @pytest.mark.parametrize(
-    ("timeout", "deadline", "expiry"),
+    ("timeout", "warned"),
     [
-        # Claude Code continues the question first, so it is warned of before then and said to go on without an answer.
-        (TIMEOUT / 2, TIMEOUT / 2, "continued"),
+        # Claude Code goes on from the question first, so it is warned of before then; hands' own deadline stands.
+        (TIMEOUT / 2, TIMEOUT / 2 - WARNING_LEAD_SECONDS),
         # The hook's deadline comes first, as it does for a question Claude Code waits on as long as it takes.
-        (TIMEOUT * 10, TIMEOUT, "hook"),
-        (None, TIMEOUT, "hook"),
+        (TIMEOUT * 10, TIMEOUT - WARNING_LEAD_SECONDS),
+        (None, TIMEOUT - WARNING_LEAD_SECONDS),
     ],
 )
-def test_a_question_is_warned_of_and_let_go_at_the_sooner_of_its_own_timeout_and_the_hooks(timeout: float | None, deadline: float, expiry: Expiry) -> None:
-    question = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), {"questions": []})
-    state, _ = reduce(holding(BUSY), PermissionRequested(ONE.id, at=0.0, request=RequestId("q"), on=question, mode=None, timeout=timeout))
+def test_a_question_is_warned_of_before_the_sooner_of_its_own_timeout_and_the_hooks(timeout: float | None, warned: float) -> None:
+    state, _ = reduce(holding(BUSY), PermissionRequested(ONE.id, at=0.0, request=RequestId("q"), on=QUESTION, mode=None, timeout=timeout))
     heard: list[tuple[float, Effect]] = []
     for second in range(1, int(TIMEOUT) + 5):
         state, effects = reduce(state, Tick(at=float(second)))
         heard += [(float(second), effect) for effect in effects]
+    # A touch at the dialog restarts Claude Code's timer, so only Claude Code says when it went on; hands' hook ends on its own deadline.
     assert heard == [
-        (deadline - WARNING_LEAD_SECONDS, Speak(DeadlineNear(ONE.id, RequestId("q"), question, remaining=WARNING_LEAD_SECONDS))),
-        (deadline, Reply(ONE.id, RequestId("q"), Withdraw())),
-        (deadline, Speak(Expired(ONE.id, question, expiry))),
+        (warned, Speak(DeadlineNear(ONE.id, RequestId("q"), QUESTION, remaining=WARNING_LEAD_SECONDS))),
+        (TIMEOUT, Reply(ONE.id, RequestId("q"), Withdraw())),
+        (TIMEOUT, Speak(Expired(ONE.id, QUESTION))),
     ]
-    assert state == holding(BUSY, dialog=LetGo(question))
+    assert state == holding(BUSY, dialog=LetGo(QUESTION))
+
+
+@pytest.mark.parametrize("dialog", [Held(on=QUESTION, request=RequestId("q"), deadline=TIMEOUT, warned=True, continues=TIMEOUT / 2), LetGo(QUESTION)])
+def test_a_question_claude_code_went_on_from_unanswered_is_said_to_have(dialog: Dialog) -> None:
+    after, effects = reduce(holding(AT_DIALOG, dialog=dialog), ToolFinished(ONE.id, at=TIMEOUT / 2, call=AutoContinued(QUESTION.asked), mode=None))
+    assert after == holding(AT_DIALOG)
+    assert effects[-1:] == [Speak(WentOn(ONE.id, QUESTION))]
 
 
 def test_a_request_heard_again_keeps_its_deadline_and_is_warned_of_once() -> None:
@@ -460,12 +471,12 @@ def test_a_question_answered_at_the_keyboard_comes_back_with_its_answers_and_sti
     asked = {"questions": [{"question": "Which?", "options": [{"label": "this"}]}]}
     question = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), asked)
     answered = Question(question.asked, {**asked, "answers": {"Which?": "this"}})
-    waiting = Held(on=question, request=RequestId("r0"), deadline=65.0, warned=False, expiry="hook")
+    waiting = Held(on=question, request=RequestId("r0"), deadline=65.0, warned=False, continues=None)
     after, effects = reduce(holding(AT_DIALOG, dialog=waiting), ToolFinished(ONE.id, at=20.0, call=answered, mode=None))
     assert (after, effects) == (holding(AT_DIALOG), [Reply(ONE.id, RequestId("r0"), Withdraw())])
 
 
-@pytest.mark.parametrize("dialog", [Held(on=Plan("the plan"), request=RequestId("r0"), deadline=65.0, warned=False, expiry="hook"), LetGo(Plan("the plan"))])
+@pytest.mark.parametrize("dialog", [Held(on=Plan("the plan"), request=RequestId("r0"), deadline=65.0, warned=False, continues=None), LetGo(Plan("the plan"))])
 def test_a_plan_approved_at_the_keyboard_releases_the_wait(dialog: Dialog) -> None:
     after, _ = reduce(holding(AT_DIALOG, dialog=dialog), ToolFinished(ONE.id, at=20.0, call=PlanApproved(), mode=None))
     assert after == holding(AT_DIALOG)

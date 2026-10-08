@@ -51,6 +51,22 @@ def test_launch_settings_that_leave_it_unset_fall_through_to_the_users(tmp_path:
     assert timeout_of(started("--settings", flag), config(tmp_path, {"askUserQuestionTimeout": "60s"})) == QuestionTimeout(60.0, "userSettings", ())
 
 
+@pytest.mark.parametrize("value", [[], {}, 60, "2m"])
+def test_a_value_claude_code_does_not_have_is_unset(tmp_path: Path, value: object) -> None:
+    assert timeout_of(started("--settings", json.dumps({"askUserQuestionTimeout": value})), config(tmp_path, {"askUserQuestionTimeout": "5m"})) == QuestionTimeout(300.0, "userSettings", ())
+
+
+def test_a_session_started_to_leave_the_users_settings_unread_is_not_given_theirs(tmp_path: Path) -> None:
+    users = config(tmp_path, {"askUserQuestionTimeout": "60s"})
+    assert timeout_of(started("--setting-sources", "project,local"), users) == QuestionTimeout(None, None, ())
+    assert timeout_of(started("--setting-sources=user,project"), users) == QuestionTimeout(60.0, "userSettings", ())
+
+
+def test_a_settings_file_given_at_launch_that_is_not_there_is_said_to_be_unread(tmp_path: Path) -> None:
+    read = timeout_of(started("--settings", "gone.json", directory=tmp_path), config(tmp_path, {"askUserQuestionTimeout": "60s"}))
+    assert read == QuestionTimeout(60.0, "userSettings", (f"flagSettings: {tmp_path / 'gone.json'}: not found",))
+
+
 def test_settings_that_cannot_be_read_are_said_and_the_rest_still_count(tmp_path: Path) -> None:
     directory = config(tmp_path)
     (directory / "settings.json").write_text("{not json")

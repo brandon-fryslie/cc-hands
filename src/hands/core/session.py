@@ -141,13 +141,16 @@ class PlanApproved:
     is gone. What ran no longer carries the plan."""
 
 
+@dataclass(frozen=True)
+class AutoContinued:
+    """AskUserQuestion that Claude Code went on from after nobody touched its dialog for the session's
+    askUserQuestionTimeout, with whatever answers were selected by then. Its tool input carries afkTimeoutMs (2.1.289)."""
+
+    asked: tuple[AskedQuestion, ...]
+
+
 # A tool call that ran, named as the request to run it was so the two can be matched.
-FinishedCall = Permission | Question | PlanApproved
-
-
-# What ends the wait on a held dialog at its deadline: hands, letting its hook go before Claude Code kills it, or Claude
-# Code, continuing without an answer when its own timeout for the dialog comes sooner.
-Expiry = Literal["hook", "continued"]
+FinishedCall = Permission | Question | AutoContinued | PlanApproved
 
 
 @dataclass(frozen=True)
@@ -160,7 +163,18 @@ class Held:
     # [LAW:no-ambient-temporal-coupling] the warning is spoken once because speaking it is this
     # value changing, not a timer that could fire twice.
     warned: bool
-    expiry: Expiry
+    # When Claude Code goes on from the question by itself if nobody touches its dialog, at its askUserQuestionTimeout;
+    # None for a dialog it waits on as long as it takes. Claude Code continues it, and says so when the tool finishes.
+    continues: Instant | None
+
+    @property
+    def due(self) -> Instant:
+        """When the wait ends with nobody answering: the hook's deadline, or sooner where Claude Code goes on first."""
+        match self.continues:
+            case None:
+                return self.deadline
+            case continues:
+                return min(self.deadline, continues)
 
 
 @dataclass(frozen=True)

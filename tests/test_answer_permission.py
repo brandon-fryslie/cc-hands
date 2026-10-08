@@ -17,7 +17,7 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.attention import Attention, Overlay
-from hands.core.effects import Allow, HookReply, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak
+from hands.core.effects import Allow, HookReply, Narrate, Withdraw, Asking, DeadlineNear, Expired, Speak, WentOn
 from hands.core.events import PermissionRequested, StatusReported, Tick, ToolFinished
 from hands.core.reducer import EXPIRED_MESSAGE
 from hands.core.session import AskedQuestion, Held, LetGo, Option, Permission, Plan, Question, RequestId, SessionId
@@ -145,7 +145,7 @@ def decision(stdout: str) -> object:
 
 async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
-    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False, expiry="hook")]
+    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False, continues=None)]
     assert shim.process.returncode is None, "the hook returned before anyone answered"
 
     tool = named(sessions, "answer_permission")
@@ -210,18 +210,21 @@ async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_sti
     assert readback in str((await call(named(sessions, tool), request=moment.request, **arguments))["readback"])
     await asyncio.sleep(0.2)
     assert shim.process.returncode is None, "the hook was answered with something that does not answer it"
-    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False, expiry="hook")]
+    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request, deadline=DEADLINE, warned=False, continues=None)]
     await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"])
     await shim.finished()
 
 
-async def test_a_question_claude_code_continues_before_the_hooks_deadline_is_warned_of_before_it(clock: Clock) -> None:
+async def test_a_question_claude_code_goes_on_from_before_the_hooks_deadline_is_warned_of_and_said_to_have_gone_on(clock: Clock) -> None:
     root = Path(tempfile.mkdtemp(prefix="hands-"))
     home, config = Home(root / "h"), root / "claude"
     # The session runs under a config whose user settings continue a question after 60 seconds, sooner than the hook's.
     config.mkdir()
     (config / "settings.json").write_text(json.dumps({"askUserQuestionTimeout": "60s"}))
     at = {"transcript_path": str(config / "projects" / "-code-cc-hands" / f"{SID}.jsonl")}
+    # What Claude Code 2.1.289's PostToolUse says of a question it went on from: answers so far, and afkTimeoutMs.
+    input: dict[str, object] = {**QUESTIONS, "answers": {}, "annotations": {}, "afkTimeoutMs": 60000}
+    went_on: dict[str, object] = {**COMMON, **at, "hook_event_name": "PostToolUse", "tool_name": "AskUserQuestion", "tool_input": input, "tool_use_id": "t", "tool_response": input}
     recorded: list[Entry] = []
     sessions = Sessions(permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=clock, record=lambda _: None)
     runner = await serve_hooks(home, sessions, Names(), recorded.append)
@@ -232,18 +235,20 @@ async def test_a_question_claude_code_continues_before_the_hooks_deadline_is_war
         shim = await Shim.run(home, {**QUESTION, **at})
         heard = await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
         assert isinstance(heard, Narrate) and isinstance(heard.moment, Asking)
-        for clock.now in (50.0, 60.0):
-            await sessions.apply(Tick(clock.now))
+        clock.now = 50.0
+        await sessions.apply(Tick(clock.now))
+        warning = await sessions.heard()
+        assert await (await Shim.run(home, went_on)).finished() == (0, "", "")
         assert (await shim.finished())[:2] == (0, "")
-        [warning, expiry] = [await sessions.heard(), await sessions.heard()]
+        gone_on = await sessions.heard()
     finally:
         await runner.cleanup()
         shutil.rmtree(root)
-    assert (warning, expiry) == (Speak(DeadlineNear(SID, heard.moment.request, heard.moment.on, remaining=10.0)), Speak(Expired(SID, heard.moment.on, "continued")))
-    spoken = [said for each in (warning, expiry) for said in rendered(cast(Speak, each), names=lambda _: "quiz")]
+    assert (warning, gone_on) == (Speak(DeadlineNear(SID, heard.moment.request, heard.moment.on, remaining=10.0)), Speak(WentOn(SID, cast(Question, heard.moment.on))))
+    spoken = [said for each in (warning, gone_on) for said in rendered(cast(Speak, each), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
-        "Nobody answered quiz about its question in time, so it goes on without an answer.",
+        "Nobody answered quiz about its question in time, so it went on without an answer.",
     ]
     # [LAW:nothing-unseen] the hook's event says how long the session waits on the question, and which settings said so.
     [asking] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("hook") == "PermissionRequest"]
@@ -258,7 +263,7 @@ async def test_a_question_nobody_answers_by_its_deadline_is_left_to_its_dialog_a
     # Printing nothing decides nothing: the dialog, where the user may be answering, stays up.
     assert (code, stdout) == (0, "")
     [warning, expiry] = [await sessions.heard(), await sessions.heard()]
-    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on, "hook")))
+    assert (warning, expiry) == (Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)), Speak(Expired(SID, moment.on)))
     spoken = [said for heard in (warning, expiry) for said in rendered(cast(Speak, heard), names=lambda _: "quiz")]
     assert [cast(TTSSpeakFrame, said).text for said in spoken] == [
         "10 seconds left to answer quiz about its question.",
@@ -339,7 +344,7 @@ async def test_an_unanswered_request_is_denied_at_its_deadline_after_one_warning
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": EXPIRED_MESSAGE})
     assert [await sessions.heard(), await sessions.heard()] == [
         Speak(DeadlineNear(SID, moment.request, moment.on, remaining=10.0)),
-        Speak(Expired(SID, moment.on, "hook")),
+        Speak(Expired(SID, moment.on)),
     ]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
         "readback": "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
