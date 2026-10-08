@@ -686,8 +686,9 @@ def login(home: Home, method: "Method | None", record: audit.Record) -> int:
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
     # it kept the login held or made one, through the first run and `claude auth login` when either ran, and the account
-    # it ended on. Exits 1 when Claude Code ran and the brain is not on a login after, as when the person quits; 2 when
-    # Claude Code could not be asked, which asking again does not mend.
+    # it ended on. Exits 1 when Claude Code ran and did not finish, as when the person quits, or left the brain on another
+    # login than the one asked for; 2 when Claude Code could not be asked, or `claude auth status` says what no login
+    # mends, which asking again does not mend either.
     terminal = sys.stdin.isatty()
     with wide.unit("brain.login", record):
         wide.annotate(asked=method, terminal=terminal)
@@ -695,9 +696,9 @@ def login(home: Home, method: "Method | None", record: audit.Record) -> int:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
             signed = brain_login(home.brain, UPSTREAM, os.environ, method, terminal, told)
-        except (Unasked, Unstartable) as error:
+        except (Unasked, Unstartable, NotLoggedIn) as error:
             return not_logged_in(str(error), 2)
-        except (LoginFailed, NotLoggedIn, OSError) as error:
+        except (LoginFailed, OSError) as error:
             return not_logged_in(str(error), 1)
         except KeyboardInterrupt:
             return not_logged_in("interrupted", 1)

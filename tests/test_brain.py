@@ -1305,7 +1305,7 @@ def test_hands_login_on_a_brain_whose_status_cannot_be_read_makes_no_login_over_
     # `claude auth status` that cannot say is no proof of no login: a Console key it may hold is never made a Claude plan.
     onboard(tmp_path / "brain")
     monkeypatch.setattr("hands.brain.process.AUTH_STATUS_SECONDS", 0.0)
-    assert main(["--home", str(tmp_path), "login"]) == 1
+    assert main(["--home", str(tmp_path), "login"]) == 2
     assert not (tmp_path / "brain" / "login.json").exists()
     assert capsys.readouterr().err == "hands login: `claude auth status` for the brain did not answer in 0s\n"
 
@@ -1328,6 +1328,15 @@ def test_hands_login_console_on_a_brain_whose_first_run_made_a_plan_login_makes_
     assert main(["--home", str(tmp_path), "login", "--console"]) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["auth", "login", "--console"]
     assert first_login(tmp_path)["auth_login"] == "console"
+
+
+def test_hands_login_on_a_brain_reaching_claude_through_a_cloud_provider_exits_2_making_no_login(terminal: None, tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # A login does not move the brain off the provider its settings choose, so asking again would not mend it.
+    monkeypatch.setenv("API_PROVIDER", "bedrock")
+    onboard(tmp_path / "brain")
+    assert main(["--home", str(tmp_path), "login"]) == 2
+    assert not (tmp_path / "brain" / "login.json").exists()
+    assert "through bedrock, not the Anthropic API hands' proxy forwards to" in capsys.readouterr().err
 
 
 def test_hands_login_that_would_ask_with_no_terminal_exits_2_running_no_claude_code(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
