@@ -394,9 +394,13 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     if not terminal:
         # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
         raise Unasked("Claude Code asks the brain's first-run questions and its login at a terminal, and this command's input is not one")
+    # [LAW:one-source-of-truth] the login made: the one asked for, or a Claude plan, Claude Code's own default (2.1.289).
+    made: Method = method or "claudeai"
+    other = "" if method else ": `hands login --console` logs it in with an Anthropic Console account instead"
     if first_run is not None:
-        starting(f"Claude Code now starts as the brain, hands' own Claude Code, in {cwd}, and asks what it asks only once: {first_run.listed}. A login it asks for can be a Claude plan or an Anthropic Console account: pick {AUTH_PICKED[method] if method else 'either'}. Answer each, then type /exit")
-        _ran(subprocess.run([claude, "--setting-sources", "user"], cwd=cwd, env=env), "the brain's first run of Claude Code")
+        starting(f"Claude Code now starts as the brain, hands' own Claude Code, in {cwd}, and asks what it asks only once: {first_run.listed}. A login it asks for is for {AUTH_PICKED[made]}{other}. Answer each, then type /exit")
+        # forceLoginMethod takes the first run past Claude Code's choice of login, straight to the one made (2.1.289).
+        _ran(subprocess.run([claude, "--setting-sources", "user", "--settings", json.dumps({"forceLoginMethod": made})], cwd=cwd, env=env), "the brain's first run of Claude Code")
         # A first run quit before its last screen exits 0 as one that answered them all.
         if (left := unanswered(config_dir)) is not None:
             raise LoginFailed(f"the brain's first run of Claude Code was quit before its last screen ({left.why})")
@@ -404,9 +408,6 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # A login asked for is made again unless the first run just made it.
     if held is not None and (method is None or (first_run is not None and held.method == AUTH_METHODS[method])):
         return Made(held, None if first_run is None else first_run.why, None)
-    # Claude Code's own default, with none asked for (2.1.289).
-    made: Method = method or "claudeai"
-    other = "" if method else ": `hands login --console` logs it in with an Anthropic Console account instead"
     starting(f"Claude Code now logs the brain in with its own login: it opens your browser, or prints a link to open, for {AUTH_PICKED[made]}{other}")
     _ran(subprocess.run([claude, "auth", "login", f"--{made}"], cwd=cwd, env=env), "`claude auth login` for the brain")
     if (account := holding(config_dir, base_url, inherited)) is None:
@@ -429,7 +430,7 @@ KEPT_OUT = ("syncClaudeAiSkills", "syncClaudeAiPlugins")
 def starting_settings(config_dir: Path) -> bool:
     """Writes the settings.json a brain home starts with when it has none; whether it wrote one. One that is there is
     left as it is: the brain's settings are its directory's to say."""
-    # [LAW:one-source-of-truth] what account_kept_out requires, and the mode the README says the brain runs in.
+    # [LAW:one-source-of-truth] what account_kept_out requires, and the mode docs/guide.md says the brain runs in.
     starting = {**dict.fromkeys(KEPT_OUT, False), "permissions": {"defaultMode": "default"}}
     config_dir.mkdir(parents=True, exist_ok=True)
     try:

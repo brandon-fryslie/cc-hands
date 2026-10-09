@@ -63,7 +63,7 @@ LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
 VERSION_TIMEOUT_SECONDS = 30.0
 # [LAW:one-source-of-truth] the README's one install command, which installs whichever of Claude Code, PortAudio and hands is missing.
-INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"`'
+INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/promptctl/cc-hands/master/install.sh)"`'
 
 
 def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:

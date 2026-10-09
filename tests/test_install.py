@@ -28,7 +28,7 @@ case "$*" in
     [ ! -e "$STUBS/homebrew-unreachable" ] || exit 22
     printf '%s\n' 'echo "homebrew installer NONINTERACTIVE=$NONINTERACTIVE" >>"$LOG"' 'mkdir -p "$HOMEBREW_PREFIX/bin"' 'cp "$STUBS/brew.real" "$HOMEBREW_PREFIX/bin/brew"' ;;
   *releases/latest*)
-    printf '%s' "https://github.com/brandon-fryslie/cc-hands/releases/tag/$RELEASE" ;;
+    printf '%s' "https://github.com/promptctl/cc-hands/releases/tag/$RELEASE" ;;
   *) exit 22 ;;
 esac
 """
@@ -151,7 +151,7 @@ def test_a_bare_mac_gets_claude_code_portaudio_uv_and_the_newest_hands(sandbox: 
     calls = sandbox.calls()
     assert "claude installer" in calls and "homebrew installer NONINTERACTIVE=1" in calls
     assert "brew install portaudio" in calls and "brew install uv" in calls
-    release = "https://github.com/brandon-fryslie/cc-hands/releases/download/v9.9.9"
+    release = "https://github.com/promptctl/cc-hands/releases/download/v9.9.9"
     assert f"uv tool install --reinstall --python 3.12 --constraints {release}/constraints.txt {release}/hands-9.9.9-py3-none-macosx_12_0_arm64.whl" in calls
     assert calls.index("hands install-fritter") < calls.index("hands first-run") < calls.index("hands login") < calls.index("hands install-plugin") < calls.index("hands grant") < calls.index("hands run")
     # hands runs in this terminal once every step is done, on the PATH a new terminal has, whose claude is hands' shim.

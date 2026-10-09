@@ -1,7 +1,7 @@
 #!/bin/bash
 # install.sh: take a Mac to an installed hands, in one command the README gives:
 #
-#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/promptctl/cc-hands/master/install.sh)"
 #
 # It installs what is missing of Claude Code, Homebrew, PortAudio, uv, the newest released hands, the claude shim that
 # starts every session under fritter, and hands' plugin, and leaves what is there; a run stopped part-way is finished by
@@ -13,7 +13,7 @@
 # for the person to give in System Settings, each said before it is asked.
 set -euo pipefail
 
-REPO=brandon-fryslie/cc-hands
+REPO=promptctl/cc-hands
 # [LAW:one-source-of-truth] hatch_build.TAG, the platform tag every release's wheel carries; tests hold the two equal.
 WHEEL_TAG=py3-none-macosx_12_0_arm64
 # Homebrew's own name for where it lives, which is /opt/homebrew on Apple silicon.

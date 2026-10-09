@@ -34,7 +34,7 @@ HOOKS_FILE = "hooks/hooks.json"
 # The marketplace's name in .claude-plugin/marketplace.json, and where Claude Code adds it from: this repository, on
 # GitHub.
 MARKETPLACE_NAME = "cc-hands"
-MARKETPLACE = "brandon-fryslie/cc-hands"
+MARKETPLACE = "promptctl/cc-hands"
 # The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name.
 PLUGIN_ID = f"hands@{MARKETPLACE_NAME}"
 
