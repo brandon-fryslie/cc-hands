@@ -384,9 +384,10 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
 
     Two steps, as the person's own first run takes them. A config directory whose first screens are unanswered gets
     Claude Code's first run, answered once here: `claude auth login` alone leaves them for the brain's first start, where
-    nobody is at its keyboard. Then `claude auth login` runs while the brain holds no login, or a login other than the one
-    `method` asks for that the first run did not just make: with none asked for, a login the brain holds is kept, and one
-    it lacks is Claude Code's own default, a Claude plan. `terminal` is whether the person is at one to be asked; `starting`
+    nobody is at its keyboard. On a brain holding no login, that run is pinned to the login made, so it makes it. Then
+    `claude auth login` runs while the brain holds no login, or one `method` asks for that the first run did not just
+    make: with none asked for, a login the brain holds is kept, and one it lacks is Claude Code's own default, a Claude
+    plan. `terminal` is whether the person is at one to be asked; `starting`
     is told what Claude Code is about to ask, just before it asks. Raises LoginFailed when Claude Code did not finish, or
     left the brain on another login than the one asked for."""
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
@@ -421,7 +422,7 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
             raise LoginFailed(f"the brain's first run of Claude Code was quit before its last screen ({left.why})")
         held = holding(config_dir, base_url, inherited)
     # A login asked for is made again unless the first run just made it.
-    if held is not None and (method is None or (ran is not None and held.method == AUTH_METHODS[method])):
+    if held is not None and (method is None or (ran is not None and ran.pinned is not None and held.method == AUTH_METHODS[method])):
         return Made(held, ran, None)
     starting(f"Claude Code now logs the brain in with its own login: it opens your browser, or prints a link to open, for {AUTH_PICKED[made]}{other}")
     _ran(subprocess.run([claude, "auth", "login", f"--{made}"], cwd=cwd, env=env), "`claude auth login` for the brain")

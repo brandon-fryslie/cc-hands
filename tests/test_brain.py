@@ -1393,6 +1393,14 @@ def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_
     assert cast(dict[str, object], first_login(tmp_path)["first_run"])["why"] == f"{(tmp_path / 'brain' / 'cwd').resolve()} untrusted"
 
 
+def test_hands_login_claudeai_on_a_plan_brain_whose_directory_is_untrusted_logs_it_in_again_after_its_first_run(terminal: None, tmp_path: Path, fake_claude: Path) -> None:
+    # The first run made no login, the brain holding one: the one asked for is made again, onto whichever account.
+    onboard(tmp_path / "brain", trusted=False)
+    assert main(["--home", str(tmp_path), "login", "--claudeai"]) == 0
+    assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["auth", "login", "--claudeai"]
+    assert first_login(tmp_path)["auth_login"] == "claudeai"
+
+
 def test_hands_login_console_on_a_plan_brain_whose_directory_is_untrusted_runs_its_first_run_unpinned_then_moves_it(terminal: None, tmp_path: Path, fake_claude: Path) -> None:
     # Claude Code refuses a login held that the first run's forceLoginMethod does not name: `claude auth login` moves it.
     onboard(tmp_path / "brain", trusted=False)
