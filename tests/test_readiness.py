@@ -847,7 +847,7 @@ def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBacke
 
 
 def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object) -> Home:
-    """A home on which every step of the README is done, with `plugins` listed by its claude."""
+    """A home on which every step of the install is done, with `plugins` listed by its claude."""
     home = Home(root / "home")
     home.bin.mkdir(parents=True)
     shutil.copy2(fritter, home.bin / "fritter")

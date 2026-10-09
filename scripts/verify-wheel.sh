@@ -35,7 +35,7 @@ stranger script -q /dev/null "$fritter" -- /bin/sh -c 'test -S "$FRITTER_SOCKET"
 code=$?
 set -e
 [ "$code" = 7 ] || { echo "verify-wheel: the packaged fritter at $fritter exited $code, not the program's 7" >&2; exit 1; }
-# The home's bin first on PATH, as the README has the stranger put it, so install-fritter finds its claude and exits 0.
+# The home's bin first on PATH, as docs/guide.md has the stranger put it, so install-fritter finds its claude and exits 0.
 # A later PATH= in env's arguments wins over stranger's own.
 stranger PATH="$fresh/home/.hands/bin:$fresh/bin:/usr/bin:/bin" hands install-fritter >/dev/null
 cmp -s "$fritter" "$fresh/home/.hands/bin/fritter" || { echo "verify-wheel: install-fritter did not copy the packaged fritter to the home's bin" >&2; exit 1; }

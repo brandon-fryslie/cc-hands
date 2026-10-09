@@ -17,8 +17,9 @@ way it stops for the few things only you can do, and says what each one is befor
 
 - Your administrator password, if Homebrew isn't installed yet.
 - Claude Code's first-run questions (theme, login, folder trust): for your own Claude Code
-  if it hasn't run before, and for the brain, the separate Claude Code that hands talks
-  through, which logs in with your Claude plan. Answer them, then type `/exit`.
+  if it hasn't run before, along with whether to use an `ANTHROPIC_API_KEY` you have set,
+  and for the brain, the separate Claude Code that hands talks through, which logs in
+  with your Claude plan. Answer them, then type `/exit`.
 - `y` when Claude Code asks whether to run `hands plugin`.
 - The Input Monitoring grant for your terminal app, in System Settings, so hands hears
   Right Shift in every app. If macOS offers to quit the app, choose Later.
