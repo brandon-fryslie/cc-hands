@@ -1393,6 +1393,13 @@ def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_
     assert cast(dict[str, object], first_login(tmp_path)["first_run"])["why"] == f"{(tmp_path / 'brain' / 'cwd').resolve()} untrusted"
 
 
+def test_hands_login_console_on_a_plan_brain_whose_directory_is_untrusted_runs_its_first_run_unpinned_then_moves_it(terminal: None, tmp_path: Path, fake_claude: Path) -> None:
+    # Claude Code refuses a login held that the first run's forceLoginMethod does not name: `claude auth login` moves it.
+    onboard(tmp_path / "brain", trusted=False)
+    assert main(["--home", str(tmp_path), "login", "--console"]) == 0
+    assert first_login(tmp_path) == {"type": "Made", "account": {"type": "Account", "method": "api_key", "holder": "brain@example.com"}, "first_run": {"type": "FirstRun", "why": f"{(tmp_path / 'brain' / 'cwd').resolve()} untrusted", "pinned": None}, "auth_login": "console"}
+
+
 def test_hands_login_on_a_console_brain_whose_directory_is_untrusted_keeps_its_login_through_an_unpinned_first_run(terminal: None, tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # Claude Code refuses a login held that the first run's forceLoginMethod does not name.
     monkeypatch.setenv("AUTH_METHOD", "api_key")

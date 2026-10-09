@@ -396,9 +396,9 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # run's screens are answered under the settings the brain starts with. Resolved before anything is said of them.
     claude, env, cwd = brain_claude(inherited), environment(config_dir, base_url, inherited), workdir(config_dir)
     first_run = unanswered(config_dir)
-    # Asked for none in particular, whatever login the brain holds is the brain's.
-    held = holding(config_dir, base_url, inherited) if method is None else None
-    if held is not None and first_run is None:
+    held = holding(config_dir, base_url, inherited)
+    # Asked for none in particular, whatever login a brain through its first run holds is the brain's.
+    if method is None and held is not None and first_run is None:
         return Kept(held)
     if not terminal:
         # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
@@ -407,7 +407,8 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     made: Method = method or "claudeai"
     other = "" if method else ": `hands login --console` logs it in with an Anthropic Console account instead"
     # forceLoginMethod takes the first run past Claude Code's choice of login, straight to the one made; Claude Code
-    # refuses a login held that it does not name, so a login kept is never pinned (2.1.289).
+    # refuses a login held that it does not name, so a brain holding one is never pinned, and `claude auth login` below
+    # moves it to another (2.1.289).
     ran: FirstRun | None = None
     if first_run is not None:
         ran = FirstRun(first_run.why, None if held is not None else made)
