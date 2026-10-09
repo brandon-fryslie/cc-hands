@@ -1,8 +1,8 @@
-"""Whether hands is set up to work here: each step of the README's install, named, and done or missing.
+"""Whether hands is set up to work here: each step of the install, named, and done or missing.
 
     hands check     # one line a step; exits 0 only when every step is done
 
-The steps, in the README's order: what its one install command puts in, which is Claude Code, PortAudio, which the
+The steps, in the order they are said: what the one install command puts in, which is Claude Code, PortAudio, which the
 microphone opens through, and the installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
 the plugin that joins sessions to hands; Claude Code's own first run and login, so a session it starts takes what is typed; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
@@ -63,11 +63,11 @@ LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
 VERSION_TIMEOUT_SECONDS = 30.0
 # [LAW:one-source-of-truth] the README's one install command, which installs whichever of Claude Code, PortAudio and hands is missing.
-INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/brandon-fryslie/cc-hands/master/install.sh)"`'
+INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/promptctl/cc-hands/master/install.sh)"`'
 
 
 def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
-    """Every step, in the README's order. `environment` is the one sessions are started from; `granted`, the grant of the app this runs in;
+    """Every step, in the order the module names them. `environment` is the one sessions are started from; `granted`, the grant of the app this runs in;
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     path = environment.get("PATH", "")

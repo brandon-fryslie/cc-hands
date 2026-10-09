@@ -66,7 +66,7 @@ sessions means three full histories in one window with no priority and no decay.
 **Rule:** anything pushed into a context window needs an eviction story written at the
 same time. If you can't say what removes it, don't push it — make it a query instead.
 (This is the one cc-hands avoids structurally; see "Push pointers, pull content" in
-the README.)
+[docs/architecture.md](architecture.md#push-pointers-pull-content).)
 
 ### 6. A silent split between configurations
 
