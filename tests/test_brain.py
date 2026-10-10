@@ -1594,7 +1594,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), transcription="http://w/v1", voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, unhanded, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
@@ -1631,7 +1631,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
         return FrontUnread("not read in this test")
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, unhanded, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, os.environ)
+        return mind(VoiceConfig(llm=llm, transcription="http://w/v1", voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, unhanded, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, os.environ)
 
     launched: list[Launch] = []
 
@@ -1655,7 +1655,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), transcription="http://w/v1", voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match="^no claude on PATH"):
         async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, unhanded, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, {"PATH": str(tmp_path)}):
             pass
@@ -1676,7 +1676,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), transcription="http://w/v1", voice=voices.DEFAULT)
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):

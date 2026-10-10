@@ -1,7 +1,7 @@
 """`hands smoke`: each stage read off the record the pipeline writes as it reaches it, the session started as a terminal
 outside any session starts one, and a run that stops short naming the stage on its command's event.
 
-The whole run, against a running hands and a working session, is what the command is for: it is run by
+The whole run, against a running hands, a LowTalker, and a working session, is what the command is for: it is run by
 hand on an installed Mac, not here."""
 
 import asyncio
@@ -194,7 +194,8 @@ def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_pa
     [command] = events(home)
     assert (command["event"], command["outcome"], command["facts"]["command"], command["facts"]["failed_at"]) == ("hands.command", "failed", "smoke", "up")
     assert command["error"] == "exited 1"
-    assert "reached" not in command["facts"] and "model" not in command["facts"]
+    assert "reached" not in command["facts"]
+    assert command["facts"]["transcription"] == "http://127.0.0.1:8610/v1"
     assert command["facts"]["why"] == f"hands has not run: there is no heartbeat at {home.status}; start it with `hands run`"
 
 
@@ -211,8 +212,6 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     [command] = events(home)
     facts = command["facts"]
     assert facts["word"] in WORDS and facts["folder"] == str((home.root / FOLDER).resolve())
-    # It stopped before the test's own ear was loaded.
-    assert "model" not in facts
     assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
 

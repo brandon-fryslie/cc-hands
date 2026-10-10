@@ -157,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
-    commands.add_parser("check", help="say of each step of the install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, Claude Code's first run and login, the brain's login, the Input Monitoring grant of the app it runs in, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
+    commands.add_parser("check", help="say of each step of the install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, Claude Code's first run and login, the brain's login, LowTalker transcribing, the Input Monitoring grant of the app it runs in, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     showing = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     showing.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
@@ -541,7 +541,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing(f"hands cannot start on its settings: {error}")
-        survey(readiness.check(home, os.environ, True, reached, running, keyboards))
+        survey(readiness.check(home, os.environ, True, reached, readiness.transcription(settings.config.transcription), running, keyboards))
 
     return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
 
@@ -644,8 +644,8 @@ def show_segment(home: Home) -> int:
 
 
 def check(home: Home, granted: bool) -> int:
-    reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ, granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
+    reached, heard = readiness.configured(home, os.environ)
+    findings = readiness.check(home, os.environ, granted, reached, heard, readiness.daemon(home, datetime.now(UTC)), keyboards)
     wide.annotate(findings=tuple(findings))
     for finding in findings:
         print(f"{display(finding)[0]:<8} {finding.said}")

@@ -328,7 +328,7 @@ printf '\n%s%sAll set.%s hands %s is installed.\n\n' "$bold" "$green" "$reset" "
 # checks there. It runs the hands this installer installed, regardless of what that PATH finds first.
 run_path=$(shell_path "$terminal") || fail "Your shell ($login_shell $terminal) exited without printing its PATH, so hands cannot start sessions with a new terminal's PATH."
 note "Starting hands. Hold Right Shift in any app, say what you want, and let go."
-note "The first start downloads its speech model, about 1.6 GB. Press q here to quit;"
+note "hands hears you through LowTalker; \`hands check\` says whether it is serving. Press q here to quit;"
 note "\`hands run\` starts it again. Start Claude Code with \`claude\` in a new terminal."
 printf '\n'
 ran=0

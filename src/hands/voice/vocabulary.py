@@ -2,7 +2,8 @@
 transcribed, so a focus moved a moment ago primes the next thing said [LAW:one-source-of-truth].
 
 Whisper takes text as its initial prompt, read as what was said before the audio, and spells what it hears the way
-that text does, keeping only the last 223 tokens of it, so the words are fitted to that before they are sent. Ten sentences spoken by `say`, each naming one of hands' own identifiers, came back from
+that text does. LowTalker reads the prompt it is sent as one vocabulary term and refuses one past the 111 prompt tokens
+its engine keeps, so the words are fitted to that before they are sent. Ten sentences spoken by `say`, each naming one of hands' own identifiers, came back from
 large-v3-turbo with none of the ten spelled as named unprimed, and six primed with the ten; "auth middleware", said in
 ten sentences, came back as authMiddleware eight times primed with what this module read from a repository holding
 authMiddleware.ts among thirty files, and never unprimed (2026-10-03). The words are the files most recently changed in
@@ -11,12 +12,13 @@ of the running sessions, which they say to move between them.
 """
 
 import asyncio
+import base64
 import re
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from mlx_whisper.tokenizer import get_encoding
+import tiktoken
 
 from hands.sessions.audit import Primed, Record
 from hands.sessions.child import run
@@ -31,8 +33,8 @@ from hands.voice.readback import identifier
 # 130: past a few dozen, the words the user said are drowned by the ones they did not.
 WORDS = 40
 
-# The most prompt tokens Whisper keeps, half its text context less one (448 // 2 - 1): it drops the oldest past that.
-TOKENS = 223
+# The most prompt tokens LowTalker's engine keeps (WhisperKit's), past which it refuses the prompt.
+TOKENS = 111
 
 # The commits whose files are read, newest first: as far back as the work a session is in is likely to reach.
 COMMITS = 30
@@ -97,16 +99,24 @@ def prompt(words: Sequence[str]) -> str:
 
 
 def _tokens(words: Sequence[str]) -> int:
-    """The prompt tokens Whisper counts for the prompt of `words`: as it encodes an initial prompt, with the leading space
-    a spoken word carries, in its multilingual BPE; none for none."""
+    """The prompt tokens LowTalker counts for the prompt of `words`: the one term it reads it as, with the leading space a
+    spoken word carries, in Whisper's own BPE; none for none. Measured against the tokenizer LowTalker loads, 2000 prompts
+    of up to 40 file, branch and session names counted the same (2026-10-04)."""
     return len(_WHISPER_BPE.encode_ordinary("".join(f" {word}" for word in words)))
 
 
-# The encoding Whisper itself primes with, read as the module is imported, with Pipecat while hands starts, so no hold
-# waits the ~50 ms reading it takes.
-_WHISPER_BPE = get_encoding("multilingual")
-# A special token's text, which MLX Whisper refuses in a prompt: a file named <|endoftext|> would fail every hold.
-_SPECIAL = re.compile("|".join(map(re.escape, _WHISPER_BPE.special_tokens_set)))
+def _whisper_bpe() -> tiktoken.Encoding:
+    """Whisper's multilingual BPE (whisper.tiktoken, from openai/whisper): each line a base64 token and its rank."""
+    ranks = {base64.b64decode(token): int(rank) for token, rank in (line.split() for line in (Path(__file__).parent / "whisper.tiktoken").read_text().splitlines() if line)}
+    # Whisper's pre-tokenizer, GPT-2's.
+    return tiktoken.Encoding("whisper", pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""", mergeable_ranks=ranks, special_tokens={})
+
+
+# Read as the module is imported, with Pipecat while hands starts, so no hold waits the ~50 ms reading it takes.
+_WHISPER_BPE = _whisper_bpe()
+# A special token's text, as Whisper's are all spelled: one in a prompt is read as that token, so a file named
+# <|endoftext|> would end every prompt it is in.
+_SPECIAL = re.compile(r"<\|[^|<>]*\|>")
 
 
 async def _repository(cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:

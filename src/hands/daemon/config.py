@@ -5,6 +5,9 @@ run runs starts the run again, on the file as edited.
     backend = "claude"           # the brain, a Claude Code of hands' own: the default, and the one there is
     model = "claude-sonnet-5-5"  # one of CLAUDE_MODELS
 
+    [transcription]
+    url = "http://127.0.0.1:8610/v1"   # LowTalker's transcription server, which every hold is uploaded to
+
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
 
@@ -40,6 +43,8 @@ from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 
+# Where LowTalker's network build serves transcription, on loopback.
+TRANSCRIPTION_URL = "http://127.0.0.1:8610/v1"
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0
 
@@ -58,11 +63,13 @@ class Claude:
 
 @dataclass(frozen=True)
 class Config:
-    """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
+    """`transcription` is the base of LowTalker's transcription server, which every hold is uploaded to at
+    /audio/transcriptions. `collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
     but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
     the wake word the wake word trigger listens for."""
 
     llm: Claude = Claude()
+    transcription: str = TRANSCRIPTION_URL
     collector: str | None = None
     personality: str | None = None
     wake: Word = Pretrained()
@@ -231,12 +238,14 @@ def parse(text: str, model: str | None = None) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "telemetry", "talk"))
+    _known(top, "the file", ("llm", "transcription", "telemetry", "talk"))
+    transcription = _table(top, "transcription")
+    _known(transcription, "[transcription]", ("url",))
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
     talk = _table(top, "talk")
     _known(talk, "[talk]", ("personality", "wake_word", "wake_word_model"))
-    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk))
+    return Config(llm=_llm(_table(top, "llm"), model), transcription=_transcription(transcription), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk))
 
 
 def _wake(table: Mapping[str, object]) -> Word:
@@ -261,6 +270,10 @@ def _wake(table: Mapping[str, object]) -> Word:
 
 def _personality(table: Mapping[str, object]) -> str | None:
     return _text(table, "[talk]", "personality", "") if "personality" in table else None
+
+
+def _transcription(table: Mapping[str, object]) -> str:
+    return _base(_text(table, "[transcription]", "url", TRANSCRIPTION_URL), "[transcription] url", "a transcription server", TRANSCRIPTION_URL, "/audio/transcriptions")
 
 
 def _collector(table: Mapping[str, object]) -> str | None:

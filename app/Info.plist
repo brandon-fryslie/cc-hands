@@ -12,7 +12,7 @@
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
-	<!-- The oldest macOS hands runs on: mlx, which transcribes speech, has wheels for macOS 14 and newer. -->
+	<!-- The oldest macOS hands runs on. -->
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>

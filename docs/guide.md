@@ -220,11 +220,11 @@ push-to-talk: the key serves as the voice activity detector and the microphone m
 the key defines the turn boundary and the pipeline can never transcribe its own output.
 Measured on 2026-09-12, voice to voice with a local Qwen3-30B-A3B (since retired): 1.4 s
 from key release to first audio on a plain turn, and 4.3 s on a turn with a tool call.
-Measured on 2026-10-04 with the brain, over the same six spoken turns: Whisper on MLX in
-hands produced the transcript 298 to 329 ms after the release, with first audio at 1.3 to
-1.75 s on a plain turn. LowTalker's Whisper, the same large-v3-turbo model on the Neural
-Engine, took 613 to 724 ms, with first audio at 1.5 to 2.0 s, both by upload and through
-its Realtime socket, so hands keeps its own Whisper.
+hands transcribes through LowTalker's Whisper, large-v3-turbo on the Neural Engine. Measured
+on 2026-10-04 with the brain, over the same six spoken turns, LowTalker produced the
+transcript 613 to 724 ms after the release, with first audio at 1.5 to 2.0 s on a plain
+turn, against 298 to 329 ms for MLX Whisper in hands' own process: LowTalker is where that
+gap is closed.
 
 ## Installing the hooks
 
@@ -410,7 +410,7 @@ hands is one Python process, `hands`, run in a terminal. It has a Pipecat voice 
 on one side and the Claude Code integration on the other, connected through a pure core.
 
 ```
-mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts ──► speakers
+mic ──► gate ──► Whisper (LowTalker) ──► LLM ──► pocket-tts ──► speakers
                                     │   ▲
                          tool calls │   │ hook events, as frames
                                     ▼   │
