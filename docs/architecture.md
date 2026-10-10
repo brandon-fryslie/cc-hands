@@ -4,7 +4,9 @@
 with a strict one-way dependency order: `daemon` → `voice` → `sessions` → `core`. Every
 decision below supports one of the nine needs in [needs.md](needs.md). The work that
 implements each need is planned in [features.md](features.md). Known failures, and the
-rule each one produced, are listed in [failure-modes.md](failure-modes.md).
+rule each one produced, are listed in [failure-modes.md](failure-modes.md). How the edges are
+tested, through one interface and one fake for each outside party, is described in
+[testing.md](testing.md).
 
 The design follows one principle: **the pure core makes decisions, the edges perform
 actions, and every fact is stored in exactly one place.** State, events, and effects are
