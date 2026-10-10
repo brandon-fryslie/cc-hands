@@ -58,7 +58,11 @@ class Blank:
 
 def recorded(state: Path) -> Recorded | Blank:
     """What the .claude.json `state` records; raises Rejected when it is there but cannot be read, which no first run mends."""
-    raw = _read(state)
+    return recorded_in(read(state), state)
+
+
+def recorded_in(raw: bytes | None, state: Path) -> Recorded | Blank:
+    """What `raw`, the bytes of the .claude.json `state` or None when there is none, records."""
     if raw is None:
         return Blank(f"no {state}")
     try:
@@ -100,7 +104,7 @@ def approved(answers: Recorded | Blank, key: Key | None) -> bool:
 def api_key(settings: Path, environment: Mapping[str, str]) -> Key | None:
     """The API key Claude Code would use: the one `settings` puts in its environment, over any `environment` has, where an
     empty one is none (2.1.289). Raises Rejected when `settings` cannot be read."""
-    raw = _read(settings)
+    raw = read(settings)
     try:
         written = None if raw is None else Payload.of(Payload.parse(raw).fields.get("env", {}), "its env").optional_text(API_KEY)
     except Rejected as error:
@@ -132,7 +136,7 @@ def persons(environment: Mapping[str, str], cwd: Path, config_dir: Path) -> Pers
     return Persons(unanswered(answers, cwd.resolve(), key), approved(answers, key))
 
 
-def _read(path: Path) -> bytes | None:
+def read(path: Path) -> bytes | None:
     """`path`'s bytes, or None when there is no such file; raises Rejected when there is one hands cannot read."""
     try:
         return path.read_bytes()

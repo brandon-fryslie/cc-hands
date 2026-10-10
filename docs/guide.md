@@ -137,7 +137,8 @@ before starting hands.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
 there. The brain's first screens that are only its preferences, the theme and the trust of the directory it runs in, it
 answers itself in `~/.hands/brain/.claude.json`, so on a brain with no login it runs only Claude Code's own login, which
-opens your browser. Its login is on a Claude plan, with no choice of login asked;
+opens your browser. Only a question hands cannot answer, whether to use an API key the brain's `settings.json` sets, still
+gets Claude Code's first run, where you answer it and `/exit`. Its login is on a Claude plan, with no choice of login asked;
 `hands login --console` makes it an Anthropic Console key instead. On a brain that has been through it and holds a login,
 it asks nothing; `hands login --claudeai` logs it in again, or onto another account, on a Claude plan, and
 `hands login --console` with an Anthropic Console key. Either way it says which account the brain holds after, and how

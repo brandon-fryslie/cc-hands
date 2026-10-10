@@ -697,7 +697,7 @@ def audit_log_of(home: Home) -> audit.AuditLog:
 
 def login(home: Home, method: "Method | None", record: audit.Record) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import Kept, LoginFailed, Made, NotLoggedIn, Unasked, Unstartable, onboarded, starting_settings
+    from hands.brain.process import Kept, LoginFailed, Made, NotLoggedIn, Unasked, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 
@@ -712,8 +712,6 @@ def login(home: Home, method: "Method | None", record: audit.Record) -> int:
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            # The brain's theme and the trust of its directory are hands' to answer, so its first run asks only its login.
-            wide.annotate(onboarded=onboarded(home.brain))
             signed = brain_login(home.brain, UPSTREAM, os.environ, method, terminal, told)
         except (Unasked, Unstartable, NotLoggedIn) as error:
             return not_logged_in(str(error), 2)

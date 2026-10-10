@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from aiohttp import web
 from loguru import logger
@@ -39,6 +39,7 @@ from hands.sessions.audit import Record
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
 from hands.sessions import firstrun
+from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
@@ -372,26 +373,26 @@ def unanswered(config_dir: Path) -> firstrun.Unanswered | None:
 def onboarded(config_dir: Path) -> bool:
     """Answers, in the brain's own .claude.json, the first screens that are only the brain's preferences: its onboarding
     (a theme, for a terminal nobody reads, and Claude Code's notes) finished, and the directory it runs in trusted. Whether
-    it wrote. Left to Claude Code's first run: a login, an API key its settings.json sets, and a .claude.json hands cannot
-    read, which only that run writes over (firstrun.recorded)."""
+    it wrote. Left to Claude Code's first run: a login, an API key its settings.json sets, and a .claude.json that records
+    nothing hands can read, which only that run writes over (firstrun.recorded). Raises Rejected when the file is there but
+    cannot be read at all."""
     state = config_dir / ".claude.json"
     # [LAW:one-source-of-truth] the directory firstrun.unanswered reads trust for, as Claude Code records it, resolved.
-    cwd = str(_cwd(config_dir).resolve())
-    try:
-        # [LAW:single-enforcer] whether either is open is firstrun's to say, the trust of a directory above among it.
-        if firstrun.unanswered(firstrun.recorded(state), Path(cwd), None) is None:
-            return False
-        written: Mapping[str, object] = Payload.parse(state.read_bytes()).fields if state.exists() else {}
-        projects = Payload.of(written.get("projects", {}), "its projects").fields
-        place = Payload.of(projects.get(cwd, {}), f"its {cwd}").fields
-    except Rejected:
+    cwd = _cwd(config_dir).resolve()
+    # One read: the bytes the answers are judged on are the ones they are merged into.
+    raw = firstrun.read(state)
+    answers = firstrun.recorded_in(raw, state)
+    # [LAW:single-enforcer] whether either is open is firstrun's to say, the trust of a directory above among it.
+    if firstrun.unanswered(answers, cwd, None) is None or (raw is not None and isinstance(answers, firstrun.Blank)):
         return False
-    answers = {**written, "hasCompletedOnboarding": True, "projects": {**projects, cwd: {**place, "hasTrustDialogAccepted": True}}}
-    config_dir.mkdir(parents=True, exist_ok=True)
-    # Whole or not at all: a .claude.json cut short is one Claude Code would write over, answers and all.
-    making = state.with_name(f"{state.name}.hands")
-    making.write_text(json.dumps(answers, indent=2))
-    making.replace(state)
+    written: Mapping[str, object] = {} if raw is None else Payload.parse(raw).fields
+    projects = Payload.of(written.get("projects", {}), "its projects").fields
+    # An entry that is no object is no trust, as firstrun reads it, and Claude Code's first run would write it again.
+    entry = projects.get(str(cwd))
+    place = cast(dict[str, object], entry) if isinstance(entry, dict) else {}
+    made = {**written, "hasCompletedOnboarding": True, "projects": {**projects, str(cwd): {**place, "hasTrustDialogAccepted": True}}}
+    # 0600, as Claude Code keeps it: it holds the login's account.
+    replace_whole(state, json.dumps(made, indent=2), 0o600)
     return True
 
 
@@ -408,9 +409,11 @@ class Unasked(Exception):
 def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method | None, terminal: bool, starting: Callable[[str], None]) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in.
 
-    Two steps, as the person's own first run takes them. A config directory whose first screens are unanswered gets
-    Claude Code's first run, answered once here: `claude auth login` alone leaves them for the brain's first start, where
-    nobody is at its keyboard. On a brain holding no login, that run is pinned to the login made, so it makes it. Then
+    Two steps, as the person's own first run takes them. The first screens that are only the brain's preferences, its
+    theme and the trust of its directory, hands answers itself (onboarded). One still unanswered after, an API key its
+    settings.json sets or a state hands cannot read, gets Claude Code's first run, answered once here: `claude auth login`
+    alone leaves it for the brain's first start, where nobody is at its keyboard. On a brain holding no login, that run is
+    pinned to the login made, so it makes it. Then
     `claude auth login` runs while the brain holds no login, or one `method` asks for that the first run did not just
     make: with none asked for, a login the brain holds is kept, and one it lacks is Claude Code's own default, a Claude
     plan. `terminal` is whether the person is at one to be asked; `starting`
@@ -418,6 +421,12 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     left the brain on another login than the one asked for."""
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
     account_kept_out(config_dir)
+    # [LAW:nothing-unseen] whether hands answered the brain's preference screens, before what is left of its first run is
+    # judged: asking nothing, it needs no terminal.
+    try:
+        annotate(onboarded=onboarded(config_dir))
+    except Rejected as error:
+        raise Unstartable(f"the brain's first-run state could not be read: {error}") from None
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with. Resolved before anything is said of them.

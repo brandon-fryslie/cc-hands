@@ -1402,6 +1402,40 @@ def test_onboarded_leaves_what_else_a_brain_s_state_records_and_writes_nothing_o
     assert onboarded(brain) is False and (brain / ".claude.json").read_bytes() == written
 
 
+def test_onboarded_keeps_the_brain_s_state_to_its_owner_alone(tmp_path: Path) -> None:
+    # It holds the login's account, as Claude Code's own 0600 file does.
+    brain = tmp_path / "brain"
+    assert onboarded(brain) is True
+    assert (brain / ".claude.json").stat().st_mode & 0o777 == 0o600
+    assert [path.name for path in brain.iterdir()] == [".claude.json"]
+
+
+def test_onboarded_leaves_a_state_firstrun_cannot_read_to_claude_codes_first_run(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    onboard(brain, trusted=False)
+    (brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "customApiKeyResponses": []}))
+    assert onboarded(brain) is False
+    assert json.loads((brain / ".claude.json").read_text()) == {"hasCompletedOnboarding": True, "customApiKeyResponses": []}
+
+
+def test_onboarded_trusts_a_directory_whose_entry_firstrun_reads_as_no_trust(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    onboard(brain, trusted=False)
+    (brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(workdir(brain).resolve()): "x"}}))
+    assert onboarded(brain) is True and unanswered(brain) is None
+
+
+def test_hands_login_whose_first_run_for_a_key_makes_no_login_then_logs_the_brain_in(terminal: None, tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A key its settings.json sets is the brain's first screen hands cannot answer; that run, asking it, makes no login.
+    monkeypatch.setenv("LOGGED_IN", "0")
+    monkeypatch.setenv("FIRST_RUN_LOGIN", "0")
+    brain = tmp_path / "brain"
+    onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
+    assert main(["--home", str(tmp_path), "login"]) == 0
+    assert json.loads((brain / "login.json").read_text())["argv"] == ["auth", "login", "--claudeai"]
+    assert first_login(tmp_path) == {"type": "Made", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}, "first_run": {"type": "FirstRun", "why": f"the API key {brain / 'settings.json'} sets unanswered", "pinned": "claudeai"}, "auth_login": "claudeai"}
+
+
 def test_hands_login_claudeai_on_a_plan_brain_whose_directory_is_untrusted_trusts_it_and_logs_it_in_again(terminal: None, tmp_path: Path, fake_claude: Path) -> None:
     # The brain holding one, the one asked for is made again, onto whichever account.
     onboard(tmp_path / "brain", trusted=False)
