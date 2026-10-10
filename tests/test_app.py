@@ -1,5 +1,5 @@
 """hands.app's launcher, compiled and run: it starts hands only on a license key a stand-in for Polar says is live, or
-offline within the grace period; the login shell says the environment, hands runs on it as the app's child, a quit winds
+offline within the grace period, and only once a stand-in for macOS grants every permission; the login shell says the environment, hands runs on it as the app's child, a quit winds
 hands down, and a failure is told with this launch's own lines."""
 
 import json
@@ -84,6 +84,13 @@ def executable(tmp_path_factory: pytest.TempPathFactory, stand_in: Polar) -> Pat
 
 Open = Callable[[str, str], subprocess.Popen[bytes]]
 
+GRANTED = "Microphone granted\nListenEvent granted\n"
+
+
+def permitted(tmp_path: Path, answer: str) -> None:
+    """What the stand-in for macOS answers `hands --permissions` from here on."""
+    (tmp_path / "permissions").write_text(answer)
+
 
 def kept(tmp_path: Path, key: str, validated: datetime) -> str:
     """A license the app kept, last seen live at `validated`, as the app writes that time."""
@@ -96,8 +103,13 @@ def kept(tmp_path: Path, key: str, validated: datetime) -> str:
 def opened(executable: Path, tmp_path: Path, polar: Polar) -> Iterator[Open]:
     """Open the app on a login shell that runs `rc` before it says its environment, with `hands` on its PATH running
     `hands`; its log is tmp_path/hands.log, and the license it keeps is tmp_path/license.json, the live key unless the
-    test kept another."""
+    test kept another. Asked about its permissions, a stand-in for macOS answers what tmp_path/permissions says, every one
+    granted unless the test said otherwise, and adds each question to tmp_path/asked."""
     kept(tmp_path, LIVE, datetime.now(UTC))
+    permitted(tmp_path, GRANTED)
+    asker = tmp_path / "asker"
+    asker.write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "asked"}\n[ $# -eq 1 ] && exec cat {tmp_path / "permissions"}\nexit 0\n')
+    asker.chmod(0o755)
     apps: list[subprocess.Popen[bytes]] = []
 
     def open_(rc: str, hands: str) -> subprocess.Popen[bytes]:
@@ -119,6 +131,7 @@ def opened(executable: Path, tmp_path: Path, polar: Polar) -> Iterator[Open]:
                     "HANDS_APP_SHELL": str(shell),
                     "HANDS_APP_LOG": str(tmp_path / "hands.log"),
                     "HANDS_APP_LICENSE": str(tmp_path / "license.json"),
+                    "HANDS_APP_PERMISSIONS": str(asker),
                 },
             )
         )
@@ -350,3 +363,70 @@ def test_a_build_that_names_no_merchant_does_not_start_and_says_why(executable: 
         app.kill()
         app.wait()
     assert "stopped: hands.app cannot start hands: this build of hands.app names no HandsLicenseValidate in its Info.plist" in text
+
+
+def test_hands_waits_for_every_permission_and_starts_once_macos_grants_them(opened: Open, tmp_path: Path) -> None:
+    permitted(tmp_path, "Microphone denied\nListenEvent undecided\n")
+    app = opened("", "exit 0")
+    logged(tmp_path, "permissions: showing the Microphone step; macOS says it is denied")
+    permitted(tmp_path, "Microphone granted\nListenEvent undecided\n")
+    logged(tmp_path, "permissions: showing the Input Monitoring step; macOS says it is undecided")
+    assert "started hands run" not in logged(tmp_path, "permissions: ")
+    permitted(tmp_path, GRANTED)
+    assert app.wait(timeout=10) == 0
+    text = logged(tmp_path, "hands exited 0")
+    assert text.index("permissions: macOS grants hands.app every permission it needs") < text.index("started hands run")
+
+
+def test_with_every_permission_granted_hands_starts_without_a_setup_step(opened: Open, tmp_path: Path) -> None:
+    app = opened("", "exit 0")
+    assert app.wait(timeout=10) == 0
+    assert "permissions: showing" not in logged(tmp_path, "hands exited 0")
+    assert (tmp_path / "asked").read_text() == "--permissions\n"
+
+
+def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, tmp_path: Path) -> None:
+    permitted(tmp_path, "Microphone undecided\nListenEvent undecided\n")
+    app = opened("", "exit 0")
+    logged(tmp_path, "permissions: showing the Microphone step")
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+    assert "started hands run" not in logged(tmp_path, "permissions: ")
+
+
+@pytest.mark.parametrize(
+    ("answer", "told"),
+    [
+        ("Microphone granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
+        ("Microphone granted\nListenEvent maybe\n", "hands.app could not read what macOS says of its permissions: it answered"),
+    ],
+)
+def test_an_answer_about_permissions_that_cannot_be_read_stops_the_app_and_says_why(opened: Open, tmp_path: Path, answer: str, told: str) -> None:
+    permitted(tmp_path, answer)
+    app = opened("", "exit 0")
+    text = logged(tmp_path, f"stopped: {told}")
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+    assert "started hands run" not in text
+
+
+def test_a_failed_question_about_permissions_stops_the_app_and_says_why(opened: Open, tmp_path: Path) -> None:
+    (tmp_path / "permissions").unlink()
+    app = opened("", "exit 0")
+    text = logged(tmp_path, "stopped: hands.app could not ask macOS about its permissions: it exited 1.")
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+    assert "No such file or directory" in text and "started hands run" not in text
+
+
+def test_the_app_answers_what_macos_says_of_each_permission(executable: Path) -> None:
+    said = subprocess.run([executable, "--permissions"], capture_output=True, text=True, check=True).stdout
+    lines = [line.split(" ") for line in said.splitlines()]
+    assert [service for service, _ in lines] == ["Microphone", "ListenEvent"]
+    assert all(access in {"undecided", "denied", "granted"} for _, access in lines)
+
+
+def test_the_app_refuses_a_question_about_permissions_it_does_not_know(executable: Path) -> None:
+    refused = subprocess.run([executable, "--permissions", "request", "Accessibility"], capture_output=True, text=True)
+    assert refused.returncode == 1
+    assert refused.stderr == "hands --permissions: usage: hands --permissions [request Microphone|ListenEvent] (given: request Accessibility)\n"

@@ -87,8 +87,9 @@ hands runs only while `hands run` is running, in the terminal where it was start
 Pressing `q` or Ctrl-C stops it, and nothing restarts it automatically.
 
 To detect Right Shift in other apps, `hands run` needs the Input Monitoring permission for
-the app it runs in: hands.app or the terminal app. Grant it in System Settings > Privacy &
-Security > Input Monitoring, or, for a terminal, run `hands grant` in that terminal.
+the app it runs in: hands.app or the terminal app. hands.app asks for it in its setup window
+(see "The packaged app"). For a terminal, run `hands grant` in that terminal, or grant it in
+System Settings > Privacy & Security > Input Monitoring.
 Without the permission, `hands run` reports the missing permission and exits.
 
 ## Settings
@@ -375,6 +376,19 @@ the key, because it was revoked when a subscription ended or because it expired,
 does not start, and the app displays Polar's reason. When Polar cannot be reached, the app
 starts hands for 14 days after Polar last reported the key as active. The check sends
 Polar only the key and the organization's id.
+
+Before it starts hands, the app checks that macOS has given it the Microphone and Input
+Monitoring permissions. If either is missing, it opens a setup window with one step per
+permission. Each step says what the permission lets hands do, and its Next button shows
+macOS's own request for it. For Input Monitoring, that request offers to open System
+Settings, where hands is already listed and the user turns it on. A step moves on once macOS
+reports the permission as granted. If the user declines or closes the request, Next resets
+hands' entry with `tccutil` so that macOS shows the request again. `tccutil` finds the app
+through Spotlight, so this works only for a copy of hands.app in a folder Spotlight indexes,
+such as /Applications. When both permissions are granted, the window closes and hands starts.
+Closing the window quits the app. The app asks macOS about its permissions from a new
+process each time (`hands.app/Contents/MacOS/hands --permissions`), because a running process
+can keep the answer it had before Input Monitoring was turned on.
 
 ## Tests and evals
 
