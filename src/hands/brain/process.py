@@ -7,8 +7,8 @@ own (`hands.brain.asides`). What it says is read from the wire, not from its scr
 from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
-Its login, settings, and skills live in a directory hands owns, set up once by `hands login`, which runs Claude Code's
-own first run there, as any Claude Code is set up, on any login Claude Code takes, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
+Its login, settings, and skills live in a directory hands owns, set up once by `hands login`, which answers the first
+screens that are only the brain's preferences itself and runs Claude Code's own login there, on any login Claude Code takes, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
 and which MCP servers it has are that directory's to say, as they are for any Claude Code: its settings.json and its
 .claude.json. hands adds only its own server, its hooks, and the skills it ships for the brain's own jobs, and keeps out
 what the login brings from the account.
@@ -413,7 +413,7 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     theme and the trust of its directory, hands answers itself (onboarded). One still unanswered after, an API key its
     settings.json sets or a state hands cannot read, gets Claude Code's first run, answered once here: `claude auth login`
     alone leaves it for the brain's first start, where nobody is at its keyboard. On a brain holding no login, that run is
-    pinned to the login made, so it makes it. Then
+    pinned to the login made, so a login it asks for is that one; one it does not ask for is left to what follows. Then
     `claude auth login` runs while the brain holds no login, or one `method` asks for that the first run did not just
     make: with none asked for, a login the brain holds is kept, and one it lacks is Claude Code's own default, a Claude
     plan. `terminal` is whether the person is at one to be asked; `starting`
