@@ -4,8 +4,12 @@ The installers it fetches and the tools it drives are stand-ins on PATH that rec
 one would, so a run touches nothing outside its sandbox and needs no network.
 """
 
+import os
+import pty
 import re
+import select
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,6 +69,12 @@ case "$1" in
   --version) echo "hands @VERSION@" ;;
   install-fritter) mkdir -p "$HOME/.hands/bin" && printf '#!/bin/sh\n' >"$HOME/.hands/bin/claude" && chmod +x "$HOME/.hands/bin/claude" ;;
   first-run)
+    # As the real one: with no terminal it cannot ask, and a person at one may quit before the last question.
+    if [ -e "$STUBS/first-run-quit-once" ]; then
+      [ -t 0 ] || exit 2
+      rm "$STUBS/first-run-quit-once"
+      exit 1
+    fi
     [ ! -e "$STUBS/first-run-unfinished" ] || exit 1
     [ ! -e "$STUBS/first-run-unaskable" ] || exit 2 ;;
   login)
@@ -82,6 +92,10 @@ case "$1" in
     [ ! -e "$STUBS/running" ] || { echo "hands: hands is already running" >&2; exit 3; }
     [ ! -e "$STUBS/run-refused" ] || exit 1 ;;
 esac
+"""
+# The account's login shell, which is the one install.sh writes PATH lines for, whatever shell it ran from.
+DSCL = r"""#!/bin/bash
+echo "UserShell: $LOGIN_SHELL"
 """
 # sudo -v is where the password is asked; the run's output marks the moment. The keeper's sudo -n -v finds nothing cached.
 SUDO = r"""#!/bin/bash
@@ -105,18 +119,45 @@ class Sandbox:
     def log(self) -> Path:
         return self.root / "log"
 
-    def run(self, release: str = "v9.9.9", shell: str = "/bin/zsh") -> subprocess.CompletedProcess[str]:
-        self.log.write_text("")
-        environment = {
+    def environment(self, release: str, shell: str, running_from: str | None) -> dict[str, str]:
+        return {
             "HOME": str(self.home),
             "PATH": f"{self.root / 'stubs'}:{LOGIN_PATH}",
-            "SHELL": shell,
+            "SHELL": running_from or shell,
+            "LOGIN_SHELL": shell,
             "HOMEBREW_PREFIX": str(self.root / "brew"),
             "STUBS": str(self.root / "stubs"),
             "LOG": str(self.log),
             "RELEASE": release,
         }
-        return subprocess.run(["/bin/bash", str(INSTALL)], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+
+    def run_at_a_terminal(self, until: str) -> str:
+        """Run it as the README's command runs, at a terminal, pressing Enter at every pause; what it printed up to `until`."""
+        self.log.write_text("")
+        main, side = pty.openpty()
+        started = subprocess.Popen(["/bin/bash", str(INSTALL)], env=self.environment("v9.9.9", "/bin/zsh", None), stdin=side, stdout=side, stderr=side, start_new_session=True)
+        os.close(side)
+        printed = b""
+        answered = 0
+        deadline = time.monotonic() + 60
+        try:
+            while until.encode() not in printed and time.monotonic() < deadline:
+                ready, _, _ = select.select([main], [], [], 0.2)
+                if ready:
+                    printed += os.read(main, 4096)
+                    # Enter, once for each pause it has come to.
+                    pauses = len(re.findall(rb"Press Enter to (?:continue|try it again)", printed))
+                    os.write(main, b"\n" * (pauses - answered))
+                    answered = pauses
+        finally:
+            os.close(main)
+            started.kill()
+            started.wait()
+        return printed.decode(errors="replace")
+
+    def run(self, release: str = "v9.9.9", shell: str = "/bin/zsh", running_from: str | None = None) -> subprocess.CompletedProcess[str]:
+        self.log.write_text("")
+        return subprocess.run(["/bin/bash", str(INSTALL)], env=self.environment(release, shell, running_from), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
 
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines()
@@ -138,6 +179,7 @@ def sandbox(tmp_path: Path) -> Sandbox:
     stubs = tmp_path / "stubs"
     executable(stubs / "curl", CURL)
     executable(stubs / "sudo", SUDO)
+    executable(stubs / "dscl", DSCL)
     executable(stubs / "brew.real", BREW)
     executable(stubs / "uv.real", UV)
     executable(stubs / "hands.real", HANDS)
@@ -272,54 +314,54 @@ def test_the_newest_release_is_held_to_the_tag_rule_a_release_is_built_under() -
 def test_a_homebrew_installer_that_cannot_be_fetched_stops_the_run_there(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "homebrew-unreachable").touch()
     ran = sandbox.run()
-    assert ran.returncode == 22 and "with Homebrew" not in ran.stdout
+    assert ran.returncode == 1 and "Homebrew's installer could not be downloaded" in ran.stderr
     assert not any(call.startswith("brew ") for call in sandbox.calls())
 
 
-def test_declining_the_plugin_fails_saying_a_second_run_asks_again_with_every_step_before_it_done(sandbox: Sandbox) -> None:
+def test_declining_the_plugin_fails_saying_to_run_it_again_with_every_step_before_it_done(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "plugin-declined").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "plugin is not installed" in ran.stderr and "running this command again asks again" in ran.stderr
+    assert ran.returncode == 1 and "plugin is not installed" in ran.stderr and "Run the install command again to pick up here" in ran.stderr
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
     (sandbox.root / "stubs" / "plugin-declined").unlink()
     assert sandbox.run().returncode == 0
 
 
-def test_a_first_run_left_unfinished_stops_the_run_before_the_plugin_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_first_run_left_unfinished_stops_the_run_before_the_plugin_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "first-run-unfinished").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "Claude Code's first run is not finished" in ran.stderr and "running this command again asks again" in ran.stderr
+    assert ran.returncode == 1 and "Claude Code's first run is not finished" in ran.stderr and "Run the install command again to pick up here" in ran.stderr
     assert "hands install-plugin" not in sandbox.calls()
     (sandbox.root / "stubs" / "first-run-unfinished").unlink()
     assert sandbox.run().returncode == 0
 
 
-def test_a_brain_left_logged_out_stops_the_run_before_the_plugin_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_brain_left_logged_out_stops_the_run_before_the_plugin_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "login-unfinished").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "the brain is not logged in" in ran.stderr and "running this command again asks again" in ran.stderr
+    assert ran.returncode == 1 and "the brain is not signed in" in ran.stderr and "Run the install command again to pick up here" in ran.stderr
     assert "hands install-plugin" not in sandbox.calls()
     (sandbox.root / "stubs" / "login-unfinished").unlink()
     assert sandbox.run().returncode == 0
 
 
-def test_a_brain_login_claude_code_could_not_be_asked_for_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_brain_login_claude_code_could_not_be_asked_for_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "login-unaskable").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "the brain is not logged in" in ran.stderr and "could not be asked" in ran.stderr and "asks again" not in ran.stderr
+    assert ran.returncode == 1 and "the brain is not signed in" in ran.stderr and "could not be asked" in ran.stderr and "pick up here" not in ran.stderr
     assert "hands install-plugin" not in sandbox.calls()
 
 
-def test_a_first_run_claude_code_could_not_be_asked_for_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_first_run_claude_code_could_not_be_asked_for_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "first-run-unaskable").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "asks again" not in ran.stderr
+    assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "pick up here" not in ran.stderr
 
 
-def test_a_claude_that_cannot_be_asked_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_claude_that_cannot_be_asked_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "claude-unaskable").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "asks again" not in ran.stderr
+    assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "pick up here" not in ran.stderr
 
 
 def test_a_shell_whose_startup_files_end_it_without_a_terminal_is_judged_from_its_login_shell(sandbox: Sandbox) -> None:
@@ -366,16 +408,16 @@ def test_the_releases_it_installs_and_the_marketplace_hands_adds_are_one_reposit
     assert f"REPO={MARKETPLACE}\n" in INSTALL.read_text()
 
 
-def test_a_grant_not_given_in_time_stops_the_run_before_hands_runs_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_grant_not_given_in_time_stops_the_run_before_hands_runs_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "grant-not-given").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "without the Input Monitoring grant" in ran.stderr and "running this command again asks again" in ran.stderr
+    assert ran.returncode == 1 and "without the Input Monitoring grant" in ran.stderr and "Run the install command again to pick up here" in ran.stderr
     assert "hands run" not in sandbox.calls()
     (sandbox.root / "stubs" / "grant-not-given").unlink()
     assert sandbox.run().returncode == 0 and "hands run" in sandbox.calls()
 
 
-def test_a_grant_that_cannot_be_given_here_fails_without_saying_a_second_run_asks_again(sandbox: Sandbox) -> None:
+def test_a_grant_that_cannot_be_given_here_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "grant-over-ssh").touch()
     ran = sandbox.run()
     assert ran.returncode == 1 and "cannot be given here" in ran.stderr and "again" not in ran.stderr
@@ -401,3 +443,38 @@ def test_a_hands_that_will_not_run_fails_the_run_saying_so(sandbox: Sandbox) -> 
     (sandbox.root / "stubs" / "run-refused").touch()
     ran = sandbox.run()
     assert ran.returncode == 1 and "hands stopped, exiting 1" in ran.stderr
+
+
+def test_the_profile_written_is_the_login_shell_s_not_the_one_it_was_run_from(sandbox: Sandbox) -> None:
+    # As when a tool whose shell is bash runs it for a person whose terminals start zsh.
+    ran = sandbox.run(shell="/bin/zsh", running_from="/bin/bash")
+    assert ran.returncode == 0, ran.stderr
+    assert (sandbox.home / ".zprofile").exists() and not (sandbox.home / ".bash_profile").exists()
+    assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
+
+
+def test_it_opens_on_what_it_will_ask_and_numbers_every_step(sandbox: Sandbox) -> None:
+    said = sandbox.run().stdout
+    assert said.index("your Mac password") < said.index("[1/9] Claude Code")
+    assert [int(n) for n in re.findall(r"\[(\d)/9\]", said)] == list(range(1, 10))
+    assert "All set." in said
+
+
+def test_the_tools_own_output_goes_to_the_log_not_the_terminal(sandbox: Sandbox) -> None:
+    ran = sandbox.run()
+    assert "claude installer" not in ran.stdout + ran.stderr
+    assert "$ brew install portaudio" in (sandbox.home / "Library/Logs/hands-install.log").read_text()
+
+
+def test_a_step_the_person_quit_is_offered_again_on_the_spot_at_a_terminal(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "first-run-quit-once").touch()
+    said = sandbox.run_at_a_terminal(until="All set.")
+    assert "That did not finish" in said and "All set." in said
+    calls = sandbox.calls()
+    # The look with no terminal, the try the person quit, the try again, and then on to the brain.
+    assert calls.count("hands first-run") == 3 and calls.index("hands login") > max(i for i, call in enumerate(calls) if call == "hands first-run")
+
+
+def test_a_step_already_done_is_ticked_off_without_a_pause(sandbox: Sandbox) -> None:
+    said = sandbox.run().stdout
+    assert "already signed in and set up" in said and "type /exit" not in said

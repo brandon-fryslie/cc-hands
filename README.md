@@ -12,8 +12,9 @@ hands runs on macOS on Apple silicon. Run this in Terminal:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/promptctl/cc-hands/master/install.sh)"
 ```
 
-It installs whatever is missing and ends with hands running in that terminal. Along the
-way it stops for the few things only you can do, and says what each one is before it asks:
+It walks through nine numbered steps, skips whatever is already set up, and ends with hands
+running in that terminal. It stops only for the few things only you can do, and explains
+each one before it asks:
 
 - Your administrator password, if Homebrew isn't installed yet.
 - Claude Code's first-run questions (theme, login, folder trust), if your own Claude Code
@@ -25,7 +26,9 @@ way it stops for the few things only you can do, and says what each one is befor
 - The Input Monitoring grant for your terminal app, in System Settings, so hands hears
   Right Shift in every app. If macOS offers to quit the app, choose Later.
 
-If the command stops part-way, run it again; it picks up where it left off.
+If you close one of these before it finishes, the installer offers it again right there.
+Tool output goes to `~/Library/Logs/hands-install.log`, and a step that fails shows the end
+of it.
 
 ## Use
 
