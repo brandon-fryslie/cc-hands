@@ -7,8 +7,8 @@ own (`hands.brain.asides`). What it says is read from the wire, not from its scr
 from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
-Its login, settings, and skills live in a directory hands owns, set up once by `hands login`, which runs Claude Code's
-own first run there, as any Claude Code is set up, on any login Claude Code takes, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
+Its login, settings, and skills live in a directory hands owns, set up once by `hands login`, which answers the first
+screens that are only the brain's preferences itself and runs Claude Code's own login there, on any login Claude Code takes, and it runs in that directory's empty cwd, never in a project. What it may use, what it may do without asking,
 and which MCP servers it has are that directory's to say, as they are for any Claude Code: its settings.json and its
 .claude.json. hands adds only its own server, its hooks, and the skills it ships for the brain's own jobs, and keeps out
 what the login brings from the account.
@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from aiohttp import web
 from loguru import logger
@@ -39,6 +39,7 @@ from hands.sessions.audit import Record
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
 from hands.sessions import firstrun
+from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
@@ -369,6 +370,32 @@ def unanswered(config_dir: Path) -> firstrun.Unanswered | None:
         raise Unstartable(f"the brain's first-run state could not be read: {error}") from None
 
 
+def onboarded(config_dir: Path) -> bool:
+    """Answers, in the brain's own .claude.json, the first screens that are only the brain's preferences: its onboarding
+    (a theme, for a terminal nobody reads, and Claude Code's notes) finished, and the directory it runs in trusted. Whether
+    it wrote. Left to Claude Code's first run: a login, an API key its settings.json sets, and a .claude.json that records
+    nothing hands can read, which only that run writes over (firstrun.recorded). Raises Rejected when the file is there but
+    cannot be read at all."""
+    state = config_dir / ".claude.json"
+    # [LAW:one-source-of-truth] the directory firstrun.unanswered reads trust for, as Claude Code records it, resolved.
+    cwd = _cwd(config_dir).resolve()
+    # One read: the bytes the answers are judged on are the ones they are merged into.
+    raw = firstrun.read(state)
+    answers = firstrun.recorded_in(raw, state)
+    # [LAW:single-enforcer] whether either is open is firstrun's to say, the trust of a directory above among it.
+    if firstrun.unanswered(answers, cwd, None) is None or (raw is not None and isinstance(answers, firstrun.Blank)):
+        return False
+    written: Mapping[str, object] = {} if raw is None else Payload.parse(raw).fields
+    projects = Payload.of(written.get("projects", {}), "its projects").fields
+    # An entry that is no object is no trust, as firstrun reads it, and Claude Code's first run would write it again.
+    entry = projects.get(str(cwd))
+    place = cast(dict[str, object], entry) if isinstance(entry, dict) else {}
+    made = {**written, "hasCompletedOnboarding": True, "projects": {**projects, str(cwd): {**place, "hasTrustDialogAccepted": True}}}
+    # 0600, as Claude Code keeps it: it holds the login's account.
+    replace_whole(state, json.dumps(made, indent=2), 0o600)
+    return True
+
+
 def answered(config_dir: Path) -> None:
     """Raises Unstartable, naming the command that answers them, while the brain would start on Claude Code's first screens."""
     if (open_ := unanswered(config_dir)) is not None:
@@ -382,9 +409,11 @@ class Unasked(Exception):
 def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method | None, terminal: bool, starting: Callable[[str], None]) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in.
 
-    Two steps, as the person's own first run takes them. A config directory whose first screens are unanswered gets
-    Claude Code's first run, answered once here: `claude auth login` alone leaves them for the brain's first start, where
-    nobody is at its keyboard. On a brain holding no login, that run is pinned to the login made, so it makes it. Then
+    Two steps, as the person's own first run takes them. The first screens that are only the brain's preferences, its
+    theme and the trust of its directory, hands answers itself (onboarded). One still unanswered after, an API key its
+    settings.json sets or a state hands cannot read, gets Claude Code's first run, answered once here: `claude auth login`
+    alone leaves it for the brain's first start, where nobody is at its keyboard. On a brain holding no login, that run is
+    pinned to the login made, so a login it asks for is that one; one it does not ask for is left to what follows. Then
     `claude auth login` runs while the brain holds no login, or one `method` asks for that the first run did not just
     make: with none asked for, a login the brain holds is kept, and one it lacks is Claude Code's own default, a Claude
     plan. `terminal` is whether the person is at one to be asked; `starting`
@@ -392,6 +421,12 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     left the brain on another login than the one asked for."""
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
     account_kept_out(config_dir)
+    # [LAW:nothing-unseen] whether hands answered the brain's preference screens, before what is left of its first run is
+    # judged: asking nothing, it needs no terminal.
+    try:
+        annotate(onboarded=onboarded(config_dir))
+    except Rejected as error:
+        raise Unstartable(f"the brain's first-run state could not be read: {error}") from None
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with. Resolved before anything is said of them.
@@ -403,7 +438,7 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
         return Kept(held)
     if not terminal:
         # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
-        raise Unasked("Claude Code asks the brain's first-run questions and its login at a terminal, and this command's input is not one")
+        raise Unasked("Claude Code asks for the brain's login at a terminal, and this command's input is not one")
     # [LAW:one-source-of-truth] the login made: the one asked for, or a Claude plan, Claude Code's own default (2.1.289).
     made: Method = method or "claudeai"
     other = "" if method else ": `hands login --console` logs it in with an Anthropic Console account instead"
