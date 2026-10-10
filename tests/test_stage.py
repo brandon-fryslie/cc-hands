@@ -780,6 +780,14 @@ async def test_the_brain_hears_what_the_context_gained_and_never_its_own_words_a
     assert rig.brain.asked == [heard("[hands] hands has just started.\n\nanything new?"), heard("[hands] a session is waiting.")]
 
 
+async def test_the_context_holds_only_what_the_brain_has_not_heard_however_many_turns_pass(rig: Rig) -> None:
+    for turn in range(200):
+        await rig.say({"role": "assistant", "content": f"reply {turn - 1}"}, {"role": "user", "content": f"turn {turn}"})
+        assert rig.context.get_messages() == []
+        rig.brain.end()
+    assert rig.brain.asked == [heard(f"turn {turn}") for turn in range(200)]
+
+
 async def test_a_turn_is_written_only_once_the_one_before_it_has_ended(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "first"})
     await rig.interrupt()

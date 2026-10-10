@@ -288,8 +288,6 @@ class BrainStage(FrameProcessor):
         self._pause = pause
         self._acknowledgements = cycle(ACKNOWLEDGEMENTS)
         self._tools = {wire_name(tool): tool for tool in tools}
-        # How many of the context's messages the brain has been handed: the rest are new to it.
-        self._told = 0
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
         # it runs beside the frames passing through, a barge-in ends what is said of it, and the next is written only
         # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
@@ -605,11 +603,11 @@ class BrainStage(FrameProcessor):
 
     def _news(self, context: LLMContext) -> str:
         """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""
-        messages = context.get_messages()
-        fresh = messages[self._told :]
-        self._told = len(messages)
-        # [LAW:one-source-of-truth] the brain keeps its own history, so what it said itself, which the assistant
-        # aggregator writes back into this context, is never handed to it again.
+        # [LAW:one-source-of-truth] the brain keeps its own history, so the context is only what it has yet to hear: taken
+        # out as it is read, and what the assistant aggregator writes back into it between turns goes with the next read.
+        # Copied, since the list handed back is the context's own, which emptying it empties too.
+        fresh = list(context.get_messages())
+        context.set_messages([])
         return "\n\n".join(_user_text(message) for message in fresh if not isinstance(message, LLMSpecificMessage) and message.get("role") == "user")
 
     def _barge_in(self) -> bool:
