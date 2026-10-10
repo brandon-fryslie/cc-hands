@@ -157,7 +157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
-    commands.add_parser("check", help="say of each step of the install whether it is done here: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, Claude Code's first run and login, the brain's login, the Input Monitoring grant of the app it runs in, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
+    checking = commands.add_parser("check", help="list each step of the install, ✓ done, ✗ missing with the command that fixes it, or ? when it could not be looked at: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, Claude Code's first run and login, the brain's login, the Input Monitoring grant of the app it runs in, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
+    checking.add_argument("-v", "--verbose", action="store_true", help="say each step in full beneath its line, every running session among them")
     showing = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
     showing.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
@@ -302,7 +303,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             # over its findings; a read that broke still prints, as an error.
             logger.remove()
             to_terminal(sys.stderr)
-            return check(home, talkkey.granted())
+            return check(home, talkkey.granted(), arguments.verbose)
         case "log":
             return tail_log(home, arguments.lines)
         case "recall":
@@ -532,7 +533,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
     from hands.daemon.run import Configured, configured_from, run
 
     # This run is hands running, and the backend it reaches is the one it was configured on.
-    running = readiness.Ready(f"hands is running here: pid {os.getpid()}")
+    running = readiness.Ready("hands running", f"hands is running here: pid {os.getpid()}")
 
     def surveyed(read: Configured | CannotStart) -> None:
         match read:
@@ -540,7 +541,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
                 reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
-                reached = readiness.Missing(f"hands cannot start on its settings: {error}")
+                reached = readiness.Missing("brain cannot reach its model", "hands cannot start on its settings", str(error))
         survey(readiness.check(home, os.environ, True, reached, running, keyboards))
 
     return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
@@ -643,12 +644,11 @@ def show_segment(home: Home) -> int:
     return 0
 
 
-def check(home: Home, granted: bool) -> int:
+def check(home: Home, granted: bool, verbose: bool) -> int:
     reached = readiness.configured(home, os.environ)
     findings = readiness.check(home, os.environ, granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
     wide.annotate(findings=tuple(findings))
-    for finding in findings:
-        print(f"{display(finding)[0]:<8} {finding.said}")
+    print(checklist(findings, verbose))
     kinds = {type(finding) for finding in findings}
     # A piece known to be missing outranks one that could not be looked at: hands is not set up, whatever that one is.
     return 1 if readiness.Missing in kinds else 2 if readiness.Unknown in kinds else 0
@@ -665,15 +665,42 @@ def survey(findings: Sequence[readiness.Finding]) -> None:
         logger.log(display(finding)[1], finding.said)
 
 
+def checklist(findings: Sequence[readiness.Finding], verbose: bool) -> str:
+    """`hands check`'s lines: each step marked and named, a missing one with what fixes it, aligned on the arrows; with
+    `verbose`, each said in full beneath its line."""
+    width = max(len(finding.step) for finding in findings)
+    lines = [f"{display(finding)[0]} {finding.step:<{width}}{remedy(finding)}".rstrip() for finding in findings]
+    full = [[f"    {line}" for line in detail(finding).splitlines()] if verbose else [] for finding in findings]
+    return "\n".join(line for head, body in zip(lines, full, strict=True) for line in (head, *body))
+
+
+def remedy(finding: readiness.Finding) -> str:
+    """What follows a step's name on its line: the fix for a missing one, the way to its reason for one not looked at."""
+    match finding:
+        case readiness.Ready():
+            return ""
+        case readiness.Missing(fix=fix):
+            return f"  → {fix}"
+        case readiness.Unknown():
+            return "  → could not look: `hands check -v` says why"
+
+
+def detail(finding: readiness.Finding) -> str:
+    """A step said in full, less the fix its line already shows."""
+    match finding:
+        case readiness.Missing(detail=said) | readiness.Ready(said=said) | readiness.Unknown(said=said):
+            return said
+
+
 def display(finding: readiness.Finding) -> tuple[str, str]:
     """How `hands check` marks a finding, and the level `hands run` says it at."""
     match finding:
         case readiness.Ready():
-            return "ok", "INFO"
+            return "✓", "INFO"
         case readiness.Missing():
-            return "missing", "WARNING"
+            return "✗", "WARNING"
         case readiness.Unknown():
-            return "unknown", "WARNING"
+            return "?", "WARNING"
 
 
 def asked_to_restart(home: Home) -> int:

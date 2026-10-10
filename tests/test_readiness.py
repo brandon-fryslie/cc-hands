@@ -178,7 +178,7 @@ def test_a_shim_whose_fritter_is_not_the_one_hands_carries_says_to_install_it_ag
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     found = readiness.shim(home, f"{home.bin}")
     assert isinstance(found, Missing)
-    assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`" in found.said
+    assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}" in found.detail and found.fix == "`hands install-fritter`"
 
 
 @pytest.mark.parametrize("installed", [True, False], ids=["shim", "none"])
@@ -189,7 +189,7 @@ def test_a_hands_built_without_its_fritter_names_the_rebuild_not_install_fritter
         executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
     found = readiness.shim(home, f"{home.bin}")
-    assert isinstance(found, Missing) and found.said.startswith(f"hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again")
+    assert isinstance(found, Missing) and found.fix.startswith(f"hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again")
 
 
 def runs_subcommands_as_sessions(text: str) -> str:
@@ -209,7 +209,7 @@ def test_a_shim_an_older_hands_wrote_says_to_install_it_again(root: Path, fritte
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, older(shim_script(home.bin / "fritter", home.wire)))
     found = readiness.shim(home, f"{home.bin}")
-    assert found == Missing(f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes: run `hands install-fritter`")
+    assert found == Missing("claude shim out of date", f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes", "`hands install-fritter`")
 
 
 def test_another_homes_current_shim_is_ready_by_the_wire_it_names(root: Path, fritter: Path) -> None:
@@ -238,7 +238,7 @@ def test_the_grant_is_ready_when_given_and_missing_with_where_to_give_it_when_no
 
 def test_a_running_hands_has_the_grant_of_the_app_it_runs_in_though_this_one_has_none() -> None:
     # hands.app holds the grant; the terminal a check runs in does not.
-    held = readiness.hears(False, Ready("hands is running: pid 7"))
+    held = readiness.hears(False, Ready("hands running", "hands is running: pid 7"))
     assert isinstance(held, Ready) and "hands is running, so it started with the Input Monitoring grant of the app it runs in" in held.said
 
 
@@ -300,7 +300,7 @@ def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("0 running sessions reachable", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -321,7 +321,8 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:")
+    assert found.detail.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:")
+    assert found.step == "2 sessions unreachable"
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter and runs in no tmux pane, so it cannot be typed into: restart it" in found.said
     assert found.said.endswith(f"\n  these are typed into:\n    /code/wrapped (pid {sleepers[0].pid}) is typed into through its fritter")
@@ -343,7 +344,7 @@ def test_a_session_started_outside_fritter_in_front_of_its_tmux_pane_is_typed_in
         sleeper.kill()
         sleeper.wait()
     assert asked == [[sleeper.pid]]
-    assert found == Ready(f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {sleeper.pid}) is typed into through its tmux pane %12")
+    assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {sleeper.pid}) is typed into through its tmux pane %12")
 
 
 def unwrapped(pane: Keyboard) -> readiness.Finding:
@@ -353,14 +354,17 @@ def unwrapped(pane: Keyboard) -> readiness.Finding:
 
 def test_a_session_started_outside_fritter_behind_another_program_in_its_pane_is_missing_with_the_way_back() -> None:
     assert unwrapped(Behind(PANE)) == Missing(
+        "1 session unreachable",
         "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:\n"
         "    /code/bare (pid 7) was started outside fritter, and another program has the keyboard of the tmux pane it runs in, %12 (window 3 of work), "
-        "so it cannot be typed into: bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim"
+        "so it cannot be typed into: bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim",
+        "bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim (`hands check -v` lists each)",
     )
 
 
 def test_a_session_started_outside_fritter_whose_pane_could_not_be_read_is_unknown_and_says_why() -> None:
     assert unwrapped(PaneUnread("tmux at /tmp/tmux-501/default did not answer list-panes in 5 seconds")) == Unknown(
+        "1 session unknown",
         "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: "
         "tmux at /tmp/tmux-501/default did not answer list-panes in 5 seconds"
@@ -372,12 +376,14 @@ def test_a_session_whose_reach_is_unknown_is_not_said_among_those_hands_cannot_r
     bare = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000007"), 7, Path("/code/bare"), Path("/nowhere/t.jsonl"))
     found = readiness.sessions_found([lost, bare], set(), [], readiness.Unrecorded([], Counter(), []), {7: PaneUnread("tmux broke"), 8: NotInTmux()})
     assert found == Missing(
+        "1 session unreachable",
         "running sessions hands knows of: 2, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n"
         "  hands cannot reach these:\n"
         "    /code/lost (pid 8) has lost its fritter, whose socket /gone.sock is gone, so it cannot be typed into: "
         "restart it from a PATH whose `claude` is hands' shim\n"
         "  whether hands can reach these is unknown:\n"
-        "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: tmux broke"
+        "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: tmux broke",
+        "restart it from a PATH whose `claude` is hands' shim (`hands check -v` lists each)",
     )
 
 
@@ -386,7 +392,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(home, installed(root), untmuxed) == Ready("0 running sessions reachable", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -417,7 +423,7 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     # The shell waits on its sleep, so it is still the process its -p was given to.
     with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
         found = readiness.sessions(home, path, untmuxed)
-    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
+    assert found == Ready("0 running sessions reachable", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
 
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -484,6 +490,7 @@ def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() 
 def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_session() -> None:
     unread = [Undescribed(29648, 1, "kern.procargs2", errno.EIO), Undescribed(29649, 1, "proc_pidfdinfo of fd 0", errno.EIO)]
     assert readiness.sessions_found([], set(), [], readiness.Unrecorded([], Counter(), unread), {}) == Unknown(
+        "1 session unknown",
         "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: "
         "pid 29648 (kern.procargs2: Input/output error), pid 29649 (proc_pidfdinfo of fd 0: Input/output error)"
@@ -557,7 +564,7 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
             found = readiness.sessions(home, path, untmuxed)
     finally:
         listening.close()
-    assert found == Ready(f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/known (pid {pid}) is typed into through its fritter")
+    assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/known (pid {pid}) is typed into through its fritter")
 
 
 CONFIG = Path("/home/.claude")
@@ -710,7 +717,7 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
 
 def test_a_native_claude_on_path_is_ready(root: Path) -> None:
     found = readiness.claude(installed(root))
-    assert found == Ready(f"Claude Code is installed: {root / 'install' / '9.9.9'}")
+    assert found == Ready("Claude Code 9.9.9", f"Claude Code is installed: {root / 'install' / '9.9.9'}")
 
 
 def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> None:
@@ -804,7 +811,7 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
     found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com")))
-    assert found == Ready("the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
+    assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
 
 
 # hands running
@@ -885,7 +892,7 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     assert main(["--home", str(home.root), "check"]) == 0
-    assert marks(capsys) == dict.fromkeys(STEPS, "ok")
+    assert marks(capsys) == dict.fromkeys(STEPS, "✓")
 
 
 # Each undoes one step of a home set_up made.
@@ -949,7 +956,7 @@ def test_a_home_missing_steps_names_those_steps_and_exits_1(
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), **dict.fromkeys(steps, "missing")}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), **dict.fromkeys(steps, "✗")}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
     assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each in steps else "Ready" for each in STEPS]
@@ -960,7 +967,7 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
 ) -> None:
     home = set_up(root, fritter, monkeypatch, "unreadable")
     assert main(["--home", str(home.root), "check"]) == 2
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?"}
     ungranted(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown", "grant": "missing", "running": "missing"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗", "running": "✗"}
