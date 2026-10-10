@@ -5,8 +5,14 @@
 // hands is sold through, says is live.
 import AppKit
 
+// `hands --permissions`: the questions the app asks macOS about its permissions, each in a new process (permissions.swift).
+if CommandLine.arguments.dropFirst().first == "--permissions" {
+    exit(permissionsCommand(Array(CommandLine.arguments.dropFirst(2))))
+}
+
 // Opened from Finder the app runs on the user's login shell, logs to ~/Library/Logs, and keeps the license key in
-// ~/Library/Application Support; a test names its own in HANDS_APP_SHELL, HANDS_APP_LOG and HANDS_APP_LICENSE.
+// ~/Library/Application Support, and asks macOS about its permissions itself; a test names its own in HANDS_APP_SHELL,
+// HANDS_APP_LOG, HANDS_APP_LICENSE and HANDS_APP_PERMISSIONS.
 let given = ProcessInfo.processInfo.environment
 let home = FileManager.default.homeDirectoryForCurrentUser
 
@@ -24,6 +30,9 @@ let environmentSaid = [shell, "-l", "-i", "-c", "exec /usr/bin/env -0 > '\(envir
 
 // ~/Library/Logs is where a Mac app's log lives, so Console.app shows it.
 let log = given["HANDS_APP_LOG"].map { URL(fileURLWithPath: $0) } ?? home.appending(path: "Library/Logs/hands/hands.log")
+
+// What answers the app's questions about its permissions (setup.swift): the app itself.
+let permissionsAsker = given["HANDS_APP_PERMISSIONS"].map { URL(fileURLWithPath: $0) } ?? Bundle.main.executableURL!
 
 // The license key the person entered, and when Polar last said it was live.
 let licenseFile = given["HANDS_APP_LICENSE"].map { URL(fileURLWithPath: $0) }
@@ -43,6 +52,9 @@ let TAIL: UInt64 = 64_000
 enum Phase {
     // Asking Polar about the license key, or the person for one: nothing to wind down, so a quit ends the app at once.
     case licensing
+    // The setup window, until macOS grants every permission hands needs: nothing to wind down, so a quit ends the app
+    // at once.
+    case settingUp(Setup)
     // The login shell saying its environment: nothing to wind down, so a quit ends it at once.
     case reading(Process)
     case running(Process)
@@ -96,7 +108,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             case .run(_, let why):
                 // [LAW:nothing-unseen] which way the check went, and on whose word: Polar's, or the grace period's.
                 self.said("license: \(why)")
-                self.begin()
+                self.setUp()
             case .ask(let why, let kept):
                 self.ask(why, key: key, held: kept)
             }
@@ -136,6 +148,14 @@ final class Launcher: NSObject, NSApplicationDelegate {
         default:
             NSApp.terminate(nil)
         }
+    }
+
+    // [LAW:no-ambient-temporal-coupling] hands runs only once it has every permission: a Microphone request left
+    // unanswered while it starts would end it on its pipeline's setup timeout.
+    func setUp() {
+        let setup = Setup(asker: permissionsAsker, said: said, done: begin, failed: stopped)
+        phase = .settingUp(setup)
+        setup.check()
     }
 
     func begin() {
@@ -201,7 +221,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         switch phase {
-        case .licensing:
+        case .licensing, .settingUp:
             return .terminateNow
         case .reading(let reader):
             kill(reader.processIdentifier, SIGKILL)
@@ -227,7 +247,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         switch phase {
         case .quitting:
             _ = applicationShouldTerminate(NSApp)
-        case .licensing, .reading, .running, .over:
+        case .licensing, .settingUp, .reading, .running, .over:
             NSApp.terminate(nil)
         }
     }
@@ -243,7 +263,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         case .running:
             stopped("hands \(how(ended)).\n\n\(lastLines())\n\nIts full log is \(log.path).")
-        case .licensing, .reading, .over:
+        case .licensing, .settingUp, .reading, .over:
             preconditionFailure("hands ended while the app was \(was)")
         }
     }
