@@ -23,7 +23,7 @@ from pipecat.transcriptions.language import Language
 
 from conftest import Running, running
 from hands.sessions.audit import Entry, Replied
-from hands.voice.conversation import record_turns, turns
+from hands.voice.conversation import AssistantTurns, record_turns, turns
 from hands.voice.player import Mark, Marks
 from hands.voice.spoken import FenceAggregator
 
@@ -42,10 +42,10 @@ class Speaker(TTSService):
 
 @dataclass
 class Conversation:
-    """The model's context and the audit log's replies, behind Pipecat's own speaker and hands' assistant side."""
+    """Hands' assistant side and the audit log's replies, behind Pipecat's own speaker."""
 
     pipeline: Running
-    context: LLMContext
+    assistant: AssistantTurns
     recorded: list[Entry] = field(default_factory=list[Entry])
     written: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -69,10 +69,9 @@ class Conversation:
 
 @asynccontextmanager
 async def conversing() -> AsyncGenerator[Conversation]:
-    context = LLMContext()
-    user, assistant = turns(context, LLMUserAggregatorParams())
+    user, assistant = turns(LLMContext(), LLMUserAggregatorParams())
     async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), Speaker(), assistant, Marks()]) as pipeline:
-        conversation = Conversation(pipeline, context)
+        conversation = Conversation(pipeline, assistant)
 
         def record(entry: Entry) -> None:
             conversation.recorded.append(entry)
@@ -136,4 +135,4 @@ async def test_every_reply_and_line_is_recorded_and_none_is_kept_in_the_context(
         assert await conversation.replies(100) == [
             reply for n in range(50) for reply in (Replied(f"Reply {n}.", interrupted=False), Replied(f"Line {n}.", interrupted=False))
         ]
-        assert conversation.context.get_messages() == []
+        assert conversation.assistant.context.get_messages() == []
