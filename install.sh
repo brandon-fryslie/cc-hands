@@ -22,9 +22,10 @@ WHEEL_TAG=py3-none-macosx_12_0_arm64
 HOMEBREW_PREFIX=${HOMEBREW_PREFIX:-/opt/homebrew}
 STEPS=9
 
-# The installer can ask questions only when both input and output are a terminal, as with the README's command.
+# The installer can ask questions only when its input is a terminal, as with the README's command. Output may be piped
+# (for example, through tee) while the user is still at the keyboard.
 interactive=false
-[ -t 0 ] && [ -t 1 ] && interactive=true
+[ -t 0 ] && interactive=true
 if [ -t 1 ]; then
   bold=$'\033[1m' dim=$'\033[2m' green=$'\033[32m' red=$'\033[31m' reset=$'\033[0m'
 else

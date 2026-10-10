@@ -505,3 +505,28 @@ def test_the_profile_message_names_only_what_was_added(sandbox: Sandbox) -> None
     (sandbox.home / ".zprofile").write_text(f'export PATH="{brew}:$PATH"\n')
     again = sandbox.run()
     assert "updated ~/.zprofile so new terminals find Claude Code\n" in again.stdout
+
+
+def test_a_run_whose_output_is_piped_still_asks_at_the_terminal(sandbox: Sandbox) -> None:
+    # As with `/bin/bash -c "$(curl ...)" | tee install.txt`: input is the terminal, output is a pipe.
+    (sandbox.root / "stubs" / "first-run-quit-once").touch()
+    sandbox.log.write_text("")
+    main, side = pty.openpty()
+    started = subprocess.Popen(["/bin/bash", str(INSTALL)], env=sandbox.environment("v9.9.9", "/bin/zsh", None), stdin=side, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    os.close(side)
+    printed = b""
+    assert started.stdout is not None
+    try:
+        deadline = time.monotonic() + 60
+        while b"All set." not in printed and time.monotonic() < deadline:
+            # Enter at every prompt: keys typed before a prompt are discarded, so keep pressing until the run ends.
+            os.write(main, b"\n")
+            ready, _, _ = select.select([started.stdout], [], [], 0.3)
+            if ready:
+                printed += os.read(started.stdout.fileno(), 4096)
+    finally:
+        os.close(main)
+        started.kill()
+        started.wait()
+    said = printed.decode(errors="replace")
+    assert "That did not finish" in said and "All set." in said
