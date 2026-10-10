@@ -63,8 +63,9 @@ exchanges of the working sessions reach the same observer by a different path, t
 the session's requests to the API that the session is configured to use, and copies each
 exchange to `<hands home>/wire.sock`, where it is parsed into the same values. As a
 result, a session never waits on the daemon, and its requests never pass through the
-daemon. The wire proxy has one listener: the brain's stage, together with the component
-that manages the brain's context. This listener routes each request in one of two ways.
+daemon. At most one listener is joined to the wire proxy: the brain's stage, together with
+the component that manages the brain's context. When joined, this listener routes each
+request in one of two ways.
 Either the request is sent with hands' changes applied, or hands holds the request and
 answers it without contacting the API. hands' changes are its tail appended to the newest
 message, old tool results reduced to one line each, and a compaction's prompt replaced. A
@@ -1127,7 +1128,7 @@ the reply is never reported twice. This works because Claude Code only appends t
 that record is always the first of the steps not yet reported `[LAW:one-source-of-truth]`. *Not*
 covered: a tool result written after a turn was reported is never reported, because its call was
 already reported as having no result. In all twelve turns, every call was paired with its result at
-`Stop`, so this case cannot be handled at a `Stop`. Progress reporting does not cover it either:
+`Stop`, so this case does not occur at a `Stop`. Progress reporting does not produce it either:
 progress reports what a call is about to do, never what it returned.
 
 The narrator passes a finished turn to the intermediary as a separate turn, and the intermediary
@@ -1202,8 +1203,8 @@ ended without being accepted and was accepted later, that acceptance is never at
 turn, unless both turns typed the same words. A prompt that Claude Code accepts but that belongs to no
 turn, such as one for a request that already failed or one that nobody made, runs before the text typed
 after it. A turn therefore stops such a prompt with Escape and Ctrl-C: once before the turn is typed,
-and again, after the turn is typed a second time with its full time allowance, if such a prompt ran
-during its wait. A prompt accepted late cannot prevent later turns from being accepted, however long it
+and, if such a prompt ran during the turn's wait, again before the turn is typed a second time with its
+full time allowance. A prompt accepted late cannot prevent later turns from being accepted, however long it
 would run. A turn typed twice is accepted by either typing and ends at the Stop of either one, because
 the Escape may have stopped the first typing as it was accepted, and a stopped prompt does not post a
 Stop. A turn continues to be processed until it ends, even if the caller that sent it stopped waiting.

@@ -34,9 +34,9 @@ what a session did before the daemon attached. It reads the session's transcript
 through the same fold that the live tail uses, so a turn that was not heard live is
 described in the same words as a turn that was. The user's prompts are kept in order
 among the steps, because the steps alone show what a session did over an hour but not
-why. Every item identifies the record it came from. Each read returns forty records
+why. Every item identifies the record it came from. Each read returns forty items
 and the position to continue reading from. An hour of work produces hundreds of
-records, and returning all of them at once would fill the context with history. The
+items, and returning all of them at once would fill the context with history. The
 continuation position is never placed on a tool call that has not yet returned;
 otherwise that call's result would arrive after the position and never be reported.
 Two refinements from the architecture apply to these tickets and are recorded as
