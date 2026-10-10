@@ -96,6 +96,7 @@ final class Setup: NSObject, NSWindowDelegate {
         purpose.stringValue = permission.purpose
         answer.stringValue = permission.answer
         status.stringValue = ""
+        next.isEnabled = true
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
@@ -104,13 +105,16 @@ final class Setup: NSObject, NSWindowDelegate {
     }
 
     @objc func request() {
-        let permission = PERMISSIONS[shown!]
+        let step = shown!
+        let permission = PERMISSIONS[step]
         said("permissions: asking macOS for \(permission.name)")
         status.stringValue = "Waiting for macOS to give hands \(permission.name). If you closed its request, choose Next to see it again."
         // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
         // System Settings list the request just opened. One request after another is safe: each lists hands again.
         next.isEnabled = false
         ask(["request", permission.service]) { ended, _, errors in
+            // A request that ends after its step was left has nothing to say about the step now shown.
+            guard self.shown == step else { return }
             self.next.isEnabled = true
             // [LAW:no-silent-failure] a request macOS never showed is reported in the window, not waited on.
             if ended.terminationReason != .exit || ended.terminationStatus != 0 {
