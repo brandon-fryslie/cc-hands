@@ -47,4 +47,5 @@ the command that fixes any part that is missing.
 
 [docs/guide.md](docs/guide.md) covers settings, all commands, the brain, the plugin, and
 how hands connects to your sessions. The design is described in
-[docs/architecture.md](docs/architecture.md).
+[docs/architecture.md](docs/architecture.md), and how it is tested in
+[docs/testing.md](docs/testing.md).
