@@ -1,125 +1,134 @@
 # What hands-free coding needs
 
-A developer can leave the keyboard for a working session and rely on cc-hands when
-nine things are true. Each need below names what breaks when it is missing, the part
-of the [architecture](architecture.md) that carries it, and the epic in
-[features.md](features.md) that delivers it. The needs are the reason any feature
-exists; a feature that serves none of them is not built.
+A developer can work away from the keyboard and rely on cc-hands when nine conditions
+are met. For each need below, this document describes what fails when the need is not
+met, the part of the [architecture](architecture.md) that implements it, and the epic
+in [features.md](features.md) that delivers it. Every feature exists to meet one or
+more of these needs. A feature that does not meet any of them is not built.
 
-The needs came from one exercise: list every act a developer performs at a keyboard
-over a day with coding agents, and ask what has to be true for each act to happen by
-voice, without looking, without walking back to the desk. The moment one act cannot,
-the developer returns to the keyboard and the product has failed for that moment. So
-the bar is not "voice is possible" but "the keyboard is never required."
+The needs come from one exercise. We listed every action a developer performs at a
+keyboard during a day of work with coding agents. For each action, we asked what is
+required to perform it by voice, without looking at a screen and without returning to
+the desk. If any action cannot be performed by voice, the developer has to return to
+the keyboard, and the product has failed at that point. The requirement is therefore
+not "voice is possible" but "the keyboard is never required."
 
 ## 1. Every keyboard act has a spoken equivalent
 
-At the keyboard you prompt, interrupt, answer a question, approve a tool, accept a
-plan, pick an option, run `/compact`, and close a session. Starting a session is not
-on the list: it happens in a terminal, where the keyboard already is.
-If any of those has no spoken form, the first time you need it you go back to the
-desk. Completeness is the need, and it is checked by enumeration: the list of acts is
-finite and each one is either reachable or it is a known gap.
+At the keyboard, you enter prompts, interrupt, answer questions, approve tools, accept
+plans, select options, run `/compact`, and close sessions. Starting a session is not on
+this list, because it happens in a terminal, where the user is already at the keyboard.
+If any of these actions has no spoken equivalent, you must return to the desk the first
+time you need it. The need is completeness, and it is verified by enumeration: the list
+of actions is finite, and each action is either supported by voice or recorded as a
+known gap.
 
-Carried by the `Input` union, the `Held` dialog with its three blockers, and the
+Implemented by the `Input` union, the `Held` dialog with its three blockers, and the
 tool surface. Delivered by the drafts and permissions tickets in the foundation epic,
-then **Whole keyboard by voice** and **Ending a session by voice**.
+followed by **Whole keyboard by voice** and **Ending a session by voice**.
 
 ## 2. Dictation lands as intended
 
-Speech-to-text turns "auth middleware" into a filename guess and a flag into a word.
-The need is not perfect recognition, which does not exist, but that the user hears
-what was resolved and can fix it before it goes: the readback speaks what changed,
-identifiers are biased toward the words this repo actually uses, a spoken reference
-to a file resolves to a real path, and a hard word can be spelled.
+Speech-to-text can turn "auth middleware" into a guessed filename and a flag into an
+ordinary word. Perfect recognition is not possible, so the need is not perfect
+recognition. The need is that the user hears how the input was interpreted and can
+correct it before it is sent. The readback reports what changed. Identifiers are
+biased toward the words that this repository uses. A spoken reference to a file
+resolves to a real path. The user can spell out a difficult word.
 
-Carried by the draft buffer with its stored resolutions and by `find_path`. Delivered
-by the drafts ticket and **Dictation fidelity**.
+Implemented by the draft buffer, which stores its resolutions, and by `find_path`.
+Delivered by the drafts ticket and **Dictation fidelity**.
 
 ## 3. The right thing is said at the right time
 
-Several sessions share one ear. A permission request from one must come before a
-finished turn from another; three turns that finished while you were talking become
-one sentence; a request that is still pending is not announced again; nothing starts
-while your key is down; a session you have muted stays quiet; and when nothing has
-changed, nothing is said. Announce transitions, never states.
+Several sessions share one audio output. A permission request from one session must be
+announced before a completed turn from another session. If three turns complete while
+you are speaking, they are announced in one sentence. A request that is still pending is
+not announced again. No announcement starts while you hold the key down. A muted
+session produces no announcements. When nothing has changed, nothing is announced.
+Announcements report changes in state, never the current state.
 
-Carried by the routing table, the per-session overlay, the priority queue, and the
+Implemented by the routing table, the per-session overlay, the priority queue, and the
 `coalesce` pass. Delivered by **Attention**.
 
 ## 4. Claude's results are understandable by ear, at the depth you choose
 
-A turn's result is what Claude did, not only what it wrote at the end: it changed the
-token refresh to retry three times, two tests in the auth suite failed, it committed
-and opened a pull request, and it wants to know whether to keep the old endpoint.
-Most of that lives in tool calls and their results, and some of it only in the
-repository. So the summary is built from every source that holds it: the transcript's
-text, its tool calls and results, and the turn's git changes.
+The result of a turn is what Claude did, not only the text it wrote at the end. For
+example: it changed the token refresh to retry three times, two tests in the auth suite
+failed, it committed and opened a pull request, and it is asking whether to keep the
+old endpoint. Most of this information is in tool calls and their results, and some of
+it is only in the repository. The summary is therefore built from every source that
+contains it: the text in the transcript, the tool calls and results in the transcript,
+and the git changes made during the turn.
 
-Nothing is read aloud verbatim. Markdown, code, diffs, paths, hashes, and tables
-cannot be heard as written, so everything spoken is first put in spoken form: code
-is described by what it does, a path by its file name, a table by what it shows. A
-summary comes first, and each part of it opens into more detail when asked. A
-question Claude asked is always said, however short the summary. When you cut the
-reading off to ask something, "go back to what you were talking about" picks it up
-where it stopped. "That part" resolves to the records it came from.
+Nothing is read aloud verbatim. Markdown, code, diffs, paths, hashes, and tables cannot
+be understood when read aloud as written, so all spoken output is first converted to
+spoken form. Code is described by what it does, a path by its file name, and a table by
+what it shows. A summary is read first, and each part of the summary can be expanded
+into more detail on request. If Claude asked a question, the question is always read,
+regardless of the summary's length. If you interrupt the reading to ask something, "go
+back to what you were talking about" resumes the reading where it stopped. "That part"
+refers to the records that the part was built from.
 
-Carried by the transcript tail, the step recognisers, the turn's git delta, the
+Implemented by the transcript tail, the step recognisers, the turn's git delta, the
 spoken-form transform, the narration tree, and the playback bookmarks. Delivered by
 **Narration**.
 
 ## 5. Nothing happens without you
 
-The intermediary sends only what you approved, approves only what you approved,
-denies when you do not answer, and can never edit a file. Every effect it performs is
-one line in an audit log, so "did it send something I didn't say" has a definite
-answer. The tool surface is small and fixed, and its boundary is names and records,
-never file contents.
+The intermediary sends only what you approved, approves only what you approved, denies
+requests that you do not answer, and can never edit a file. Every effect it performs is
+recorded as one line in an audit log, so the question "did it send something I didn't
+say" always has a definite answer. The tool surface is small and fixed. Tools can
+access names and records only, never file contents.
 
-Carried by the draft buffer, the deny-by-default deadline, the audit log, and the
-fixed tool list. Delivered across the foundation epic; the audit log lands in
+Implemented by the draft buffer, the deny-by-default deadline, the audit log, and the
+fixed tool list. Delivered across the foundation epic. The audit log is delivered in
 **Loud daemon**.
 
-## 6. Silence never means broken
+## 6. A failure is never silent
 
-In an audio system the failure output and the "still working" output are the same:
-nothing. The daemon must be heard or seen to be alive, a hook that cannot reach it
-must fail where you can see it, an unreachable model must be spoken, and an error
-must reach you by a path that does not run through the thing that broke.
+In an audio system, a failure and a task that is still running produce the same output:
+no sound. The user must be able to hear or see that the daemon is running. A hook that
+cannot reach the daemon must fail visibly. If the model is unreachable, hands must
+report this by voice. An error must reach you through a path that does not depend on
+the component that failed.
 
-Carried by the system speech channel, the heartbeat file and the menu-bar indicator
-that reads it, the terminal the daemon runs in, and the shim's non-zero exit when
-the heartbeat says the daemon died, hung, or cannot be read. Delivered by **Loud daemon**, and it is ranked ahead of every content
-feature because transport defects are the ones you feel on the first try (failure
-mode 11).
+Implemented by the system speech channel, the heartbeat file and the menu-bar indicator
+that reads it, the terminal that the daemon runs in, and the shim's non-zero exit code
+when the heartbeat shows that the daemon crashed, hung, or cannot be
+read. Delivered by **Loud daemon**. This epic is ranked ahead of every content feature
+because transport defects are the defects that users encounter on the first attempt
+(failure mode 11).
 
 ## 7. Fast enough to feel like conversation
 
-The measured spike is 1.4 s from key release to first audio on a plain turn and
-4.3 s when a tool call is involved. The need is a bound that holds under load, and
-work that skips the model where the model adds nothing: a session finishing is a
-template, not a summary; steps are summarised while the turn runs, from the
-transcript tail, so the summary is ready when the turn stops; the prompt is cached.
+The measured spike is 1.4 s from key release to first audio on a plain turn and 4.3 s
+when a tool call is involved. The need is a latency bound that holds under load, and
+skipping the model wherever the model adds no value. A session completion is announced
+with a template, not a summary. Steps are summarised from the transcript tail while the
+turn is running, so the summary is ready when the turn ends. The prompt is cached.
 
-Carried by the `Speak` channel and by summaries built during the turn. Delivered
-throughout, with the measurement kept in the latency observer.
+Implemented by the `Speak` channel and by summaries built during the turn. Delivered
+across all epics, with the measurement recorded in the latency observer.
 
 ## 8. It works where you are
 
-At the desk with a headset. Across the room with a hotkey or a button. On the phone
-in another room, with the phone's earbuds and its own talk button. Eventually, with
-no button at all. Activation without a hand is the last step, not the first, because
-an open mic in a room with speakers hears the pipeline's own voice.
+At the desk, with a headset. Across the room, with a hotkey or a button. In another
+room, on the phone, with the phone's earbuds and its own talk button. Eventually, with
+no button at all. Hands-free activation is the last step, not the first, because an
+open microphone in a room with speakers picks up the pipeline's own voice.
 
-Carried by the transport variant and the gate-edge variant. Delivered by
+Implemented by the transport variant and the gate-edge variant. Delivered by
 **Presence**.
 
 ## 9. It lasts a whole day
 
-The intermediary's own context is the one thing in the system that grows. It must be
-compacted without losing the ability to answer "what did we decide this morning," and
-a daemon restart must not forget which sessions exist. The long memory is the audit
-log; the working memory is the context window; membership is the session files.
+The intermediary's own context is the only part of the system that grows over time. It
+must be compacted without losing the ability to answer "what did we decide this
+morning," and a daemon restart must not lose the list of existing sessions. The audit
+log is the long-term memory, the context window is the working memory, and the session
+files record which sessions exist.
 
-Carried by the context summariser, `recall`, `catch_up`, and the session files.
+Implemented by the context summariser, `recall`, `catch_up`, and the session files.
 Delivered by **Endurance** and by the restart work in **Loud daemon**.
