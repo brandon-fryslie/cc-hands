@@ -66,9 +66,9 @@ result, a session never waits on the daemon, and its requests never pass through
 daemon. The wire proxy has one listener: the brain's stage, together with the component
 that manages the brain's context. This listener routes each request in one of two ways.
 Either the request is sent with hands' changes applied, or hands holds the request and
-answers it without contacting the API. The possible changes are: no change, hands' tail
-appended to the newest message, old tool results reduced to one line each, or a
-compaction's prompt replaced. The package parses hook input once, at the socket, into a
+answers it without contacting the API. hands' changes are its tail appended to the newest
+message, old tool results reduced to one line each, and a compaction's prompt replaced. A
+request may get none of these changes or several of them. The package parses hook input once, at the socket, into a
 `HookEvent`. It rejects any input it does not recognise, logs an error, and returns a
 non-2xx reply `[LAW:parse-dont-validate]`. It provides two interfaces to the packages
 above it: an async stream of events, and a small API that the tools call.
@@ -491,8 +491,9 @@ again because it continued past its `Stop` still counts as one turn. Third, it o
 remaining items `known` (notes and the briefing, never spoken) before `blocking` (what a
 session asks) before `result` (finished turns) before `fyi` (a session gone), in arrival
 order within each group. A session's own items keep the order in which they occurred:
-anything it announced before a higher-priority item is announced together with that
-item, so the request for its next turn is never heard before the turn that preceded it. A
+an item from that session queued before a higher-priority item is announced together
+with the higher-priority item, so a request raised during its next turn is never heard
+before the turn that preceded it. A
 combined announcement shares one `REPLY_SHOWN` limit among its turns. A `Pending`'s
 priority is derived from its variant and is never stored separately. This queue is not
 the player's bookmarks: resuming replays a bookmarked sentence and never re-enqueues an

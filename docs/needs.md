@@ -11,7 +11,7 @@ keyboard during a day of work with coding agents. For each action, we asked what
 required to perform it by voice, without looking at a screen and without returning to
 the desk. If any action cannot be performed by voice, the developer has to return to
 the keyboard, and the product has failed at that point. The requirement is therefore
-not "voice input is possible" but "the keyboard is never required."
+not "voice is possible" but "the keyboard is never required."
 
 ## 1. Every keyboard act has a spoken equivalent
 

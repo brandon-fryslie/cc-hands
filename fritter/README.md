@@ -105,8 +105,9 @@ A caller must send its request within one second, and the request must not excee
 With `--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET`, fritter acts as the child's HTTP
 proxy. It sets `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY` and `http_proxy` in the child's
 environment to its own address, and sets `NO_PROXY` and `no_proxy` to empty, so every
-connection the child makes goes to fritter. fritter then connects directly to the hosts
-the child requested, as the child would have, using fritter's own environment. The child
+connection the child makes goes to fritter. fritter then connects to the hosts the child
+requested, as the child would have, using fritter's own environment (including any proxy
+fritter was given; see below). The child
 continues to use UPSTREAM as its server address. From the child's point of view, the
 server has not changed, so it keeps any data it stores for that server.
 

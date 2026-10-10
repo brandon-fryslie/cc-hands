@@ -62,7 +62,7 @@ The notes on each item below describe what is built and what remains.
   commands with their purpose, output, failure, and effect on the repository; test
   runs with the names of failing tests; reads and searches; task updates; `Agent`
   dispatches with their reports; and `AskUserQuestion`. An unrecognised tool is named
-  and summarised, never dropped. Verified by fixture tests on real JSONL slices, and
+  and summarised, never dropped. Done when verified by fixture tests on real JSONL slices, and
   by a measurement of the lag from a record's `timestamp` to its `Step`. Built: the
   recogniser table and its nine typed steps, fitted to record shapes taken from 900
   real transcripts and tested against fourteen real call-and-result pairs and the
@@ -87,7 +87,7 @@ The notes on each item below describe what is built and what remains.
   transform so that every utterance passes through it. Headings become section cues,
   lists become counted sequences, identifiers are split into words, paths become file
   names, and flags, hashes, ids, and URLs are either named or dropped. Code, diffs,
-  and tables are summarised before they reach this transform. Verified by a table test
+  and tables are summarised before they reach this transform. Done when verified by a table test
   that maps written inputs from real Claude replies to their spoken forms, and by a
   test that confirms no text reaching TTS contains a backtick, a pipe table, or a
   fenced block.
@@ -98,7 +98,7 @@ The notes on each item below describe what is built and what remains.
   described by what they do. Step summaries are built as steps arrive, so the
   headline is ready at `Stop`. The length of the top level is a config number. It
   starts at one sentence and is expected to change once it has been tested by ear.
-  Verified by an eval script over real turn fixtures, which checks that the steps'
+  Done when verified by an eval script over real turn fixtures, which checks that the steps'
   facts are present, that no identifier or code is spoken, and that the length limit
   is met, and by measuring the time to first audio after `Stop` on inferno. Built: a
   stateless summary of each finished turn, one to three sentences long, spoken with
@@ -108,7 +108,7 @@ The notes on each item below describe what is built and what remains.
   and the eval script.
 - **Question detection.** Questions in the final text, and choices that Claude
   offered, become question segments. These play at every length, ahead of the
-  sections. Verified by fixtures of real turns that do and do not end with a
+  sections. Done when verified by fixtures of real turns that do and do not end with a
   question, with the eval reporting misses and false positives. Built: the daemon
   checks a turn's closing text and its unanswered `AskUserQuestion` calls to find what
   the turn is waiting on. The question segment plays last at every length. It uses
@@ -119,24 +119,24 @@ The notes on each item below describe what is built and what remains.
   from the summariser's prompt. It covers referring to sessions by title and never
   speaking ids, replying in spoken form, "speak what changed" for readbacks, calling
   `expand`, `resume`, `skip`, and `repeat` instead of paraphrasing from memory, and
-  calling `stay_silent` for speech not addressed to it. Verified by an eval script
+  calling `stay_silent` for speech not addressed to it. Done when verified by an eval script
   over conversation fixtures, run against the local model.
 - **Playback bookmarks and resume.** A single player tracks which segment is
   currently playing. An interruption pushes a bookmark. "Go back to what you were
   talking about" pops the bookmark and replays that segment from the beginning;
-  "skip that" and "say that again" move the same cursor. Verified by reducer table
+  "skip that" and "say that again" move the same cursor. Done when verified by reducer table
   tests, and live: barge in mid-summary, ask something unrelated, and confirm that
   playback resumes at the segment that was cut off.
 - **Drill-down.** "More on that" expands the turn that hands last narrated for a
   session into its parts, one line each. Asking for a part by name expands it into
   its records. Each repeated request gives more detail, and the detail is generated
   on demand. There is no verbatim mode: the deepest level is a longer summary, and
-  code is still described, not read out. Verified live: when a headline names a
+  code is still described, not read out. Done when shown live: when a headline names a
   failing test, expanding it reports what failed and why.
 - **Progress while working.** Streaming narration. For the focused session, steps
   from the tail and text from `MessageDisplay`, line by line, play at `fyi` priority
   as they happen. They are coalesced so that a burst of edits produces one sentence.
-  For a normal session, these updates are notes. Verified live: hands reports that a
+  For a normal session, these updates are notes. Done when shown live: hands reports that a
   focused session is running tests before the session stops, and summarises a long
   explanation before it finishes.
 - **Subagent narration.** Planned after the first working version. A subagent's
@@ -175,7 +175,7 @@ tickets depend only on the reducer, so work can start as soon as that ticket clo
   daemon changes the icon and posts the notification within a few seconds.
 - **Audio device loss.** Unplugging the headset does not stop the pipeline. The
   transport error is spoken through the remaining device or shown on screen, and the
-  transport is rebuilt on the default device. Verified by unplugging the headset
+  transport is rebuilt on the default device. Done when verified by unplugging the headset
   mid-turn.
 - **Hooks as a plugin.** The repository is a Claude Code marketplace. Its plugin is
   written by the installed hands (`hands plugin`), its hooks run under that
@@ -244,11 +244,11 @@ Need 3. Covers how narration from several sessions is delivered to one listener.
 - **Priority queue with hold and coalesce.** The pending speech queue orders
   `blocking` before `result` before `fyi`, and waits while the key is held down. A
   pure `coalesce` function merges one session's pending items into a single narration
-  that carries all their record ids. Verified by a table test on `coalesce` and a
+  that carries all their record ids. Done when verified by a table test on `coalesce` and a
   live test in which two sessions finish during one key hold.
 - **Transitions only.** Every announcement is keyed by the record id or request id
   that triggered it and is never repeated. The deadline warning is triggered by the
-  `warned: False → True` transition. Verified by reducer tests: the same event
+  `warned: False → True` transition. Done when verified by reducer tests: the same event
   received twice produces one utterance.
 - **Catch-up.** `catch_up(minutes)` reads the audit log and gives a spoken summary of
   what was said and done while the user was away. Done when "what did I miss", asked
@@ -265,7 +265,7 @@ Need 3. Covers how narration from several sessions is delivered to one listener.
 ## Ending a session by voice (`hands-lifecycle-n1m`)
 
 Need 1, the session lifecycle action. Sessions are started in a terminal, not by
-hands. hands can type into any session that the session-input epic
+hands. hands can type only into sessions that the session-input epic
 (`hands-harness-5nb`) can reach.
 
 - **End a session.** `end_session` types `/exit` as a `Command` into the session.
@@ -296,7 +296,7 @@ Need 2.
   path, and the readback speaks it. Done when a spoken file reference appears in the
   staged draft as the real path.
 - **Spelled identifiers.** "Spell it" and letter names produce the exact token in
-  the draft, and the readback confirms it letter by letter. Verified by a fixture of
+  the draft, and the readback confirms it letter by letter. Done when verified by a fixture of
   spoken spellings and their expected tokens.
 
 ## Presence (`hands-presence-em5`)

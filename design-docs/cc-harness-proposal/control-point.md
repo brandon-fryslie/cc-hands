@@ -98,8 +98,8 @@ everything after byte N. As a result:
   (the appended content) are appended to, or placed inside, the newest user message. On
   the next turn, Claude Code's history does not contain the content that the proxy
   added. If the content is appended after the block that holds Claude Code's breakpoint
-  on that message, it is outside the cached prefix and the next request gets a full
-  cache hit. If it is placed anywhere earlier, the rest of the message after it is
+  on that message, it is outside the cached prefix and the next request loses none
+  of its cached prefix. If it is placed anywhere earlier, the rest of the message after it is
   uncached once, and during a tool loop that message is a tool result, which can be any size. This also means that
   outdated notes do not accumulate in the history the way `[hands]` messages do today.
   If zero cache misses are ever wanted, the proxy re-inserts its own past
@@ -277,9 +277,9 @@ a prerequisite, and it is not a ticket. Brandon's position on latency, which the
 recordings support: the same bytes on the wire take the same time regardless of whether
 Claude Code or another client sent them. A short-output Opus request with a 27 KB
 prompt, 67 tools, and 100–200K cached tokens returns in 2.3–3.5 s. The recordings also
-already show how many requests a turn makes: more than one, and the previous section
-lists which ones. The recordings do not include timing outside the request, and no value
-of that timing would change the design:
+already show how many requests a turn makes: more than one, and the section "What
+Claude Code adds to each request" lists which ones. The recordings do not include the
+timing around each request, and no value of that timing would change the design:
 
 - stdin write → the request leaves Claude Code: if this is large, it is fixed by a
   setting or a patch in the brain's launch, not by a design change;
