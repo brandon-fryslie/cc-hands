@@ -4,11 +4,13 @@
 
 The steps, in the order they are said: what the one install command puts in, which is Claude Code, PortAudio, which the
 microphone opens through, and the installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
-the plugin that joins sessions to hands; Claude Code's own first run and login, so a session it starts takes what is typed; the brain with its login; the Input
+the plugin that joins sessions to hands; Claude Code's own first run and login, so a session it starts takes what is typed; the brain with its login; LowTalker
+serving transcription, which every hold is uploaded to; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
 
+import asyncio
 import os
 import re
 import shutil
@@ -36,6 +38,7 @@ from hands.sessions.startsession import as_from_a_terminal
 from hands.sessions.processes import process_starts
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
 from hands.voice import backends
+from hands.voice import transcription as transcribing
 
 
 @dataclass(frozen=True)
@@ -66,13 +69,13 @@ VERSION_TIMEOUT_SECONDS = 30.0
 INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/promptctl/cc-hands/master/install.sh)"`'
 
 
-def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
+def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, heard: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
     """Every step, in the order the module names them. `environment` is the one sessions are started from; `granted`, the grant of the app this runs in;
-    `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
+    `reached`, whether the brain has its login; `heard`, whether LowTalker transcribes; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     path = environment.get("PATH", "")
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), first_run(home, environment), reached, hears(granted, running), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), first_run(home, environment), reached, heard, hears(granted, running), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -115,12 +118,13 @@ def installed(path: str) -> Finding:
     return Ready(f"`hands` on this PATH is {found}, {this}: Claude Code runs it for the plugin in every session")
 
 
-def configured(home: Home, environment: Mapping[str, str]) -> Finding:
-    """Whether the brain has the login it reaches its model with."""
+def configured(home: Home, environment: Mapping[str, str]) -> tuple[Finding, Finding]:
+    """Whether the brain has the login it reaches its model with, and whether LowTalker, at the address the settings
+    name, transcribes."""
     try:
         config = load(home).config
     except Rejected as error:
-        return Missing(f"hands cannot read its settings: {error}")
+        return Missing(f"hands cannot read its settings: {error}"), Unknown("which server transcribes is in the settings hands cannot read")
     try:
         reached: Finding = reaching(resolve(config.llm, home, environment))
     except Rejected as error:
@@ -128,7 +132,25 @@ def configured(home: Home, environment: Mapping[str, str]) -> Finding:
     except OSError as error:
         # The brain's claude could not be asked, which says nothing of whether it holds a login.
         reached = Unknown(f"cannot tell whether the [llm] backend can reach its model: {error}")
-    return reached
+    return reached, transcription(config.transcription)
+
+
+def transcription(url: str) -> Finding:
+    """Whether LowTalker, at `url`, transcribes a hold, as the voice uploads one."""
+    # [LAW:no-silent-failure] what the server said back is said, so a refusal names its own cause.
+    match asyncio.run(transcribing.probe(url)):
+        case None:
+            return Ready(f"LowTalker at {url} transcribes a hold")
+        case transcribing.NotServing(reason=reason) as fault:
+            return Missing(
+                f"nothing transcribes at {url} ({reason}), so hands cannot hear what is said: {transcribing.remedy(fault)} "
+                f"(LowTalker's network build is at https://github.com/brandon-fryslie/low-talker)"
+            )
+        case transcribing.Unreachable() | transcribing.Loading() | transcribing.Broken() as fault:
+            return Missing(f"the transcription server at {url} does not transcribe a hold: it {transcribing.detail(fault)}; {transcribing.remedy(fault)}")
+        case transcribing.Busy() | transcribing.Unanswered() | transcribing.Lost() | transcribing.ServerError() as fault:
+            # A passing fault: a server that may well transcribe the next hold, not one known to be missing.
+            return Unknown(f"cannot tell whether {url} transcribes: it {transcribing.detail(fault)}")
 
 
 def reaching(reached: backends.ClaudeCodeBackend) -> Ready:

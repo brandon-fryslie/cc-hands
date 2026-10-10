@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-import mlx_whisper
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.observers.base_observer import BaseObserver
@@ -43,16 +42,6 @@ def spoken(text: str, at: Path) -> bytes:
 
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
-
-
-@pytest.fixture(autouse=True)
-def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Building a Whisper transcribes nothing: its load would fetch 1.6 GB of weights, which no test is about."""
-
-    def transcribe(_audio: object, **_options: object) -> dict[str, object]:
-        return {"segments": []}
-
-    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
 
 
 async def unprimed() -> None:

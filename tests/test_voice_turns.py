@@ -8,7 +8,6 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 
 import asyncio
 import struct
-import threading
 import wave
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
@@ -250,7 +249,7 @@ async def rigged(
                 return speaker
 
     voice = built.build_voice(
-        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
+        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), transcription="http://unused/v1", voice=voices.DEFAULT),
         llm=llm,
         key=PushToTalk(recorded.append),
         player=Player(recorded.append),
@@ -827,28 +826,29 @@ async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_tur
     assert rig.told == ["released", "failed"]
 
 
-async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    returns, begun = threading.Event(), list[None]()
+async def test_a_transcription_given_up_on_is_cancelled_and_fails_its_turn_alone(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    begun, cancelled = list[None](), list[None]()
 
-    def stuck(samples: bytes, prompt: str | None) -> list[Unsaid]:
+    async def stuck(_url: str, _wav: bytes, _filename: str, _prompt: str | None, _timeout: float) -> list[Unsaid]:
         begun.append(None)
-        returns.wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(None)
+            raise
         return []
 
-    # Whisper as it is, down to the model: the rig's stand-in is put aside.
+    # Whisper as it is, down to the upload: the rig's stand-in is put aside.
     monkeypatch.setattr(Whisper, "_heard", WHISPER_HEARD)
     monkeypatch.setattr(transcription, "segments", stuck)
     monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
-    try:
-        await held(rig, 1)
-        await rig.until(lambda: rig.out.stopped == 1)
-        await held(rig, 2)
-        await rig.until(lambda: rig.out.stopped == 2)
-        assert rig.told == ["released", "failed", "released", "failed"]
-        # The second hold's turn failed in its own time without the model being run on it beside the first.
-        assert len(begun) == 1
-    finally:
-        returns.set()
+    await held(rig, 1)
+    await rig.until(lambda: rig.out.stopped == 1)
+    await held(rig, 2)
+    await rig.until(lambda: rig.out.stopped == 2)
+    assert rig.told == ["released", "failed", "released", "failed"]
+    # Each upload given up on is cancelled, not left waiting on LowTalker beside the next.
+    assert len(begun) == len(cancelled) == 2
 
 
 API, WEB = SessionId("api"), SessionId("web")
@@ -1001,6 +1001,6 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
-    whisper = Whisper(prompt=unprimed, told=by_hand, record=lambda _: None)
+    whisper = Whisper(url="http://unused/v1", prompt=unprimed, told=by_hand, record=lambda _: None)
     with pytest.raises(TypeError, match="carries no key"):
         await whisper.process_audio_frame(InputAudioRawFrame(b"\x00\x00", 16000, 1), FrameDirection.DOWNSTREAM)

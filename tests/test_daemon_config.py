@@ -36,8 +36,8 @@ from hands.voice.backends import Account, ClaudeCodeBackend
 HOME = Home(Path("/Users/someone/.hands"))
 
 
-def test_no_file_is_the_brain_on_sonnet(tmp_path: Path) -> None:
-    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Claude(model=ANTHROPIC_MODEL), collector=None))
+def test_no_file_is_the_brain_on_sonnet_transcribed_by_lowtalker_on_loopback(tmp_path: Path) -> None:
+    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Claude(model=ANTHROPIC_MODEL), transcription="http://127.0.0.1:8610/v1", collector=None))
     assert config.parse("") == Config()
 
 
@@ -48,6 +48,12 @@ def test_the_file_names_the_backend_and_its_model(tmp_path: Path) -> None:
     assert settings.config == Config(llm=Claude(model="claude-opus-5-5"))
     assert settings.path(home) == home.config
     assert config.parse('[llm]\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
+
+
+def test_the_file_names_the_transcription_server_by_its_base(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[transcription]\nurl = "http://w/v1/"\n')
+    assert config.load(home).config == Config(transcription="http://w/v1")
 
 
 def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
@@ -125,10 +131,13 @@ def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> 
         config.parse('[telemetry]\nendpoint = "http://otel.example:4318"\n')
 
 
-def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() -> None:
-    # Either would be a setting silently not applied: hands transcribes with its own Whisper, on one model.
-    with pytest.raises(Rejected, match="the file has no 'transcription'"):
-        config.parse('[transcription]\nurl = "http://127.0.0.1:8610/v1"\n')
+def test_the_transcription_server_is_an_http_base_address_and_the_old_whisper_table_is_refused() -> None:
+    assert config.parse('[transcription]\nurl = "http://127.0.0.1:8611/v1/"\n').transcription == "http://127.0.0.1:8611/v1"
+    for unusable in ("127.0.0.1:8610/v1", "http://:8610/v1", "http://127.0.0.1:8610/v1/audio/transcriptions", "http://u:secret@127.0.0.1:8610/v1"):
+        with pytest.raises(Rejected, match="is not a transcription server's base address") as refused:
+            config.parse(f'[transcription]\nurl = "{unusable}"\n')
+        assert "secret" not in str(refused.value)
+    # A file still naming an MLX model would be a setting silently not applied.
     with pytest.raises(Rejected, match="the file has no 'whisper'"):
         config.parse('[whisper]\nmodel = "mlx-community/whisper-large-v3-turbo"\n')
 
@@ -308,7 +317,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
     sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
-    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
+    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), transcription="http://w/v1", voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
 
 
@@ -335,16 +344,16 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The start's event says which file the settings came from, the collector they name, which server and
+    # The start's event says which file the settings came from, the transcription server and collector they name, which server and
     # model the run reaches and on what account, the voice it speaks in, the personality it comes across in, and the
     # wake word it listens for, with the model of the user's own it is heard with.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
+    chosen = {name: event.facts[name] for name in ("settings", "transcription", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
     assert chosen == {
-        "settings": home.config, "collector": "http://otel.example:4318",
+        "settings": home.config, "transcription": "http://w/v1", "collector": "http://otel.example:4318",
         "backend": "ClaudeCodeBackend", "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voices.DEFAULT,
         "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
     }

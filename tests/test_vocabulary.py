@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 import pytest
-from mlx_whisper.tokenizer import get_encoding
 
 from hands.core.session import Membership, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
@@ -74,17 +73,6 @@ async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path) 
     assert primed.words == ("billing", "ledger", "auth-rework")
 
 
-async def test_a_word_whisper_refuses_in_a_prompt_is_left_out(repository: Path) -> None:
-    commit(repository, "<|endoftext|>.ts", "ledger.ts")
-    focus = session(repository)
-
-    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
-
-    assert primed.words == ("ledger", "auth-rework")
-    # As MLX Whisper encodes an initial prompt, which raises on a special token's text.
-    get_encoding("multilingual").encode(" " + prompt(primed.words))
-
-
 async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Room for every word, so the count alone decides.
     monkeypatch.setattr(lexicon, "TOKENS", 10_000)
@@ -98,7 +86,7 @@ async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pyt
     assert primed.words[-2:] == ("authMiddleware", "auth-rework")
 
 
-async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens_whisper_keeps(repository: Path) -> None:
+async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens_lowtalker_keeps(repository: Path) -> None:
     named = [f"hands_dictation_{n}_transcription_server.py" for n in range(WORDS)]
     commit(repository, *named)
     focus = session(repository)
@@ -110,11 +98,11 @@ async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens
     assert primed.tokens <= TOKENS < lexicon._tokens((named[-len(primed.words)].removesuffix(".py"), *primed.words))  # pyright: ignore[reportPrivateUsage]
 
 
-def test_the_prompt_is_counted_as_whisper_encodes_it() -> None:
-    # " Brynleigh Fryslie Jaxxon": a leading space, as Whisper encodes an initial prompt, and 10 tokens of its BPE.
+def test_the_prompt_is_counted_as_lowtalker_counts_it() -> None:
+    # Its README: "Brynleigh, Fryslie, and Jaxxon are 10 tokens", sent as " Brynleigh Fryslie Jaxxon".
     assert lexicon._tokens(("Brynleigh", "Fryslie", "Jaxxon")) == 10  # pyright: ignore[reportPrivateUsage]
     assert lexicon._tokens(()) == 0  # pyright: ignore[reportPrivateUsage]
-    # Space-joined: no punctuation of the prompt's own to be read back into what was heard.
+    # Space-joined: LowTalker's engine read a comma-joined list's commas back into what it heard.
     assert prompt(("Brynleigh", "Fryslie", "Jaxxon")) == "Brynleigh Fryslie Jaxxon"
 
 

@@ -20,7 +20,7 @@ and one (not yet built) types into sessions through the fritter that wraps them.
                                   hands daemon
  ┌───────────────────────────────────────────────────────────────────────────────┐
  │  voice                                                                        │
- │  mic ─► gate ─► Whisper (MLX)       ─► LLM ─► pocket-tts ─► speakers          │
+ │  mic ─► gate ─► Whisper (LowTalker) ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
  │   gate edges              notes, │  │ tool   │ system speech                  │
  │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
@@ -2577,12 +2577,14 @@ brain stage (`brain/stage.py`), not one of Pipecat's LLM services.
 
 pocket-tts is MIT-licensed, has 100M parameters, is CPU-only by design, reports no word
 timings, and streams its output. Measured on this Mac, first audio arrives 87 ms after the
-text arrives, and it runs at about 5.6x real time. Whisper runs large-v3-turbo on MLX, in
-hands' own process (`hands.voice.transcription`), and is loaded when the pipeline is built
-(the `whisper.loaded` event): the transcript is ready about 0.3 s after the key is
-released. LowTalker (~/code/low-talker) serves the same weights from the Neural Engine and
-took 0.6 to 0.7 s for the same holds, both by upload and through its Realtime socket
-(2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The model is the brain:
+text arrives, and it runs at about 5.6x real time. Whisper is LowTalker's
+(~/code/low-talker): large-v3-turbo kept resident on the Neural Engine, which hands uploads
+each hold to at POST /v1/audio/transcriptions (`hands.voice.transcription`), so hands runs
+no Whisper of its own. LowTalker not serving is said aloud at the start and on every hold
+it costs, and `hands check` names it; hands has no other engine to fall back to. On
+2026-10-04 LowTalker took 0.6 to 0.7 s from key release to transcript where MLX Whisper in
+hands' own process took 0.3 s (hands-dictation-2bs.kpm): that gap is closed in LowTalker,
+not by hands keeping a Whisper of its own. The model is the brain:
 hands' own Claude Code instance, running through hands' proxy. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno (since retired): a turn with a tool call had
 first audio 4.3 s after key release; a plain turn, 1.4 s.

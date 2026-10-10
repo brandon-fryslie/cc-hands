@@ -32,8 +32,10 @@ the installer shows the last lines of that log.
 
 ## Use
 
-Hold Right Shift in any app, speak, and release the key. hands responds aloud. The first
-start downloads Whisper's speech model (about 1.6 GB). To quit hands, press `q` in its
+Hold Right Shift in any app, speak, and release the key. hands responds aloud. hands hears
+you through [LowTalker](https://github.com/brandon-fryslie/low-talker), which keeps Whisper
+resident on the Neural Engine: run its network build with Serve Transcription switched on,
+and `hands check` says whether it is serving. To quit hands, press `q` in its
 terminal. To start it again, run `hands run`.
 
 Start Claude Code sessions as usual by running `claude` in a new terminal. The installer
