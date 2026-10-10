@@ -135,8 +135,9 @@ another of the four hands offers: `claude-haiku-4-5-20251001`, `claude-sonnet-5-
 A restart resumes the brain's conversation rather than starting it over; to start it over, remove `~/.hands/brain/conversation`
 before starting hands.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
-there; then, on a brain Claude Code has not finished its first run on, it runs that first run in the directory the brain
-runs in, where you answer its first screens and `/exit`. Its login is on a Claude plan, with no choice of login asked;
+there. The brain's first screens that are only its preferences, the theme and the trust of the directory it runs in, it
+answers itself in `~/.hands/brain/.claude.json`, so on a brain with no login it runs only Claude Code's own login, which
+opens your browser. Its login is on a Claude plan, with no choice of login asked;
 `hands login --console` makes it an Anthropic Console key instead. On a brain that has been through it and holds a login,
 it asks nothing; `hands login --claudeai` logs it in again, or onto another account, on a Claude plan, and
 `hands login --console` with an Anthropic Console key. Either way it says which account the brain holds after, and how

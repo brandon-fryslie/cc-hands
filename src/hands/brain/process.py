@@ -369,6 +369,32 @@ def unanswered(config_dir: Path) -> firstrun.Unanswered | None:
         raise Unstartable(f"the brain's first-run state could not be read: {error}") from None
 
 
+def onboarded(config_dir: Path) -> bool:
+    """Answers, in the brain's own .claude.json, the first screens that are only the brain's preferences: its onboarding
+    (a theme, for a terminal nobody reads, and Claude Code's notes) finished, and the directory it runs in trusted. Whether
+    it wrote. Left to Claude Code's first run: a login, an API key its settings.json sets, and a .claude.json hands cannot
+    read, which only that run writes over (firstrun.recorded)."""
+    state = config_dir / ".claude.json"
+    # [LAW:one-source-of-truth] the directory firstrun.unanswered reads trust for, as Claude Code records it, resolved.
+    cwd = str(_cwd(config_dir).resolve())
+    try:
+        # [LAW:single-enforcer] whether either is open is firstrun's to say, the trust of a directory above among it.
+        if firstrun.unanswered(firstrun.recorded(state), Path(cwd), None) is None:
+            return False
+        written: Mapping[str, object] = Payload.parse(state.read_bytes()).fields if state.exists() else {}
+        projects = Payload.of(written.get("projects", {}), "its projects").fields
+        place = Payload.of(projects.get(cwd, {}), f"its {cwd}").fields
+    except Rejected:
+        return False
+    answers = {**written, "hasCompletedOnboarding": True, "projects": {**projects, cwd: {**place, "hasTrustDialogAccepted": True}}}
+    config_dir.mkdir(parents=True, exist_ok=True)
+    # Whole or not at all: a .claude.json cut short is one Claude Code would write over, answers and all.
+    making = state.with_name(f"{state.name}.hands")
+    making.write_text(json.dumps(answers, indent=2))
+    making.replace(state)
+    return True
+
+
 def answered(config_dir: Path) -> None:
     """Raises Unstartable, naming the command that answers them, while the brain would start on Claude Code's first screens."""
     if (open_ := unanswered(config_dir)) is not None:
@@ -403,7 +429,7 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
         return Kept(held)
     if not terminal:
         # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
-        raise Unasked("Claude Code asks the brain's first-run questions and its login at a terminal, and this command's input is not one")
+        raise Unasked("Claude Code asks for the brain's login at a terminal, and this command's input is not one")
     # [LAW:one-source-of-truth] the login made: the one asked for, or a Claude plan, Claude Code's own default (2.1.289).
     made: Method = method or "claudeai"
     other = "" if method else ": `hands login --console` logs it in with an Anthropic Console account instead"
