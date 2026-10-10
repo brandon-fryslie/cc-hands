@@ -46,6 +46,10 @@ and only the composition roots connect real adapters: `hands.daemon.cli:main`, t
 point every `hands` subcommand goes through, and `app/main.swift`. Every other module,
 `hands.daemon.run` included, receives the interfaces as parameters
 `[LAW:effects-at-boundaries]`. That is what lets a test run `hands.daemon.run` with fakes.
+A root reads its own configuration, such as the environment, `Info.plist`, and the login
+shell, to choose and build adapters, and does nothing else. Today `daemon/cli.py` runs
+`claude plugin` and `claude auth login` itself and sleeps on real time; those calls move
+behind `ClaudeCode` and `Clock`.
 
 A boundary test enforces this the way `tests/test_core_boundary.py` enforces that `core`
 is pure. A module that reaches one party, such as `Quartz`, `pyaudio`, or `aiortc`, may be
