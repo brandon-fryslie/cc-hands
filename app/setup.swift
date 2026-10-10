@@ -50,7 +50,6 @@ final class Setup: NSObject, NSWindowDelegate {
         for label in [purpose, answer, status] {
             label.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -40).isActive = true
         }
-        check()
     }
 
     // Asks macOS, in a new process, what it says of every permission, and acts on the answer.
@@ -69,6 +68,10 @@ final class Setup: NSObject, NSWindowDelegate {
     }
 
     func observe(_ accesses: [Access]) {
+        if let blocked = accesses.firstIndex(of: .restricted) {
+            fail("Your Mac's administrator does not allow hands to use \(PERMISSIONS[blocked].name), and hands cannot run without it.")
+            return
+        }
         guard let step = accesses.firstIndex(where: { $0 != .granted }) else {
             over = true
             window.orderOut(nil)
@@ -104,8 +107,8 @@ final class Setup: NSObject, NSWindowDelegate {
         let permission = PERMISSIONS[shown!]
         said("permissions: asking macOS for \(permission.name)")
         status.stringValue = "Waiting for macOS to give hands \(permission.name). If you closed its request, choose Next to see it again."
-        // [LAW:no-ambient-temporal-coupling] one request at a time: a second one would reset the permission the first
-        // just asked for, and take hands off the System Settings list the first one opened.
+        // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
+        // System Settings list the request just opened. One request after another is safe: each lists hands again.
         next.isEnabled = false
         ask(["request", permission.service]) { ended, _, errors in
             self.next.isEnabled = true
@@ -162,14 +165,18 @@ struct Unreadable: LocalizedError {
     var errorDescription: String? { "it answered \(output.debugDescription), not a line for each of \(PERMISSIONS.map(\.service).joined(separator: ", "))" }
 }
 
-// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access, in PERMISSIONS' order.
+// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access, in PERMISSIONS' order: one line for
+// each permission, and nothing else.
 func accesses(_ output: String) throws -> [Access] {
-    let said = Dictionary(output.split(separator: "\n").map { line in
-        let words = line.split(separator: " ")
-        return (String(words.first ?? ""), words.count == 2 ? Access(rawValue: String(words[1])) : nil)
-    }, uniquingKeysWith: { first, _ in first })
+    let unreadable = Unreadable(output: output)
+    let said = try Dictionary(output.split(separator: "\n").map { line -> (String, Access) in
+        let words = line.split(separator: " ").map(String.init)
+        guard words.count == 2, let access = Access(rawValue: words[1]) else { throw unreadable }
+        return (words[0], access)
+    }, uniquingKeysWith: { _, _ in throw unreadable })
+    guard said.count == PERMISSIONS.count else { throw unreadable }
     return try PERMISSIONS.map { permission in
-        guard let access = said[permission.service] ?? nil else { throw Unreadable(output: output) }
+        guard let access = said[permission.service] else { throw unreadable }
         return access
     }
 }

@@ -365,13 +365,27 @@ def test_a_build_that_names_no_merchant_does_not_start_and_says_why(executable: 
     assert "stopped: hands.app cannot start hands: this build of hands.app names no HandsLicenseValidate in its Info.plist" in text
 
 
+def checked(tmp_path: Path, more: int) -> None:
+    """Returns once the app has asked the stand-in for macOS about its permissions `more` more times."""
+    def count() -> int:
+        return (tmp_path / "asked").read_text().count("--permissions\n") if (tmp_path / "asked").exists() else 0
+
+    target = count() + more
+    deadline = time.monotonic() + 10
+    while count() < target:
+        assert time.monotonic() < deadline, f"the app asked about its permissions {count()} times, not {target}"
+        time.sleep(0.05)
+
+
 def test_hands_waits_for_every_permission_and_starts_once_macos_grants_them(opened: Open, tmp_path: Path) -> None:
     permitted(tmp_path, "Microphone denied\nListenEvent undecided\n")
     app = opened("", "exit 0")
     logged(tmp_path, "permissions: showing the Microphone step; macOS says it is denied")
     permitted(tmp_path, "Microphone granted\nListenEvent undecided\n")
     logged(tmp_path, "permissions: showing the Input Monitoring step; macOS says it is undecided")
-    assert "started hands run" not in logged(tmp_path, "permissions: ")
+    # Each check the step outlives is one where hands could have started, had the app not waited for the permission.
+    checked(tmp_path, 2)
+    assert "started hands run" not in (tmp_path / "hands.log").read_text()
     permitted(tmp_path, GRANTED)
     assert app.wait(timeout=10) == 0
     text = logged(tmp_path, "hands exited 0")
@@ -399,9 +413,12 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     [
         ("Microphone granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
         ("Microphone granted\nListenEvent maybe\n", "hands.app could not read what macOS says of its permissions: it answered"),
+        ("Microphone granted\nMicrophone denied\nListenEvent granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
+        ("Microphone granted\nListenEvent granted\nAccessibility granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
+        ("Microphone restricted\nListenEvent granted\n", "Your Mac's administrator does not allow hands to use Microphone, and hands cannot run without it."),
     ],
 )
-def test_an_answer_about_permissions_that_cannot_be_read_stops_the_app_and_says_why(opened: Open, tmp_path: Path, answer: str, told: str) -> None:
+def test_an_answer_about_permissions_hands_cannot_run_on_stops_the_app_and_says_why(opened: Open, tmp_path: Path, answer: str, told: str) -> None:
     permitted(tmp_path, answer)
     app = opened("", "exit 0")
     text = logged(tmp_path, f"stopped: {told}")

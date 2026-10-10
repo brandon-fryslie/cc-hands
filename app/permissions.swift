@@ -7,9 +7,10 @@ import AVFoundation
 import IOKit.hid
 
 // What macOS says of one permission for hands.app. A request shows macOS's dialog only while the permission is
-// undecided. Once the person has answered, macOS shows nothing until the permission is reset.
+// undecided. Once the person has answered, macOS shows nothing until the permission is reset. Restricted: the Mac's
+// administrator does not allow it, and no answer of the person's changes that.
 enum Access: String {
-    case undecided, denied, granted
+    case undecided, denied, granted, restricted
 }
 
 struct Permission {
@@ -37,8 +38,8 @@ let PERMISSIONS = [
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
             case .notDetermined: .undecided
             case .authorized: .granted
-            // Restricted: the Mac's administrator does not allow it. The person cannot grant it, and setup waits on it.
-            case .denied, .restricted: .denied
+            case .denied: .denied
+            case .restricted: .restricted
             @unknown default: .denied
             }
         },
@@ -98,8 +99,16 @@ func permissionsCommand(_ arguments: [String]) -> Int32 {
                 print(permission.service, permission.access().rawValue)
             }
         case .request(let permission):
+            // [LAW:single-enforcer] a request ends with the app that asked for it, however the app ended: a Microphone
+            // request otherwise waits on its dialog after a quit.
+            let app = getppid()
+            let parent = DispatchSource.makeProcessSource(identifier: app, eventMask: .exit, queue: .global())
+            parent.setEventHandler { exit(1) }
+            parent.resume()
+            // An app that ended before the watch began is not reported by it: this process has a new parent by then.
+            guard getppid() == app else { return 1 }
             switch permission.access() {
-            case .undecided, .granted:
+            case .undecided, .granted, .restricted:
                 break
             case .denied:
                 // tccutil finds hands.app through Spotlight, so it fails for a bundle Spotlight does not index.

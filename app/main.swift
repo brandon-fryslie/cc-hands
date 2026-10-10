@@ -31,9 +31,10 @@ let environmentSaid = [shell, "-l", "-i", "-c", "exec /usr/bin/env -0 > '\(envir
 // ~/Library/Logs is where a Mac app's log lives, so Console.app shows it.
 let log = given["HANDS_APP_LOG"].map { URL(fileURLWithPath: $0) } ?? home.appending(path: "Library/Logs/hands/hands.log")
 
-// The license key the person entered, and when Polar last said it was live.
+// What answers the app's questions about its permissions (setup.swift): the app itself.
 let permissionsAsker = given["HANDS_APP_PERMISSIONS"].map { URL(fileURLWithPath: $0) } ?? Bundle.main.executableURL!
 
+// The license key the person entered, and when Polar last said it was live.
 let licenseFile = given["HANDS_APP_LICENSE"].map { URL(fileURLWithPath: $0) }
     ?? home.appending(path: "Library/Application Support/hands/license.json")
 
@@ -152,7 +153,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
     // [LAW:no-ambient-temporal-coupling] hands runs only once it has every permission: a Microphone request left
     // unanswered while it starts would end it on its pipeline's setup timeout.
     func setUp() {
-        phase = .settingUp(Setup(asker: permissionsAsker, said: said, done: begin, failed: stopped))
+        let setup = Setup(asker: permissionsAsker, said: said, done: begin, failed: stopped)
+        phase = .settingUp(setup)
+        setup.check()
     }
 
     func begin() {
