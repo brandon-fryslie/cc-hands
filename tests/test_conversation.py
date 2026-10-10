@@ -23,7 +23,7 @@ from pipecat.transcriptions.language import Language
 
 from conftest import Running, running
 from hands.sessions.audit import Entry, Replied
-from hands.voice.conversation import record_turns, turns
+from hands.voice.conversation import AssistantTurns, record_turns, turns
 from hands.voice.player import Mark, Marks
 from hands.voice.spoken import FenceAggregator
 
@@ -42,10 +42,10 @@ class Speaker(TTSService):
 
 @dataclass
 class Conversation:
-    """The model's context and the audit log's replies, behind Pipecat's own speaker and hands' assistant side."""
+    """Hands' assistant side and the audit log's replies, behind Pipecat's own speaker."""
 
     pipeline: Running
-    context: LLMContext
+    assistant: AssistantTurns
     recorded: list[Entry] = field(default_factory=list[Entry])
     written: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -66,21 +66,12 @@ class Conversation:
             await asyncio.wait_for(self.written.wait(), 2.0)
         return self.recorded
 
-    def ends_on(self) -> str:
-        """Whose message the context ends on: what a request made from it now would end on."""
-        match self.context.get_messages()[-1]:
-            case {"role": str() as role}:
-                return role
-            case other:
-                raise AssertionError(f"the context ends on a message with no role: {other!r}")
-
 
 @asynccontextmanager
 async def conversing() -> AsyncGenerator[Conversation]:
-    context = LLMContext()
-    user, assistant = turns(context, LLMUserAggregatorParams())
+    user, assistant = turns(LLMContext(), LLMUserAggregatorParams())
     async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), Speaker(), assistant, Marks()]) as pipeline:
-        conversation = Conversation(pipeline, context)
+        conversation = Conversation(pipeline, assistant)
 
         def record(entry: Entry) -> None:
             conversation.recorded.append(entry)
@@ -135,3 +126,13 @@ async def test_a_reply_started_again_after_a_barge_in_it_goes_on_through_is_writ
         await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame("It opened pull request 68. "), LLMTextFrame("Nothing else changed."), LLMFullResponseEndFrame())
 
         assert (await conversation.replies(2))[-1] == Replied("It opened pull request 68. Nothing else changed.", interrupted=False)
+
+async def test_every_reply_and_line_is_recorded_and_none_is_kept_in_the_context() -> None:
+    async with conversing() as conversation:
+        for n in range(50):
+            await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame(f"Reply {n}."), LLMFullResponseEndFrame(), TTSSpeakFrame(f"Line {n}."))
+
+        assert await conversation.replies(100) == [
+            reply for n in range(50) for reply in (Replied(f"Reply {n}.", interrupted=False), Replied(f"Line {n}.", interrupted=False))
+        ]
+        assert conversation.assistant.context.get_messages() == []

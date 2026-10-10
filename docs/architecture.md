@@ -1311,12 +1311,12 @@ reply. Tracking the open fence in the filter instead was tried and reverted. Pip
 text filter when a reply ends, so after a reply ended inside a fence, every later utterance was replaced
 by a block announcement.
 
-The filtered text is also what the intermediary stores in its context, because Pipecat builds the frame
-it appends to the assistant context from the filter's output. This is intentional. The context exists
-so that the model can answer questions about what the user heard. Before this filter existed, the
-context held the text sent to the speaker, which was never the same string. The trade-off is that the
-model cannot retrieve an exact path or sha from its own context; it uses the session tools to look up
-facts. A draft readback passes through the same point but should not be changed the way a summary is,
+The filtered text is also what the audit log records as the reply, because Pipecat builds the assistant
+aggregation from the filter's output. This is intentional: the record holds what the user heard. Before
+this filter existed, it held the text sent to the speaker, which was never the same string. No context
+keeps the reply. The brain keeps its own history and is never handed a reply back, so the assistant
+side writes into a context that keeps nothing, and the brain stage empties the user's context as it
+reads it (`hands.voice.conversation.turns`, `hands.brain.stage`). A draft readback passes through the same point but should not be changed the way a summary is,
 because it is read aloud so the user can check what will be sent. This is tracked separately, rather
 than solved by adding a mode to the function.
 
@@ -2379,7 +2379,7 @@ not depend on the component that failed `[LAW:no-silent-failure]`:
    returned to the model. When the call is made in a voice turn, the event is a child of
    that turn's `tool.call` span. The context aggregators write each user turn as
    `Transcribed` and each reply as `Replied`
-   (a line that hands speaks verbatim and keeps in the context is written as its own
+   (a line that hands speaks verbatim and records as a reply is written as its own
    `Replied` after it is spoken; if it is spoken inside the model's turn, it is part of
    the model's `Replied` instead, and the model's turn runs through its tool calls up to
    the reply that answers them:

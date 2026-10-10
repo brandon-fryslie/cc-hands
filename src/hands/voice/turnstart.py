@@ -11,7 +11,7 @@ be undone, and the reply it found on its way goes on as if no turn had opened, a
 land while the turn's own words and their note are on their way, so those are uninterruptible
 (`hands.voice.turnstop.Words`, `hands.voice.beside.Note`): an interruption stops hands, never the user. And it lands just
 ahead of them, so the user aggregator writes none of them to the context until the reply the cut stopped is written
-there as cut off (`CutWritten`): the context reads the reply, then the words that cut it off.
+as cut off (`CutWritten`): the audit log reads the reply, then the words that cut it off.
 """
 
 import asyncio
@@ -30,7 +30,7 @@ from hands.voice.turnstop import InterimWords, TurnOpened, Words
 
 
 class CutWritten(SystemFrame):
-    """A cut reached the end of the pipeline, and the reply it stopped is written to the context as cut off: sent back up
+    """A cut reached the end of the pipeline, and the reply it stopped is written as cut off: sent back up
     by the assistant aggregator (`hands.voice.conversation.AssistantTurns`), the last thing every interruption reaches."""
 
 
@@ -121,7 +121,7 @@ def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
     are pushed ahead of anything behind that frame. Queued as frames of their own, the turn's context could leave for the
     model ahead of them, and the interruption would then cancel the reply to the very words that made it.
     """
-    # [LAW:no-ambient-temporal-coupling] the reply a cut stops is written to the context where the interruption reaches
+    # [LAW:no-ambient-temporal-coupling] the reply a cut stops is written where the interruption reaches
     # the end of the pipeline, and the words that cut it where they reach this aggregator, a few hops apart. What orders
     # the two is state: no frame behind the cut is taken in until the end of the pipeline says the reply is written.
     written = asyncio.Event()

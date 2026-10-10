@@ -1,4 +1,4 @@
-"""The conversation with the brain, written to the audit log turn by turn as it enters the model's context."""
+"""The conversation with the brain, written to the audit log turn by turn as each side's aggregator writes it."""
 
 from collections.abc import Callable
 
@@ -10,7 +10,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage
 from pipecat.processors.aggregators.llm_response_universal import (
     AssistantTurnStoppedMessage,
     LLMAssistantAggregator,
@@ -25,8 +25,8 @@ from hands.voice.turnstart import CutWritten
 
 
 class AssistantTurns(LLMAssistantAggregator):
-    """Pipecat's assistant aggregator, which also ends the turn of a line hands says as written and keeps in the
-    context: written once it is said, as heard whole, or with the brain's reply where one is open.
+    """Pipecat's assistant aggregator, which also ends the turn of a line hands says as written and records as a reply:
+    written once it is said, as heard whole, or with the brain's reply where one is open.
 
     [LAW:single-enforcer] the one place such a line's turn is ended, so whoever says a line sends the line alone.
     Pipecat's TTS service ends it only while it takes no reply as under way, and one that pushes its own text frames, as
@@ -34,7 +34,7 @@ class AssistantTurns(LLMAssistantAggregator):
     the line stayed an open turn, written at the next key press as cut off. After a barge-in it takes none as under way
     whatever the brain's reply, so the end it sends is not taken inside one.
 
-    [LAW:no-ambient-temporal-coupling] the extent of the brain's reply is held here, where the context is written: open
+    [LAW:no-ambient-temporal-coupling] the extent of the brain's reply is held here, where the turn is written: open
     from its start frame to its end frame. A line said inside it is written with it, as the reply ends.
     """
 
@@ -76,15 +76,23 @@ class AssistantTurns(LLMAssistantAggregator):
         await super().process_frame(LLMAssistantPushAggregationFrame(), FrameDirection.DOWNSTREAM)
 
 
+class _Unkept(LLMContext):
+    """The assistant side's context, which keeps none of what is said: the brain keeps its own history and is never handed
+    a reply back, and the audit log's record of each one is the event the aggregator raises, built from what it heard."""
+
+    def add_message(self, message: LLMContextMessage) -> None:
+        pass
+
+
 def turns(context: LLMContext, user_params: LLMUserAggregatorParams) -> tuple[LLMUserAggregator, AssistantTurns]:
-    """The two sides of the conversation over one context, wired as Pipecat's `LLMContextAggregatorPair` wires its own
-    (1.10.0), which builds no assistant side but Pipecat's."""
+    """The two sides of the conversation, wired as Pipecat's `LLMContextAggregatorPair` wires its own (1.10.0), which builds
+    no assistant side but Pipecat's: the user's words go into `context`, and what is said goes into none."""
     user = LLMUserAggregator(context, params=user_params)
-    return user, AssistantTurns(context, _paired_user_aggregator=user)
+    return user, AssistantTurns(_Unkept(), _paired_user_aggregator=user)
 
 
 def record_turns(user_turns: LLMUserAggregator, assistant_turns: LLMAssistantAggregator, record: Record) -> None:
-    """Write each user transcript and each reply as its turn is added to the context."""
+    """Write each user transcript and each reply as its turn is written."""
 
     # Added to the context, not merely stopped: the user text is final here, and it is what the model read.
     @user_turns.event_handler("on_user_turn_message_added")
