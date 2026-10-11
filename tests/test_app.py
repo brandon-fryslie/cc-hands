@@ -408,16 +408,23 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
-# The pid of the app the person is using: the one in front, while it is active. A machine with no one at it, a CI runner,
-# can have an app in front that is not active, and an activation macOS grants there takes the front from no one.
+# The pid of the app the person is using: the one in front, while it is active. loginwindow in front is a machine no one
+# is using, locked or a CI runner, and an activation macOS grants there takes the front from no one.
 IN_USE = """ObjC.import("AppKit");
 const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
-front.isNil() || !front.active ? "" : String(front.processIdentifier)"""
+front.isNil() || !front.active || ObjC.unwrap(front.bundleIdentifier) === "com.apple.loginwindow" ? "" : String(front.processIdentifier)"""
 
 
 def in_use() -> int | None:
     said = subprocess.run(["osascript", "-l", "JavaScript", "-e", IN_USE], check=True, capture_output=True, text=True).stdout.strip()
     return int(said) if said else None
+
+
+def named(pid: int | None) -> str:
+    """`pid` and the program it runs, as a failure names them."""
+    if pid is None:
+        return "no app"
+    return f"pid {pid} ({subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True, text=True).stdout.strip()})"
 
 
 # The layer of every window `pid` has on screen: 0 is among the apps, above it is over them.
@@ -471,7 +478,7 @@ def test_a_window_put_up_behind_the_app_in_use_leaves_that_app_in_front(
     logged(tmp_path, shown)
     deadline = time.monotonic() + SETTLES
     while time.monotonic() < deadline:
-        assert (now := in_use()) == using, f"pid {now}, not the app in use, pid {using}, is in front; the app is pid {app.pid}"
+        assert (now := in_use()) == using, f"{named(now)}, not the app in use, {named(using)}, is in front; the app is pid {app.pid}"
         time.sleep(0.05)
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=5) == 0
