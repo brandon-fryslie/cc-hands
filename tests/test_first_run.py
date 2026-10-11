@@ -1,107 +1,61 @@
-"""`hands first-run`, run at a terminal as install.sh runs it: what the person's own Claude Code asks only once is said
+"""`hands first-run`, as install.sh runs it at a terminal: what the person's own Claude Code asks only once is said
 before Claude Code shows it, asked in the folder `hands smoke` starts its session in, and not asked again once answered.
 
-`claude` is a stand-in that records each call, says whether it is logged in from a file beside its calls, or, as Claude
-Code does, logged in on any API key in its environment, approved or not, and, started
-with no arguments, shows its first screen and reads the answer from the terminal as Claude Code does: y answers every
-question and logs in, writing what Claude Code records; anything else quits before the last question.
+Claude Code is the fake built from recordings (claudecode_fake), with a person at its terminal who answers what each
+test chooses. A `claude` on PATH is there only to be found: the fake is what answers for it.
 """
 
 import json
 import os
 import select
-import shutil
-import subprocess
 import sys
-import tempfile
-import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from claudecode_fake import Config, Fake, Person
+from hands.daemon import cli
 from hands.sessions import firstrun
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
-CLAUDE = r"""#!/bin/bash
-echo "claude $* in $(pwd -P)" >>"$ROOT/calls"
-case "$1 $2" in
-  "auth status")
-    if [ -n "$ANTHROPIC_API_KEY" ]; then echo '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}'
-    elif [ -e "$ROOT/console" ]; then echo '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "/login managed key"}'
-    elif [ -e "$ROOT/logged-in" ]; then echo '{"loggedIn": true, "authMethod": "claude.ai"}'
-    else echo '{"loggedIn": false}'; exit 1; fi ;;
-  "auth login")
-    [ ! -e "$ROOT/login-fails" ] || exit 1
-    touch "$ROOT/logged-in" ;;
-  " ")
-    printf 'FIRST SCREEN: '
-    read -r answer
-    [ "$answer" = y ] || exit 0
-    approved=$([ -n "$ANTHROPIC_API_KEY" ] && printf '"%s"' "${ANTHROPIC_API_KEY: -20}")
-    printf '{"hasCompletedOnboarding": true, "projects": {"%s": {"hasTrustDialogAccepted": true}}, "customApiKeyResponses": {"approved": [%s], "rejected": []}}' "$(pwd -P)" "$approved" >"$CLAUDE_CONFIG_DIR/.claude.json"
-    touch "$ROOT/logged-in" ;;
-esac
-"""
+KEY = "sk-ant-api03-0123456789abcdefghijklmn"
 
 
 @pytest.fixture
-def root() -> Iterator[Path]:
-    root = Path(tempfile.mkdtemp(prefix="first-", dir="/tmp")).resolve()
-    stand_in = root / "bin" / "claude"
-    stand_in.parent.mkdir()
-    stand_in.write_text(CLAUDE)
-    stand_in.chmod(0o755)
-    (root / "config").mkdir()
-    yield root
-    shutil.rmtree(root)
+def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A PATH with a `claude` to find, and the person's Claude Code under a config directory of the test's own."""
+    root = tmp_path.resolve()
+    found = root / "bin" / "claude"
+    found.parent.mkdir()
+    found.write_text("#!/bin/sh\n")
+    found.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{root / 'bin'}:/usr/bin:/bin")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root / "config"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    return root
 
 
 def home(root: Path) -> Home:
     return Home(root / "home")
 
 
-def at_a_terminal(root: Path, typed_ahead: bytes, answer: bytes, key: str | None = None) -> tuple[int, str]:
-    """Run `hands first-run` on a terminal holding typed_ahead before it starts, answer Claude Code's first screen with
-    answer once it shows, and return its exit and everything the terminal showed."""
-    controller, terminal = os.openpty()
-    os.write(controller, typed_ahead)
-    environment = {name: value for name, value in os.environ.items() if name != "ANTHROPIC_API_KEY"}
-    environment |= {"PATH": f"{root / 'bin'}:/usr/bin:/bin", "ROOT": str(root), "HANDS_HOME": str(home(root).root), "CLAUDE_CONFIG_DIR": str(root / "config")}
-    environment |= {} if key is None else {"ANTHROPIC_API_KEY": key}
-    process = subprocess.Popen([sys.executable, "-m", "hands.daemon", "first-run"], env=environment, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
-    os.close(terminal)
-    shown = b""
-    answered = False
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([controller], [], [], 0.1)
-        if not ready:
-            if process.poll() is not None:
-                break
-            continue
-        try:
-            chunk = os.read(controller, 4096)
-        except OSError:  # EIO: the last process holding the terminal let go of it
-            break
-        if not chunk:
-            break
-        shown += chunk
-        if not answered and b"FIRST SCREEN: " in shown:
-            os.write(controller, answer)
-            answered = True
-    exit = process.wait(timeout=10)
-    os.close(controller)
-    return exit, shown.decode().replace("\r\n", "\n")
+def config(root: Path) -> Path:
+    return root / "config"
 
 
-def answered_before(root: Path, smoke: Path, keys: dict[str, list[str]] | None = None) -> None:
-    """A Claude Code through its first run in smoke, with these answers on API keys, and logged in."""
-    (root / "config" / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(smoke): {"hasTrustDialogAccepted": True}}, "customApiKeyResponses": keys or {}}))
-    (root / "logged-in").touch()
+def first_run(root: Path, fake: Fake, terminal: bool = True) -> int:
+    return cli.first_run(fake, home(root), terminal, fake.told, cli.audit_log_of(home(root)).record)
+
+
+def answered_before(root: Path, fake: Fake, keys: dict[str, list[str]] | None = None, login: bool = True) -> None:
+    """A Claude Code through its first run in the smoke folder, with these answers on API keys, and logged in unless not `login`."""
+    smoke = home(root).smoke.resolve()
+    state = {"hasCompletedOnboarding": True, "projects": {str(smoke): {"hasTrustDialogAccepted": True}}, "customApiKeyResponses": keys or {}}
+    fake.files[config(root) / ".claude.json"] = json.dumps(state).encode()
+    fake.configs[config(root)] = Config(login="claude.ai" if login else None)
 
 
 def events(root: Path) -> list[dict[str, Any]]:
@@ -109,103 +63,162 @@ def events(root: Path) -> list[dict[str, Any]]:
     return [line for line in lines if line.get("event") == "claude.first_run"]
 
 
-def calls(root: Path) -> list[str]:
-    return (root / "calls").read_text().splitlines()
+def asked(fake: Fake) -> list[str]:
+    """What hands asked of Claude Code, in order, without what it told the person or what Claude Code showed them."""
+    return [line for line in fake.transcript if not line.startswith(("told: ", "shown: "))]
 
 
-def test_a_fresh_claude_code_is_told_what_it_will_ask_then_asks_it_in_the_smoke_folder_and_a_key_typed_before_is_not_the_answer(root: Path) -> None:
-    exit, shown = at_a_terminal(root, typed_ahead=b"n\n", answer=b"y\n")
-    assert exit == 0, shown
+def test_a_fresh_claude_code_is_told_what_it_will_ask_then_asks_it_in_the_smoke_folder(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake()
+    assert first_run(root, fake) == 0
     smoke = home(root).smoke.resolve()
-    announced = f"Claude Code now starts in {home(root).smoke}, where `hands smoke` starts its session, and asks what it asks only once: a theme and a login; whether to trust {smoke}. Answer each, then type /exit"
-    assert shown.index(announced) < shown.index("FIRST SCREEN: ")
-    assert f"Claude Code is logged in and asks nothing first in {home(root).smoke}" in shown
-    status = f"claude auth status in {Path.cwd().resolve()}"
-    assert calls(root) == [status, f"claude  in {smoke}", status, status]
+    announced = f"told: Claude Code now starts in {home(root).smoke}, where `hands smoke` starts its session, and asks what it asks only once: a theme and a login; whether to trust {smoke}. Answer each, then type /exit"
+    # Said before Claude Code shows its first screen, and the screens are the ones a fresh Claude Code shows, in order.
+    started = fake.transcript.index(announced)
+    assert fake.transcript[started + 1] == f"first run in {home(root).smoke}"
+    assert [line for line in fake.transcript if line.startswith("shown: ")] == [f"shown: {screen}" for screen in screens("theme", "login", "notes", "trust")]
+    assert asked(fake) == ["auth status", f"first run in {home(root).smoke}", "auth status", "auth status"]
+    assert f"Claude Code is logged in and asks nothing first in {home(root).smoke}" in capsys.readouterr().out
     # [LAW:nothing-unseen] its event: what was open before, what the first run exited with, and what was there after.
     [event] = events(root)
     facts = event["facts"]
-    assert (event["outcome"], facts["first_run_exit"], "login_exit" in facts, facts["after"]["type"]) == ("ok", 0, False, "Ready")
-    assert facts["before"]["unanswered"]["why"] == f"no {root / 'config' / '.claude.json'}"
+    assert (event["outcome"], facts["first_run_exit"], "login_exit" in facts, facts["after"]["type"], facts["terminal"]) == ("ok", 0, False, "Ready", True)
+    assert facts["before"]["unanswered"]["why"] == f"no {config(root) / '.claude.json'}"
 
 
-def test_an_api_key_in_the_environment_is_named_among_the_questions(root: Path) -> None:
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key="sk-ant-api03-0123456789abcdefghijklmn")
-    assert exit == 0, shown
-    assert "; whether to use the API key ANTHROPIC_API_KEY in your environment sets. Answer each, then type /exit" in shown
+def screens(*names: str) -> list[str]:
+    from claudecode_fake import SCREENS
+
+    return [SCREENS[name] for name in names]
+
+
+def test_an_api_key_in_the_environment_is_named_among_the_questions_and_asked_in_place_of_a_login(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    fake = Fake()
+    assert first_run(root, fake) == 0
+    [announced] = [line for line in fake.transcript if line.startswith("told: ")]
+    assert announced.endswith("; whether to use the API key ANTHROPIC_API_KEY in your environment sets. Answer each, then type /exit")
+    assert [line for line in fake.transcript if line.startswith("shown: ")] == [f"shown: {screen}" for screen in screens("theme", "api_key", "notes", "trust")]
 
 
 def test_a_claude_code_already_through_its_first_run_and_logged_in_is_asked_nothing(root: Path) -> None:
-    answered_before(root, home(root).smoke.resolve())
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 0, shown
-    assert "FIRST SCREEN" not in shown and "now starts" not in shown and "now logs in" not in shown
-    assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status"] * 3
+    fake = Fake()
+    answered_before(root, fake)
+    assert first_run(root, fake) == 0
+    assert asked(fake) == ["auth status"] * 3 and not [line for line in fake.transcript if line.startswith(("told: ", "shown: "))]
     [event] = events(root)
     assert (event["outcome"], "first_run_exit" in event["facts"], "login_exit" in event["facts"]) == ("ok", False, False)
 
 
 def test_a_claude_code_through_its_first_run_but_logged_out_logs_in_with_its_own_login_alone(root: Path) -> None:
-    answered_before(root, home(root).smoke.resolve())
-    (root / "logged-in").unlink()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 0, shown
-    assert "FIRST SCREEN" not in shown and "Claude Code now logs in with its own login" in shown
-    assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status", "claude auth status", "claude auth login", "claude auth status"]
+    fake = Fake()
+    answered_before(root, fake, login=False)
+    assert first_run(root, fake) == 0
+    assert "told: Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account" in fake.transcript
+    assert asked(fake) == ["auth status", "auth status", "auth login", "auth status"]
 
 
-def test_a_first_run_quit_before_its_last_question_fails_saying_a_second_run_asks_again_and_asks_no_login(root: Path) -> None:
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"q\n")
-    assert exit == 1
-    assert "hands first-run: Claude Code would first ask a theme and a login" in shown and "has no login" in shown
-    assert shown.rstrip().endswith("running this again asks again")
-    assert "claude auth login" not in "\n".join(calls(root))
+def test_a_first_run_quit_before_its_last_question_fails_saying_a_second_run_asks_again_and_asks_no_login(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(Person(first_run="quits"))
+    assert first_run(root, fake) == 1
+    said = capsys.readouterr().err
+    assert "hands first-run: Claude Code would first ask a theme and a login" in said and "has no login" in said
+    assert said.rstrip().endswith("running this again asks again")
+    assert "auth login" not in asked(fake)
     [event] = events(root)
     assert (event["outcome"], event["facts"]["first_run_exit"], "login_exit" in event["facts"]) == ("failed", 0, False)
 
 
-def test_with_no_claude_code_to_ask_it_exits_2_and_asks_nothing(root: Path) -> None:
+def test_a_login_abandoned_on_its_first_run_fails_as_a_run_quit_part_way(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(Person(login="abandons"))
+    assert first_run(root, fake) == 1
+    assert [line for line in fake.transcript if line.startswith("shown: ")] == [f"shown: {screen}" for screen in screens("theme", "login")]
+    assert capsys.readouterr().err.rstrip().endswith("running this again asks again")
+
+
+def test_with_no_claude_code_to_ask_it_exits_2_and_asks_nothing(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (root / "bin" / "claude").unlink()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 2
-    assert "hands first-run: there is no Claude Code on this PATH" in shown and "now starts" not in shown
+    fake = Fake()
+    assert first_run(root, fake) == 2
+    assert "hands first-run: there is no Claude Code on this PATH" in capsys.readouterr().err and fake.transcript == []
+
+
+def test_a_claude_code_that_cannot_be_started_exits_2(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(unrunnable={"first run"})
+    assert first_run(root, fake) == 2
+    assert "hands first-run: Claude Code could not be started to ask: `claude first run` could not be run" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("onboarded", [False, True], ids=["first-run", "login-only"])
-def test_with_no_terminal_to_ask_at_it_exits_2_and_never_starts_claude_code(root: Path, onboarded: bool) -> None:
+def test_with_no_terminal_to_ask_at_it_exits_2_and_never_starts_claude_code(root: Path, capsys: pytest.CaptureFixture[str], onboarded: bool) -> None:
+    fake = Fake()
     if onboarded:
-        answered_before(root, home(root).smoke.resolve())
-        (root / "logged-in").unlink()
-    environment = {"PATH": f"{root / 'bin'}:/usr/bin:/bin", "ROOT": str(root), "HANDS_HOME": str(home(root).root), "CLAUDE_CONFIG_DIR": str(root / "config"), "HOME": str(root)}
-    ran = subprocess.run([sys.executable, "-m", "hands.daemon", "first-run"], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    assert ran.returncode == 2
-    assert ran.stderr == "hands first-run: Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one\n"
-    assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status"]
+        answered_before(root, fake, login=False)
+    assert first_run(root, fake, terminal=False) == 2
+    assert capsys.readouterr().err == "hands first-run: Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one\n"
+    assert asked(fake) == ["auth status"]
     [event] = events(root)
     assert (event["outcome"], event["facts"]["terminal"]) == ("failed", False)
 
 
+def test_an_api_key_it_was_told_not_to_use_is_no_login_so_it_logs_in_with_its_own(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    fake = Fake()
+    answered_before(root, fake, {"approved": [], "rejected": [KEY[-20:]]}, login=False)
+    assert first_run(root, fake) == 0
+    assert asked(fake) == ["auth status", "auth status", "auth login", "auth status"]
+
+
+def test_an_api_key_it_was_told_to_use_is_its_login_and_nothing_is_asked(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    fake = Fake()
+    answered_before(root, fake, {"approved": [KEY[-20:]], "rejected": []}, login=False)
+    assert first_run(root, fake) == 0
+    assert asked(fake) == ["auth status"] * 3
+
+
+def test_a_console_login_is_a_login_though_it_is_an_api_key(root: Path) -> None:
+    fake = Fake()
+    answered_before(root, fake)
+    fake.configs[config(root)] = Config(login="console")
+    assert first_run(root, fake) == 0
+    assert "auth login" not in asked(fake)
+
+
+def test_typed_ahead_keys_are_dropped_before_claude_code_asks(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # An n pressed during the install's earlier steps sits in the terminal; it must not reach Claude Code's question.
+    controller, terminal = os.openpty()
+    try:
+        with open(terminal, "r", closefd=False) as stdin:
+            monkeypatch.setattr(sys, "stdin", stdin)
+            os.write(controller, b"n\n")
+            cli.told("Claude Code now asks")
+            assert select.select([terminal], [], [], 0.2)[0] == []
+        assert capsys.readouterr().out == "Claude Code now asks\n"
+    finally:
+        os.close(controller)
+        os.close(terminal)
+
+
 def test_an_empty_api_key_is_none_and_one_settings_sets_is_used_over_the_environments(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
-    key = "sk-ant-api03-0123456789abcdefghijklmn"
-    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": ""}) is None
-    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": key}) == firstrun.Key(key, "ANTHROPIC_API_KEY in your environment")
+    fake = Fake()
+    assert firstrun.api_key(fake, settings, {"ANTHROPIC_API_KEY": ""}) is None
+    assert firstrun.api_key(fake, settings, {"ANTHROPIC_API_KEY": KEY}) == firstrun.Key(KEY, "ANTHROPIC_API_KEY in your environment")
     # Claude Code puts settings.json's env over the process's, so an empty one there leaves it no key at all.
-    settings.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}))
-    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": key}) is None
-    settings.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "sk-ant-api03-settings"}}))
-    assert firstrun.api_key(settings, {"ANTHROPIC_API_KEY": key}) == firstrun.Key("sk-ant-api03-settings", str(settings))
+    fake.files[settings] = json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}).encode()
+    assert firstrun.api_key(fake, settings, {"ANTHROPIC_API_KEY": KEY}) is None
+    fake.files[settings] = json.dumps({"env": {"ANTHROPIC_API_KEY": "sk-ant-api03-settings"}}).encode()
+    assert firstrun.api_key(fake, settings, {"ANTHROPIC_API_KEY": KEY}) == firstrun.Key("sk-ant-api03-settings", str(settings))
 
 
 def test_a_state_or_settings_hands_cannot_read_is_rejected_not_taken_for_a_first_run(tmp_path: Path) -> None:
-    state = tmp_path / ".claude.json"
-    state.mkdir()
+    state, settings = tmp_path / ".claude.json", tmp_path / "settings.json"
+    fake = Fake(unreadable={state, settings})
     with pytest.raises(Rejected, match=f"^{state} unreadable: "):
-        firstrun.recorded(state)
-    settings = tmp_path / "settings.json"
-    settings.mkdir()
+        firstrun.recorded(fake, state)
     with pytest.raises(Rejected, match=f"^{settings} unreadable: "):
-        firstrun.api_key(settings, {})
+        firstrun.api_key(fake, settings, {})
 
 
 def test_the_state_is_in_the_config_directory_claude_config_dir_names_else_beside_it_in_the_home(tmp_path: Path) -> None:
@@ -214,37 +227,21 @@ def test_the_state_is_in_the_config_directory_claude_config_dir_names_else_besid
     assert firstrun.state_of({"HOME": str(tmp_path)}, tmp_path / ".claude") == tmp_path / ".claude.json"
 
 
-KEY = "sk-ant-api03-0123456789abcdefghijklmn"
-
-
-def test_an_api_key_it_was_told_not_to_use_is_no_login_so_it_logs_in_with_its_own(root: Path) -> None:
-    answered_before(root, home(root).smoke.resolve(), {"approved": [], "rejected": [KEY[-20:]]})
-    (root / "logged-in").unlink()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key=KEY)
-    assert exit == 0, shown
-    assert "FIRST SCREEN" not in shown and "Claude Code now logs in with its own login" in shown
-    assert [call.split(" in ")[0] for call in calls(root)] == ["claude auth status", "claude auth status", "claude auth login", "claude auth status"]
-
-
-def test_an_api_key_it_was_told_to_use_is_its_login_and_nothing_is_asked(root: Path) -> None:
-    answered_before(root, home(root).smoke.resolve(), {"approved": [KEY[-20:]], "rejected": []})
-    (root / "logged-in").unlink()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n", key=KEY)
-    assert exit == 0, shown
-    assert "FIRST SCREEN" not in shown and "now logs in" not in shown
-
-
-def test_a_console_login_is_a_login_though_it_is_an_api_key(root: Path) -> None:
-    answered_before(root, home(root).smoke.resolve())
-    (root / "logged-in").unlink()
-    (root / "console").touch()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 0, shown
-    assert "now logs in" not in shown
-
-
 def test_a_project_entry_this_cannot_read_is_no_trust_and_leaves_the_rest_read(tmp_path: Path) -> None:
     state = tmp_path / ".claude.json"
-    state.write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {"/elsewhere": [], str(tmp_path): {"hasTrustDialogAccepted": True}, "/odd": {"hasTrustDialogAccepted": "yes"}}}))
-    assert firstrun.recorded(state) == firstrun.Recorded(True, frozenset({str(tmp_path)}), frozenset(), frozenset())
-    assert firstrun.unanswered(firstrun.recorded(state), tmp_path / "below", None) is None
+    fake = Fake(files={state: json.dumps({"hasCompletedOnboarding": True, "projects": {"/elsewhere": [], str(tmp_path): {"hasTrustDialogAccepted": True}, "/odd": {"hasTrustDialogAccepted": "yes"}}}).encode()})
+    assert firstrun.recorded(fake, state) == firstrun.Recorded(True, frozenset({str(tmp_path)}), frozenset(), frozenset())
+    assert firstrun.unanswered(firstrun.recorded(fake, state), tmp_path / "below", None) is None
+
+
+def test_the_recorded_states_read_as_claude_code_wrote_them() -> None:
+    # The fake's states are a real Claude Code's: one started and quit records nothing of a first run; one through its
+    # notes has finished its onboarding, with the key it was told to use; one through the trust question trusts /work.
+    from claudecode_fake import STATES
+
+    def read(name: str) -> firstrun.Recorded | firstrun.Blank:
+        return firstrun.recorded_in(json.dumps(STATES[name]).encode(), Path("/config/.claude.json"))
+
+    assert read("started") == firstrun.Recorded(False, frozenset(), frozenset(), frozenset())
+    assert read("onboarded") == firstrun.Recorded(True, frozenset(), frozenset({"AAAAAAAAAAAAAAAAAAAA"}), frozenset())
+    assert read("trusted") == firstrun.Recorded(True, frozenset({"/work"}), frozenset({"AAAAAAAAAAAAAAAAAAAA"}), frozenset())

@@ -1,0 +1,11 @@
+{
+  "version": "2.1.289",
+  "source": "a config directory with no login, CLAUDE_CODE_OAUTH_TOKEN set to a token that is no real one",
+  "argv": [
+    "auth",
+    "status"
+  ],
+  "exit": 0,
+  "stdout": "{\n  \"loggedIn\": true,\n  \"authMethod\": \"oauth_token\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/config/projects\",\n  \"configDirectory\": \"/config\"\n}\n",
+  "stderr": ""
+}

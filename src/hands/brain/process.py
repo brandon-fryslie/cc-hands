@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 from aiohttp import web
 from loguru import logger
@@ -38,8 +38,8 @@ from hands.core.trace import Span
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
-from hands.sessions import firstrun
-from hands.sessions.files import replace_whole
+from hands.sessions import claudecode, firstrun
+from hands.sessions.claudecode import Method
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
@@ -106,8 +106,6 @@ HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicit
 # where it had none, inside a tag pair (2.1.289, measured 2026-10-04).
 PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
 
-# `claude auth status` answers in about a second; one that has not answered in this long is not going to.
-AUTH_STATUS_SECONDS = 20.0
 # How long fritter has to start the brain and open its socket, and the brain to turn its input on.
 START_SECONDS = 10.0
 # How long a typed turn has to be taken: a cold start loads the MCP server before the input is read.
@@ -320,9 +318,6 @@ def brain_claude(inherited: Mapping[str, str]) -> Path:
     return claude
 
 
-# The logins `claude auth login` makes, each named by its own flag: a Claude plan, or an Anthropic Console key.
-type Method = Literal["claudeai", "console"]
-
 # [LAW:one-source-of-truth] the authMethod `claude auth status` says of each login once it is made (2.1.289).
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 # What Claude Code's login screen calls each.
@@ -359,18 +354,18 @@ class Made:
 type Login = Kept | Made
 
 
-def unanswered(config_dir: Path) -> firstrun.Unanswered | None:
+def unanswered(claude_code: claudecode.ClaudeCode, config_dir: Path) -> firstrun.Unanswered | None:
     """What the brain would start on of Claude Code's first screens, or None when it would not, as Claude Code records
     them in the brain's own .claude.json. A config directory made by anything else, `claude auth status` among them, has
     none of them. Its API key is the one its settings.json sets: hands' never reaches it (FOREIGN_LOGINS). Raises
     Unstartable when either file is there but cannot be read, which no first run mends."""
     try:
-        return firstrun.unanswered(firstrun.recorded(config_dir / ".claude.json"), _cwd(config_dir).resolve(), firstrun.api_key(config_dir / "settings.json", {}))
+        return firstrun.unanswered(firstrun.recorded(claude_code, config_dir / ".claude.json"), _cwd(config_dir).resolve(), firstrun.api_key(claude_code, config_dir / "settings.json", {}))
     except Rejected as error:
         raise Unstartable(f"the brain's first-run state could not be read: {error}") from None
 
 
-def onboarded(config_dir: Path) -> bool:
+def onboarded(claude_code: claudecode.ClaudeCode, config_dir: Path) -> bool:
     """Answers, in the brain's own .claude.json, the first screens that are only the brain's preferences: its onboarding
     (a theme, for a terminal nobody reads, and Claude Code's notes) finished, and the directory it runs in trusted. Whether
     it wrote. Left to Claude Code's first run: a login, an API key its settings.json sets, and a .claude.json that records
@@ -380,7 +375,7 @@ def onboarded(config_dir: Path) -> bool:
     # [LAW:one-source-of-truth] the directory firstrun.unanswered reads trust for, as Claude Code records it, resolved.
     cwd = _cwd(config_dir).resolve()
     # One read: the bytes the answers are judged on are the ones they are merged into.
-    raw = firstrun.read(state)
+    raw = claude_code.read(state)
     answers = firstrun.recorded_in(raw, state)
     # [LAW:single-enforcer] whether either is open is firstrun's to say, the trust of a directory above among it.
     if firstrun.unanswered(answers, cwd, None) is None or (raw is not None and isinstance(answers, firstrun.Blank)):
@@ -392,13 +387,13 @@ def onboarded(config_dir: Path) -> bool:
     place = cast(dict[str, object], entry) if isinstance(entry, dict) else {}
     made = {**written, "hasCompletedOnboarding": True, "projects": {**projects, str(cwd): {**place, "hasTrustDialogAccepted": True}}}
     # 0600, as Claude Code keeps it: it holds the login's account.
-    replace_whole(state, json.dumps(made, indent=2), 0o600)
+    claude_code.replace(state, json.dumps(made, indent=2), 0o600)
     return True
 
 
-def answered(config_dir: Path) -> None:
+def answered(claude_code: claudecode.ClaudeCode, config_dir: Path) -> None:
     """Raises Unstartable, naming the command that answers them, while the brain would start on Claude Code's first screens."""
-    if (open_ := unanswered(config_dir)) is not None:
+    if (open_ := unanswered(claude_code, config_dir)) is not None:
         raise Unstartable(f"the brain has not been through Claude Code's first screens ({open_.why}): `hands login` answers them")
 
 
@@ -406,7 +401,9 @@ class Unasked(Exception):
     """Claude Code had something to ask the person, and `hands login`'s input is no terminal it could ask at."""
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method | None, terminal: bool, starting: Callable[[str], None]) -> Login:
+def login(
+    claude_code: claudecode.ClaudeCode, config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method | None, terminal: bool, starting: Callable[[str], None]
+) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in.
 
     Two steps, as the person's own first run takes them. The first screens that are only the brain's preferences, its
@@ -420,19 +417,19 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     is told what Claude Code is about to ask, just before it asks. Raises LoginFailed when Claude Code did not finish, or
     left the brain on another login than the one asked for."""
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
-    account_kept_out(config_dir)
+    account_kept_out(claude_code, config_dir)
     # [LAW:nothing-unseen] whether hands answered the brain's preference screens, before what is left of its first run is
     # judged: asking nothing, it needs no terminal.
     try:
-        annotate(onboarded=onboarded(config_dir))
+        annotate(onboarded=onboarded(claude_code, config_dir))
     except Rejected as error:
         raise Unstartable(f"the brain's first-run state could not be read: {error}") from None
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with. Resolved before anything is said of them.
-    claude, env, cwd = brain_claude(inherited), environment(config_dir, base_url, inherited), workdir(config_dir)
-    first_run = unanswered(config_dir)
-    held = holding(config_dir, base_url, inherited)
+    claude = claudecode.Instance(brain_claude(inherited), environment(config_dir, base_url, inherited), workdir(config_dir))
+    first_run = unanswered(claude_code, config_dir)
+    held = holding(claude_code, config_dir, base_url, inherited)
     # Asked for none in particular, whatever login a brain through its first run holds is the brain's.
     if method is None and held is not None and first_run is None:
         return Kept(held)
@@ -449,19 +446,19 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     if first_run is not None:
         ran = FirstRun(first_run.why, None if held is not None else made)
         login_asked = "" if ran.pinned is None else f" A login it asks for is for {AUTH_PICKED[ran.pinned]}{other}."
-        starting(f"Claude Code now starts as the brain, hands' own Claude Code, in {cwd}, and asks what it asks only once: {first_run.listed}.{login_asked} Answer each, then type /exit")
+        starting(f"Claude Code now starts as the brain, hands' own Claude Code, in {claude.cwd}, and asks what it asks only once: {first_run.listed}.{login_asked} Answer each, then type /exit")
         pin = {} if ran.pinned is None else {"forceLoginMethod": ran.pinned}
-        _ran(subprocess.run([claude, "--setting-sources", "user", "--settings", json.dumps(pin)], cwd=cwd, env=env), "the brain's first run of Claude Code")
+        _ran(claude_code.first_run(claude, pin), "the brain's first run of Claude Code")
         # A first run quit before its last screen exits 0 as one that answered them all.
-        if (left := unanswered(config_dir)) is not None:
+        if (left := unanswered(claude_code, config_dir)) is not None:
             raise LoginFailed(f"the brain's first run of Claude Code was quit before its last screen ({left.why})")
-        held = holding(config_dir, base_url, inherited)
+        held = holding(claude_code, config_dir, base_url, inherited)
     # A login asked for is made again unless the first run just made it.
     if held is not None and (method is None or (ran is not None and ran.pinned is not None and held.method == AUTH_METHODS[method])):
         return Made(held, ran, None)
     starting(f"Claude Code now logs the brain in with its own login: it opens your browser, or prints a link to open, for {AUTH_PICKED[made]}{other}")
-    _ran(subprocess.run([claude, "auth", "login", f"--{made}"], cwd=cwd, env=env), "`claude auth login` for the brain")
-    if (account := holding(config_dir, base_url, inherited)) is None:
+    _ran(claude_code.auth_login(claude, made), "`claude auth login` for the brain")
+    if (account := holding(claude_code, config_dir, base_url, inherited)) is None:
         raise LoginFailed("`claude auth login` for the brain finished, and the brain holds no login")
     # [LAW:no-silent-failure] a login its settings.json sets ahead of the one made can leave the brain on another.
     if method is not None and account.method != AUTH_METHODS[method]:
@@ -469,30 +466,24 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     return Made(account, ran, made)
 
 
-def _ran(run: subprocess.CompletedProcess[bytes], what: str) -> None:
-    if run.returncode != 0:
-        raise LoginFailed(f"{what} exited {run.returncode}")
+def _ran(exit: int, what: str) -> None:
+    if exit != 0:
+        raise LoginFailed(f"{what} exited {exit}")
 
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.
 KEPT_OUT = ("syncClaudeAiSkills", "syncClaudeAiPlugins")
 
 
-def starting_settings(config_dir: Path) -> bool:
+def starting_settings(claude_code: claudecode.ClaudeCode, config_dir: Path) -> bool:
     """Writes the settings.json a brain home starts with when it has none; whether it wrote one. One that is there is
     left as it is: the brain's settings are its directory's to say."""
     # [LAW:one-source-of-truth] what account_kept_out requires, and the mode docs/guide.md says the brain runs in.
     starting = {**dict.fromkeys(KEPT_OUT, False), "permissions": {"defaultMode": "default"}}
-    config_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        with (config_dir / "settings.json").open("x") as made:
-            json.dump(starting, made, indent=2)
-    except FileExistsError:
-        return False
-    return True
+    return claude_code.create(config_dir / "settings.json", json.dumps(starting, indent=2))
 
 
-def account_kept_out(config_dir: Path) -> None:
+def account_kept_out(claude_code: claudecode.ClaudeCode, config_dir: Path) -> None:
     """Raises Unstartable unless the brain's settings.json keeps out the skills and plugins its login's account syncs.
 
     They are Brandon's, never the brain's, and settings.json is the only place Claude Code reads either switch from
@@ -500,36 +491,30 @@ def account_kept_out(config_dir: Path) -> None:
     settings = config_dir / "settings.json"
     fix = f'set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {settings}'
     try:
-        said = Payload.parse(settings.read_bytes())
+        raw = claude_code.read(settings)
+        if raw is None:
+            raise Rejected(f"there is no {settings}")
+        said = Payload.parse(raw)
         synced = [switch for switch in KEPT_OUT if said.fields.get(switch) is not False]
-    except (OSError, Rejected) as error:
+    except Rejected as error:
         raise Unstartable(f"the brain's settings could not be read ({error}): {fix}") from None
     if synced:
         raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
 
 
-def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
+def logged_in(claude_code: claudecode.ClaudeCode, config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
     """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
     none, or one whose requests do not reach hands' proxy."""
-    if (account := holding(config_dir, base_url, inherited)) is None:
+    if (account := holding(claude_code, config_dir, base_url, inherited)) is None:
         raise NotLoggedIn("the brain has no login: `hands login` gives it one")
     return account
 
 
-def holding(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account | None:
+def holding(claude_code: claudecode.ClaudeCode, config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account | None:
     """The account `config_dir` is logged in as, or None when it holds no login; raises NotLoggedIn when `claude auth
-    status` cannot say, or says it holds one whose requests do not reach hands' proxy, none of which a login mends."""
-    try:
-        # A timed-out child is killed and reaped by run itself.
-        asked = subprocess.run(
-            [brain_claude(inherited), "auth", "status"],
-            env=environment(config_dir, base_url, inherited),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=AUTH_STATUS_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        raise NotLoggedIn(f"`claude auth status` for the brain did not answer in {AUTH_STATUS_SECONDS:.0f}s") from None
+    status` says what it holds in a way hands cannot read, or holds one whose requests do not reach hands' proxy, none of
+    which a login mends, and claudecode.Unreachable when it cannot be asked."""
+    asked = claude_code.auth_status(claudecode.Instance(brain_claude(inherited), environment(config_dir, base_url, inherited)))
     try:
         status = Payload.parse(asked.stdout)
         if not status.flag("loggedIn"):

@@ -1,0 +1,11 @@
+{
+  "version": "2.1.289",
+  "source": "a person's own Claude Code, logged in on a Claude plan; its email replaced and the account's other details redacted",
+  "argv": [
+    "auth",
+    "status"
+  ],
+  "exit": 0,
+  "stdout": "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/Users/person/.claude/projects\",\n  \"configDirectory\": \"/Users/person/.claude\",\n  \"email\": \"person@example.com\",\n  \"orgId\": \"<redacted>\",\n  \"orgName\": \"<redacted>\",\n  \"subscriptionType\": \"<redacted>\"\n}\n",
+  "stderr": ""
+}

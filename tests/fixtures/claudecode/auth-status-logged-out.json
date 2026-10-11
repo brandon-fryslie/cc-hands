@@ -1,0 +1,11 @@
+{
+  "version": "2.1.289",
+  "source": "a config directory no Claude Code had used, no ANTHROPIC_API_KEY",
+  "argv": [
+    "auth",
+    "status"
+  ],
+  "exit": 1,
+  "stdout": "{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/config/projects\",\n  \"configDirectory\": \"/config\"\n}\n",
+  "stderr": ""
+}

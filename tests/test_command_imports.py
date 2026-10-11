@@ -23,7 +23,7 @@ async def untailed():
     from hands.voice.phoneaddress import Untailed
     return Untailed("a stand-in for Tailscale")
 
-def logged_in(config_dir, base_url, inherited, method, terminal, starting):
+def logged_in(claude_code, config_dir, base_url, inherited, method, terminal, starting):
     from hands.brain.process import Made
     from hands.voice.backends import Account
     return Made(Account("claude.ai", "someone@example.com"), None, "claudeai")

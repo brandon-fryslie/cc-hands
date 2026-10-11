@@ -1,0 +1,13 @@
+{
+  "version": "2.1.289",
+  "source": "a source that names no repository",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "add",
+    "promptctl/no-such-marketplace-recording"
+  ],
+  "exit": 1,
+  "stdout": "Adding marketplace\u2026\n",
+  "stderr": "\u2718 Failed to add marketplace: Fetching the marketplace from GitHub failed on both attempts. SSH (git@github.com:promptctl/no-such-marketplace-recording.git): Failed to clone marketplace repository: SSH authentication failed. Please ensure your SSH keys are configured for GitHub, or use an HTTPS URL instead.\n\nOriginal error: Cloning into '/config/plugins/marketplaces/promptctl-no-such-marketplace-recording..clone'...\nERROR: Repository not found.\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n\nHTTPS (https://github.com/promptctl/no-such-marketplace-recording.git): Failed to clone marketplace repository: Cloning into '/config/plugins/marketplaces/promptctl-no-such-marketplace-recording..clone'...\nremote: Repository not found.\nfatal: repository 'https://github.com/promptctl/no-such-marketplace-recording.git/' not found\n"
+}
