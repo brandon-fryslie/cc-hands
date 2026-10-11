@@ -408,18 +408,19 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
-FRONT = """ObjC.import("AppKit");
+# The pid of the app the person is using: the one in front, while it is active. A machine with no one at it, a CI runner,
+# can have an app in front that is not active, and an activation macOS grants there takes the front from no one.
+IN_USE = """ObjC.import("AppKit");
 const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
-front.isNil() ? "" : String(front.processIdentifier)"""
+front.isNil() || !front.active ? "" : String(front.processIdentifier)"""
 
 
-def front() -> int | None:
-    """The pid of the app macOS has in front, if it has one."""
-    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", FRONT], check=True, capture_output=True, text=True).stdout.strip()
+def in_use() -> int | None:
+    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", IN_USE], check=True, capture_output=True, text=True).stdout.strip()
     return int(said) if said else None
 
 
-# What a window macOS has on screen is above: the layer of every window `pid` has there.
+# The layer of every window `pid` has on screen: 0 is among the apps, above it is over them.
 LAYERS = """ObjC.import("CoreGraphics");
 function run(argv) {
     const windows = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
@@ -438,23 +439,40 @@ PUT_UP: list[tuple[Callable[[Path], None], str, str]] = [
     (lambda tmp_path: permitted(tmp_path, "Microphone denied\nListenEvent undecided\n"), "exit 0", "permissions: showing the Microphone step"),
     (lambda tmp_path: None, "exit 3", "stopped: hands exited 3."),
 ]
+WINDOWS = ["license", "setup", "failure"]
+# Activation lands after the window is put up; a window that takes the front has taken it well within this.
+SETTLES = 1.5
 
 
-@pytest.mark.parametrize(("arranged", "hands", "shown"), PUT_UP, ids=["license", "setup", "failure"])
-def test_a_window_the_person_must_answer_floats_in_sight_and_the_app_never_takes_the_front(
+@pytest.mark.parametrize(("arranged", "hands", "shown"), PUT_UP, ids=WINDOWS)
+def test_a_window_the_person_must_answer_floats_above_the_apps(
     opened: Open, tmp_path: Path, arranged: Callable[[Path], None], hands: str, shown: str
 ) -> None:
     arranged(tmp_path)
     app = opened("", hands)
     logged(tmp_path, shown)
-    # Activation lands after the window is put up; a window that takes the front has taken it well within this.
-    raised = False
-    deadline = time.monotonic() + 1.5
-    while time.monotonic() < deadline:
-        assert (now := front()) != app.pid, f"the app, pid {now}, took the front from the app in use"
-        raised = raised or any(layer > 0 for layer in layers(app.pid))
+    deadline = time.monotonic() + SETTLES
+    while not any(layer > 0 for layer in layers(app.pid)):
+        assert time.monotonic() < deadline, f"no window of the app was above the apps on screen: its layers are {layers(app.pid)}"
         time.sleep(0.05)
-    assert raised, f"no window of the app was above the apps on screen: its layers are {layers(app.pid)}"
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+
+
+@pytest.mark.parametrize(("arranged", "hands", "shown"), PUT_UP, ids=WINDOWS)
+def test_a_window_put_up_behind_the_app_in_use_leaves_that_app_in_front(
+    opened: Open, tmp_path: Path, arranged: Callable[[Path], None], hands: str, shown: str
+) -> None:
+    using = in_use()
+    if using is None:
+        pytest.skip("no app is in use on this machine for the app to take the front from")
+    arranged(tmp_path)
+    app = opened("", hands)
+    logged(tmp_path, shown)
+    deadline = time.monotonic() + SETTLES
+    while time.monotonic() < deadline:
+        assert (now := in_use()) == using, f"pid {now}, not the app in use, pid {using}, is in front; the app is pid {app.pid}"
+        time.sleep(0.05)
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=5) == 0
 
