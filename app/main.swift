@@ -78,7 +78,6 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         phase = .licensing
-        NSApp.activate(ignoringOtherApps: true)
         let held: License?
         do {
             held = try stored()
@@ -120,9 +119,8 @@ final class Launcher: NSObject, NSApplicationDelegate {
     func ask(_ why: String?, key: String, held: License?) {
         said("license: asking for a key: \(why ?? "none is kept yet")")
         let alert = NSAlert()
-        // Above every app, not in front of them: it stays in sight beside the portal Manage Subscription… opens, where the
-        // person copies their key, and takes the keyboard from no one.
-        alert.window.level = .floating
+        // In sight beside the portal Manage Subscription… opens, where the person copies their key.
+        inSight(alert.window)
         alert.messageText = "hands runs with a hands subscription"
         alert.informativeText = [why, "Enter the license key from your hands purchase. Your key and your subscription are at \(merchant.portal.absoluteString)."]
             .compactMap { $0 }.joined(separator: "\n\n")
@@ -457,9 +455,25 @@ func how(_ ended: Process) -> String {
     ended.terminationReason == .exit ? "exited \(ended.terminationStatus)" : "was ended by signal \(ended.terminationStatus)"
 }
 
+// [LAW:single-enforcer] how every window the person must answer is put before them. Above every app, not in front of
+// them: macOS grants the activation asked for here when the person opened the app, and refuses it when the app was
+// started behind the one they are using (a test run, a script) or when the window comes while they work elsewhere
+// (System Settings during setup, another app when hands fails), and the window stays in sight either way. Forcing it
+// with ignoringOtherApps would take the keyboard from the app they are using.
+func inSight(_ window: NSWindow) {
+    window.level = .floating
+    NSApp.activate()
+}
+
+// Among the apps, not above them: while macOS's own request has the person, the setup window must not cover the switch
+// they turn on. The next step, or a request macOS could not show, puts it in sight again.
+func aside(_ window: NSWindow) {
+    window.level = .normal
+}
+
 func fail(_ message: String) {
-    NSApp.activate(ignoringOtherApps: true)
     let alert = NSAlert()
+    inSight(alert.window)
     alert.alertStyle = .critical
     alert.messageText = "hands stopped"
     alert.informativeText = message

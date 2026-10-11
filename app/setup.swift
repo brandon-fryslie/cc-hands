@@ -100,7 +100,7 @@ final class Setup: NSObject, NSWindowDelegate {
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
-        NSApp.activate(ignoringOtherApps: true)
+        inSight(window)
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -112,6 +112,7 @@ final class Setup: NSObject, NSWindowDelegate {
         // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
         // System Settings list the request just opened. One request after another is safe: each lists hands again.
         next.isEnabled = false
+        aside(window)
         ask(["request", permission.service]) { ended, _, errors in
             // A request that ends after its step was left has nothing to say about the step now shown.
             guard self.shown == step else { return }
@@ -121,6 +122,7 @@ final class Setup: NSObject, NSWindowDelegate {
                 let why = "macOS could not show its request for \(permission.name): it \(how(ended)). \(errors)"
                 self.said("permissions: \(why)")
                 self.status.stringValue = why
+                inSight(self.window)
             }
         }
     }

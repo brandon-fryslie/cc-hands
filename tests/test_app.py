@@ -408,6 +408,84 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
+# The pid of the app in front while it is active.
+FRONT = """ObjC.import("AppKit");
+const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+front.isNil() || !front.active ? "" : String(front.processIdentifier)"""
+
+
+def in_use() -> int | None:
+    """The pid of the app the person is using: the active app in front, with a window among the apps on screen. A
+    machine no one is using has none: a locked screen's loginwindow, or a CI runner's Finder with only its desktop, and
+    an activation macOS grants there takes the front from no one."""
+    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", FRONT], check=True, capture_output=True, text=True).stdout.strip()
+    return int(said) if said and 0 in layers(int(said)) else None
+
+
+def named(pid: int | None) -> str:
+    """`pid` and the program it runs, as a failure names them."""
+    if pid is None:
+        return "no app"
+    return f"pid {pid} ({subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True, text=True).stdout.strip()})"
+
+
+# The layer of every window `pid` has on screen: 0 is among the apps, above it is over them.
+LAYERS = """ObjC.import("CoreGraphics");
+function run(argv) {
+    const windows = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+    return JSON.stringify(windows.filter(w => w.kCGWindowOwnerPID == Number(argv[0])).map(w => w.kCGWindowLayer));
+}"""
+
+
+def layers(pid: int) -> list[int]:
+    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", LAYERS, str(pid)], check=True, capture_output=True, text=True).stdout
+    return json.loads(said)
+
+
+# What the test arranges before the app opens, the hands it runs, and the line the app logs as it puts its window up.
+PUT_UP: list[tuple[Callable[[Path], None], str, str]] = [
+    (lambda tmp_path: (tmp_path / "license.json").unlink(), "exit 0", "license: asking for a key: "),
+    (lambda tmp_path: permitted(tmp_path, "Microphone denied\nListenEvent undecided\n"), "exit 0", "permissions: showing the Microphone step"),
+    (lambda tmp_path: None, "exit 3", "stopped: hands exited 3."),
+]
+WINDOWS = ["license", "setup", "failure"]
+# Activation lands after the window is put up; a window that takes the front has taken it well within this.
+SETTLES = 1.5
+
+
+@pytest.mark.parametrize(("arranged", "hands", "shown"), PUT_UP, ids=WINDOWS)
+def test_a_window_the_person_must_answer_floats_above_the_apps(
+    opened: Open, tmp_path: Path, arranged: Callable[[Path], None], hands: str, shown: str
+) -> None:
+    arranged(tmp_path)
+    app = opened("", hands)
+    logged(tmp_path, shown)
+    deadline = time.monotonic() + SETTLES
+    while not any(layer > 0 for layer in layers(app.pid)):
+        assert time.monotonic() < deadline, f"no window of the app was above the apps on screen: its layers are {layers(app.pid)}"
+        time.sleep(0.05)
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+
+
+@pytest.mark.parametrize(("arranged", "hands", "shown"), PUT_UP, ids=WINDOWS)
+def test_a_window_put_up_behind_the_app_in_use_leaves_that_app_in_front(
+    opened: Open, tmp_path: Path, arranged: Callable[[Path], None], hands: str, shown: str
+) -> None:
+    using = in_use()
+    if using is None:
+        pytest.skip("no app is in use on this machine for the app to take the front from")
+    arranged(tmp_path)
+    app = opened("", hands)
+    logged(tmp_path, shown)
+    deadline = time.monotonic() + SETTLES
+    while time.monotonic() < deadline:
+        assert (now := in_use()) == using, f"{named(now)}, not the app in use, {named(using)}, is in front; the app is pid {app.pid}"
+        time.sleep(0.05)
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+
+
 @pytest.mark.parametrize(
     ("answer", "told"),
     [
