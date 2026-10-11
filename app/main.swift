@@ -78,7 +78,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         phase = .licensing
-        NSApp.activate(ignoringOtherApps: true)
+        // Cooperative: macOS grants it when the person opened the app, and refuses it when the app was started behind
+        // the app they are using (a test run, a script), which forcing it with ignoringOtherApps would take focus from.
+        NSApp.activate()
         let held: License?
         do {
             held = try stored()
@@ -458,7 +460,7 @@ func how(_ ended: Process) -> String {
 }
 
 func fail(_ message: String) {
-    NSApp.activate(ignoringOtherApps: true)
+    NSApp.activate()
     let alert = NSAlert()
     alert.alertStyle = .critical
     alert.messageText = "hands stopped"
