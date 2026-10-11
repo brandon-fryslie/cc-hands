@@ -465,6 +465,12 @@ func inSight(_ window: NSWindow) {
     NSApp.activate()
 }
 
+// Among the apps, not above them: while macOS's own request has the person, the setup window must not cover the switch
+// they turn on. The next step, or a request macOS could not show, puts it in sight again.
+func aside(_ window: NSWindow) {
+    window.level = .normal
+}
+
 func fail(_ message: String) {
     let alert = NSAlert()
     inSight(alert.window)

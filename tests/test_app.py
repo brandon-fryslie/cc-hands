@@ -408,44 +408,49 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
-def front() -> str:
-    """The app macOS has in front, as `lsappinfo` names it."""
-    return subprocess.run(["lsappinfo", "front"], check=True, capture_output=True, text=True).stdout.strip()
+def front() -> int:
+    """The pid of the app macOS has in front."""
+    asn = subprocess.run(["lsappinfo", "front"], check=True, capture_output=True, text=True).stdout.strip()
+    said = subprocess.run(["lsappinfo", "info", "-only", "pid", asn], check=True, capture_output=True, text=True).stdout
+    return int(said.split("=")[1])
 
 
-def unlicensed(tmp_path: Path) -> None:
-    (tmp_path / "license.json").unlink()
+# What a window macOS has on screen is above: the layer of every window `pid` has there.
+LAYERS = """ObjC.import("CoreGraphics");
+function run(argv) {
+    const windows = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+    return JSON.stringify(windows.filter(w => w.kCGWindowOwnerPID == Number(argv[0])).map(w => w.kCGWindowLayer));
+}"""
 
 
-def unpermitted(tmp_path: Path) -> None:
-    permitted(tmp_path, "Microphone denied\nListenEvent undecided\n")
+def layers(pid: int) -> list[int]:
+    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", LAYERS, str(pid)], check=True, capture_output=True, text=True).stdout
+    return json.loads(said)
 
 
-def as_opened(tmp_path: Path) -> None:
-    pass
+# What the test arranges before the app opens, the hands it runs, and the line the app logs as it puts its window up.
+PUT_UP: list[tuple[Callable[[Path], None], str, str]] = [
+    (lambda tmp_path: (tmp_path / "license.json").unlink(), "exit 0", "license: asking for a key: "),
+    (lambda tmp_path: permitted(tmp_path, "Microphone denied\nListenEvent undecided\n"), "exit 0", "permissions: showing the Microphone step"),
+    (lambda tmp_path: None, "exit 3", "stopped: hands exited 3."),
+]
 
 
-@pytest.mark.parametrize(
-    ("arranged", "hands", "shown"),
-    [
-        (unlicensed, "exit 0", "license: asking for a key: "),
-        (unpermitted, "exit 0", "permissions: showing the Microphone step"),
-        (as_opened, "exit 3", "stopped: hands exited 3."),
-    ],
-    ids=["license", "setup", "failure"],
-)
-def test_a_window_put_up_behind_the_app_in_use_leaves_that_app_in_front(
+@pytest.mark.parametrize(("arranged", "hands", "shown"), PUT_UP, ids=["license", "setup", "failure"])
+def test_a_window_the_person_must_answer_floats_in_sight_and_the_app_never_takes_the_front(
     opened: Open, tmp_path: Path, arranged: Callable[[Path], None], hands: str, shown: str
 ) -> None:
     arranged(tmp_path)
-    using = front()
     app = opened("", hands)
     logged(tmp_path, shown)
     # Activation lands after the window is put up; a window that takes the front has taken it well within this.
+    raised = False
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
-        assert front() == using, "the app took the front from the app in use"
+        assert front() != app.pid, "the app took the front from the app in use"
+        raised = raised or any(layer > 0 for layer in layers(app.pid))
         time.sleep(0.05)
+    assert raised, f"no window of the app was above the apps on screen: its layers are {layers(app.pid)}"
     app.send_signal(signal.SIGTERM)
     assert app.wait(timeout=5) == 0
 
