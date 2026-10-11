@@ -9,14 +9,16 @@ from collections.abc import Mapping
 
 from hands.core.wire import UPSTREAM
 from hands.daemon.config import Claude
+from hands.sessions import claudecode
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wrapper import Unpackaged, packaged
 from hands.voice.backends import ClaudeCodeBackend
 
 
-def backend(llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCodeBackend:
-    """The brain on the model the settings name, given the login it reaches its model with; raises Rejected naming what it cannot have."""
+def backend(claude_code: claudecode.ClaudeCode, llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCodeBackend:
+    """The brain on the model the settings name, given the login it reaches its model with, as `claude_code` says it;
+    raises Rejected naming what it cannot have, and claudecode.Unreachable when the brain's Claude Code cannot be asked."""
     # [LAW:single-enforcer] where a setting meets its login: the brain's login is checked here, once, before the voice
     # loads, rather than once every turn has failed.
     # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
@@ -27,9 +29,9 @@ def backend(llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCo
     from hands.brain.process import NotLoggedIn, Unstartable, account_kept_out, answered, logged_in
 
     try:
-        account = logged_in(home.brain, UPSTREAM, environment)
-        answered(home.brain)
-        account_kept_out(home.brain)
+        account = logged_in(claude_code, home.brain, UPSTREAM, environment)
+        answered(claude_code, home.brain)
+        account_kept_out(claude_code, home.brain)
         # The brain runs under the fritter hands' package carries: a hands built without it is refused here, not at its start.
         packaged()
     except (NotLoggedIn, Unstartable, Unpackaged) as error:

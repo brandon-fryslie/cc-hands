@@ -1,0 +1,12 @@
+{
+  "version": "2.1.289",
+  "source": "a person's own Claude Code; entries other than hands' and one of each other kind left out, the home path replaced",
+  "argv": [
+    "plugin",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "stdout": "[\n  {\n    \"id\": \"bitwize-music@bitwize-music\",\n    \"version\": \"0.102.0\",\n    \"scope\": \"project\",\n    \"enabled\": false,\n    \"installPath\": \"/Users/person/.claude/plugins/cache/bitwize-music/bitwize-music/0.102.0\",\n    \"installedAt\": \"2026-10-03T03:46:47.570Z\",\n    \"lastUpdated\": \"2026-10-03T03:46:47.570Z\",\n    \"projectPath\": \"/Users/person/code/music-making\",\n    \"projectEnabled\": false\n  },\n  {\n    \"id\": \"hands@cc-hands\",\n    \"version\": \"f24447053e9c\",\n    \"scope\": \"user\",\n    \"enabled\": true,\n    \"installPath\": \"/Users/person/.claude/plugins/cache/cc-hands/hands/f24447053e9c\",\n    \"installedAt\": \"2026-09-27T05:19:22.118Z\",\n    \"lastUpdated\": \"2026-09-27T05:19:22.118Z\",\n    \"projectEnabled\": false\n  }\n]\n",
+  "stderr": ""
+}

@@ -47,9 +47,9 @@ point every `hands` subcommand goes through, and `app/main.swift`. Every other m
 `hands.daemon.run` included, receives the interfaces as parameters
 `[LAW:effects-at-boundaries]`. That is what lets a test run `hands.daemon.run` with fakes.
 A root reads its own configuration, such as the environment, `Info.plist`, and the login
-shell, to choose and build adapters, and does nothing else. Today `daemon/cli.py` runs
-`claude plugin` and `claude auth login` itself and sleeps on real time; those calls move
-behind `ClaudeCode` and `Clock`.
+shell, to choose and build adapters, and does nothing else. `hands.daemon.cli:main` builds
+the real `ClaudeCode` and hands it to `command_line`, which tests call with the fake. Today
+`daemon/cli.py` still sleeps on real time; that moves behind `Clock`.
 
 A boundary test enforces this the way `tests/test_core_boundary.py` enforces that `core`
 is pure. A module that reaches one party, such as `Quartz`, `pyaudio`, or `aiortc`, may be
@@ -65,7 +65,7 @@ modules to it.
 | `Clock` (Python and Swift) | Wall time, monotonic time, sleeping, scheduling, ids, and randomness | `Sessions(clock=, stamp=)` and a few other `clock=` parameters. More than 40 call sites read the time directly, and about 200 test sites wait on real time. |
 | `Processes` | The process table, a process's start time, cwd and arguments, signals, and child processes | `still_running` is pure, but `process_table()` and `child.run` are called directly. Nine tests fail in a sandbox because they scan the real process table. |
 | `Terminals` | tmux servers, panes and typing, and the fritter control socket | `Sessions(typist=, keyboards=)`. Below that, every pane, capture, and typing behavior needs a real tmux. |
-| `ClaudeCode` | Status files, transcripts, hooks, the `claude` CLI (`auth`, `plugin`, first run), and `.claude.json` | Files are found through `Home` and read by modules such as `sessions/membership.py`. The CLI is replaced by stand-in scripts on `PATH`. |
+| `ClaudeCode` | Status files, transcripts, hooks, the `claude` CLI (`auth`, `plugin`, first run), and `.claude.json` | `sessions/claudecode.py` is the interface for the CLI, `.claude.json`, and `settings.json`, with a fake in `tests/claudecode_fake.py` built from the recordings in `tests/fixtures/claudecode`. Status files and transcripts are still found through `Home` and read by modules such as `sessions/membership.py`. |
 | `Git` | A session's repository: the diff of what a turn changed, and the status that names files for Whisper's vocabulary | `sessions/delta.py` and `voice/vocabulary.py` run the real `git` through `child.run`, and tests build real repositories. |
 | `Audio` | Microphone frames in, speaker frames out, and the default-device changes | The `PortAudio` and `Stream` protocols. `build_voice` does not pass them, so the voice tests still start the real PortAudio. |
 | `Keys` | The talk key and the Input Monitoring status and request | Tests patch `talkkey.tap`, `talkkey.granted`, and `talkkey.ask`. `grant.Mac` is the one declared seam. |

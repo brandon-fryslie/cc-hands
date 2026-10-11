@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from hands.sessions.claudecode import ClaudeCode
 from hands.sessions.payload import Payload, Rejected
 
 API_KEY = "ANTHROPIC_API_KEY"
@@ -56,9 +57,9 @@ class Blank:
     why: str
 
 
-def recorded(state: Path) -> Recorded | Blank:
+def recorded(claude_code: ClaudeCode, state: Path) -> Recorded | Blank:
     """What the .claude.json `state` records; raises Rejected when it is there but cannot be read, which no first run mends."""
-    return recorded_in(read(state), state)
+    return recorded_in(claude_code.read(state), state)
 
 
 def recorded_in(raw: bytes | None, state: Path) -> Recorded | Blank:
@@ -101,10 +102,10 @@ def approved(answers: Recorded | Blank, key: Key | None) -> bool:
     return key is not None and isinstance(answers, Recorded) and key.value[-20:] in answers.approved
 
 
-def api_key(settings: Path, environment: Mapping[str, str]) -> Key | None:
+def api_key(claude_code: ClaudeCode, settings: Path, environment: Mapping[str, str]) -> Key | None:
     """The API key Claude Code would use: the one `settings` puts in its environment, over any `environment` has, where an
     empty one is none (2.1.289). Raises Rejected when `settings` cannot be read."""
-    raw = read(settings)
+    raw = claude_code.read(settings)
     try:
         written = None if raw is None else Payload.of(Payload.parse(raw).fields.get("env", {}), "its env").optional_text(API_KEY)
     except Rejected as error:
@@ -128,19 +129,10 @@ class Persons:
     keyed: bool
 
 
-def persons(environment: Mapping[str, str], cwd: Path, config_dir: Path) -> Persons:
+def persons(claude_code: ClaudeCode, environment: Mapping[str, str], cwd: Path, config_dir: Path) -> Persons:
     """What the person's own Claude Code, run with this environment under `config_dir`, would ask first in `cwd`; raises
     Rejected when its settings.json or .claude.json is there but cannot be read, which no first run mends."""
-    answers = recorded(state_of(environment, config_dir))
-    key = api_key(config_dir / "settings.json", environment)
+    answers = recorded(claude_code, state_of(environment, config_dir))
+    key = api_key(claude_code, config_dir / "settings.json", environment)
     return Persons(unanswered(answers, cwd.resolve(), key), approved(answers, key))
 
-
-def read(path: Path) -> bytes | None:
-    """`path`'s bytes, or None when there is no such file; raises Rejected when there is one hands cannot read."""
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise Rejected(f"{path} unreadable: {error}") from error

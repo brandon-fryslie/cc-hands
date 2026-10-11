@@ -1,0 +1,11 @@
+{
+  "version": "2.1.289",
+  "source": "a config directory with no login, ANTHROPIC_API_KEY set to a key that is no real one",
+  "argv": [
+    "auth",
+    "status"
+  ],
+  "exit": 0,
+  "stdout": "{\n  \"loggedIn\": true,\n  \"authMethod\": \"api_key\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/config/projects\",\n  \"configDirectory\": \"/config\",\n  \"apiKeySource\": \"ANTHROPIC_API_KEY\"\n}\n",
+  "stderr": ""
+}

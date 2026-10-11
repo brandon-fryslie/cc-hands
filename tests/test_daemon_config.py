@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import onboard
+from claudecode_fake import Fake, onboard
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, Start, start
@@ -50,11 +50,13 @@ def test_the_file_names_the_backend_and_its_model(tmp_path: Path) -> None:
     assert config.parse('[llm]\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
 
 
-def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
+def test_the_file_names_how_hands_comes_across_in_the_users_words(found_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
+    fake = Fake()
+    onboard(fake, home.brain)
+    home.root.mkdir()
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(home, config.load(home), os.environ).voice.personality == "Dry and wry."
+    assert run.configured_from(fake, home, config.load(home), os.environ).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -133,32 +135,39 @@ def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() ->
         config.parse('[whisper]\nmodel = "mlx-community/whisper-large-v3-turbo"\n')
 
 
-def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
-    monkeypatch.setenv("LOGGED_IN", "0")
+def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, found_claude: Path) -> None:
     home = Home(tmp_path / ".hands")
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(home, config.load(home), os.environ)
+        run.configured_from(Fake(), home, config.load(home), os.environ)
+
+
+def test_a_brain_whose_claude_code_cannot_be_asked_stops_the_start_saying_so(tmp_path: Path, found_claude: Path) -> None:
+    home = Home(tmp_path / ".hands")
+    with pytest.raises(CannotStart, match="`claude auth status` could not be run"):
+        run.configured_from(Fake(unrunnable={"auth status"}), home, config.load(home), os.environ)
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
     with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
-        run.configured_from(home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
+        run.configured_from(Fake(), home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
 
 
-def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
+def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(found_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
-    assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
-    assert backend(Claude(model="claude-opus-5-5"), home, os.environ).model == "claude-opus-5-5"
+    fake = Fake()
+    onboard(fake, home.brain)
+    assert backend(fake, Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "person@example.com"))
+    assert backend(fake, Claude(model="claude-opus-5-5"), home, os.environ).model == "claude-opus-5-5"
 
 
 @pytest.mark.parametrize("model", CLAUDE_MODELS)
-def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
+def test_claude_runs_on_each_model_on_offer(found_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
-    assert backend(Claude(model=model), home, os.environ).model == model
+    fake = Fake()
+    onboard(fake, home.brain)
+    assert backend(fake, Claude(model=model), home, os.environ).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
@@ -273,36 +282,38 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     assert recorded == []
 
 
-def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
+def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(found_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
-    (home.brain / "settings.json").unlink()
+    fake = Fake()
+    onboard(fake, home.brain)
+    del fake.files[home.brain / "settings.json"]
     with pytest.raises(Rejected, match="settings could not be read"):
-        backend(Claude(), home, os.environ)
-    (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
+        backend(fake, Claude(), home, os.environ)
+    fake.files[home.brain / "settings.json"] = b'{"syncClaudeAiPlugins": false}'
     with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
-        backend(Claude(), home, os.environ)
+        backend(fake, Claude(), home, os.environ)
 
 
-def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(found_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
+    fake = Fake()
+    onboard(fake, home.brain)
     monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
     with pytest.raises(Rejected, match=r"hands' package carries no fritter at .*/package/bin/fritter: install hands again"):
-        backend(Claude(), home, os.environ)
+        backend(fake, Claude(), home, os.environ)
 
 
-def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_naming_hands_login(fake_claude: Path, tmp_path: Path) -> None:
+def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_naming_hands_login(found_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain, trusted=False)
+    fake = Fake()
+    onboard(fake, home.brain, trusted=False)
     with pytest.raises(Rejected, match=r"first screens \(.*/cwd untrusted\): `hands login` answers them"):
-        backend(Claude(), home, os.environ)
+        backend(fake, Claude(), home, os.environ)
 
 
-def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
-    monkeypatch.setenv("LOGGED_IN", "0")
+def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(found_claude: Path) -> None:
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(Claude(), HOME, os.environ)
+        backend(Fake(), Claude(), HOME, os.environ)
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
@@ -441,11 +452,11 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "to_terminal", kept)
     monkeypatch.setattr(cli.logger, "remove", kept)
 
-    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
+    def loaded(_claude_code: object, home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
 
         async def refused(quit_event: asyncio.Event) -> Ended:
-            configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"})
+            configure = partial(run.configured_from, Fake(), home, settings, {"HANDS_LLM": "claude"})
             await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), quit_event)
             raise AssertionError("a start with HANDS_LLM set went on")
 
@@ -567,7 +578,7 @@ def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_sayin
     assert [event.facts["fritter"] for event in events] == ["unreadable"]
 
 
-def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(fake_claude: Path, tmp_path: Path) -> None:
+def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(found_claude: Path, tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
 
@@ -579,20 +590,21 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
 
     logged_in = os.environ
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
-    assert run.configured_from(home, config.load(home), logged_in).voice.voice == "charles"
+    fake = Fake()
+    onboard(fake, home.brain)
+    assert run.configured_from(fake, home, config.load(home), logged_in).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voices.keep(home, voices.parse_voice("Bill Boerst"))
-    assert run.configured_from(home, config.load(home), logged_in).voice.voice == "bill_boerst"
+    assert run.configured_from(fake, home, config.load(home), logged_in).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(home, config.load(home), logged_in)
+        run.configured_from(fake, home, config.load(home), logged_in)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(home, config.load(home), logged_in)
+        run.configured_from(fake, home, config.load(home), logged_in)
 
 
 # The settings of a run started with no file: every default.
@@ -703,12 +715,13 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
     assert recorded == []
 
 
-async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, found_claude: Path) -> None:
     home = Home(tmp_path / ".hands")
-    onboard(home.brain)
-    monkeypatch.setenv("LOGGED_IN", "0")
+    fake = Fake()
+    onboard(fake, home.brain, login=None)
+    home.root.mkdir()
     recorded: list[Entry] = []
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), config.load(home), period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, fake, home), config.load(home), period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     while not recorded:
@@ -716,7 +729,7 @@ async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tm
     assert not watching.done()
     [refused] = recorded
     assert isinstance(refused, SettingsEdited) and refused.refused is not None and "`hands login` gives it one" in refused.refused
-    monkeypatch.setenv("LOGGED_IN", "1")
+    fake.configs[home.brain].login = "claude.ai"
     home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 

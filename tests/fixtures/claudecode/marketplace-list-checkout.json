@@ -1,0 +1,13 @@
+{
+  "version": "2.1.289",
+  "source": "a person's own Claude Code; entries other than hands' and one of each other kind left out, the home path replaced",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "stdout": "[\n  {\n    \"name\": \"cc-hands\",\n    \"source\": \"directory\",\n    \"path\": \"/Users/person/code/cc-hands\",\n    \"installLocation\": \"/Users/person/code/cc-hands\"\n  },\n  {\n    \"name\": \"claude-plugins-official\",\n    \"source\": \"github\",\n    \"repo\": \"anthropics/claude-plugins-official\",\n    \"installLocation\": \"/Users/person/.claude/plugins/marketplaces/claude-plugins-official\"\n  }\n]\n",
+  "stderr": ""
+}

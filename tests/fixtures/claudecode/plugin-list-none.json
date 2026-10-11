@@ -1,0 +1,12 @@
+{
+  "version": "2.1.289",
+  "source": "a config directory with no login and no plugins",
+  "argv": [
+    "plugin",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "stdout": "[]\n",
+  "stderr": ""
+}

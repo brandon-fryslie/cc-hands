@@ -1,0 +1,17 @@
+{
+  "version": "2.1.289",
+  "source": "`claude plugin install --scope user hands@cc-hands` at a tmux pane, under a config directory given the cc-hands marketplace, answered n",
+  "argv": [
+    "plugin",
+    "install",
+    "--scope",
+    "user",
+    "hands@cc-hands"
+  ],
+  "asked": "\"hands\" is installed by running a command from marketplace \"cc-hands\" on this machine:\n  hands plugin\n  (mode \"copy\": its output directory is copied into the plugin cache)\nRun this command now? [y/N]\n",
+  "declined": {
+    "typed": "n",
+    "shown": "\"hands\" is installed by running a command from marketplace \"cc-hands\" on this machine:\n  hands plugin\n  (mode \"copy\": its output directory is copied into the plugin cache)\nRun this command now? [y/N] n\nAborted.\n",
+    "exit": 1
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "version": "2.1.289",
+  "source": "`claude` started at a 120x40 tmux pane in /work, a directory it had never run in, under a config directory no Claude Code had used, with ANTHROPIC_API_KEY set to a key that is no real one; each screen answered as named. The states are its .claude.json at each point, its machineID, userID, and cached feature flags left out. A second start after /exit showed no screen of its own.",
+  "screens": {
+    "theme": "Welcome to Claude Code v2.1.289\n..........................................................\n\n     *                                       \u2588\u2588\u2588\u2588\u2588\u2593\u2593\u2591\n                                 *         \u2588\u2588\u2588\u2593\u2591     \u2591\u2591\n            \u2591\u2591\u2591\u2591\u2591\u2591                        \u2588\u2588\u2588\u2593\u2591\n    \u2591\u2591\u2591   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591                      \u2588\u2588\u2588\u2593\u2591\n   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591    *                \u2588\u2588\u2593\u2591\u2591      \u2593\n                                             \u2591\u2593\u2593\u2588\u2588\u2588\u2593\u2593\u2591\n *                                 \u2591\u2591\u2591\u2591\n                                 \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n                               \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588                                        *\n      \u2588\u2588\u2584\u2588\u2588\u2588\u2588\u2588\u2584\u2588\u2588                        *\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588      *\n.......\u2588 \u2588   \u2588 \u2588..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n     Auto (match terminal)\n \u276f \u2714 Dark mode\n     Light mode\n     Dark mode (colorblind-friendly)\n     Light mode (colorblind-friendly)\n     Dark mode (ANSI colors only)\n     Light mode (ANSI colors only)\n\n \u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");\n  2 +  console.log(\"Hello, Claude!\");\n  3  }\n \u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\u254c\n  Syntax theme: Monokai Extended (ctrl+t to disable)\n",
+    "login": "Welcome to Claude Code v2.1.289\n..........................................................\n\n     *                                       \u2588\u2588\u2588\u2588\u2588\u2593\u2593\u2591\n                                 *         \u2588\u2588\u2588\u2593\u2591     \u2591\u2591\n            \u2591\u2591\u2591\u2591\u2591\u2591                        \u2588\u2588\u2588\u2593\u2591\n    \u2591\u2591\u2591   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591                      \u2588\u2588\u2588\u2593\u2591\n   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591    *                \u2588\u2588\u2593\u2591\u2591      \u2593\n                                             \u2591\u2593\u2593\u2588\u2588\u2588\u2593\u2593\u2591\n *                                 \u2591\u2591\u2591\u2591\n                                 \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n                               \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588                                        *\n      \u2588\u2588\u2584\u2588\u2588\u2588\u2588\u2588\u2584\u2588\u2588                        *\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588      *\n.......\u2588 \u2588   \u2588 \u2588..........................................\n\n Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.\n\n Select login method:\n\n \u276f 1. Claude account with subscription \u00b7 Pro, Max, Team, or Enterprise\n   2. Anthropic Console account \u00b7 API usage billing\n   3. 3rd-party platform \u00b7 Amazon Bedrock, Microsoft Foundry, Google Vertex AI\n",
+    "api_key": "Welcome to Claude Code v2.1.289\n..........................................................\n\n     *                                       \u2588\u2588\u2588\u2588\u2588\u2593\u2593\u2591\n                                 *         \u2588\u2588\u2588\u2593\u2591     \u2591\u2591\n            \u2591\u2591\u2591\u2591\u2591\u2591                        \u2588\u2588\u2588\u2593\u2591\n    \u2591\u2591\u2591   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591                      \u2588\u2588\u2588\u2593\u2591\n   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591    *                \u2588\u2588\u2593\u2591\u2591      \u2593\n                                             \u2591\u2593\u2593\u2588\u2588\u2588\u2593\u2593\u2591\n *                                 \u2591\u2591\u2591\u2591\n                                 \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n                               \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588                                        *\n      \u2588\u2588\u2584\u2588\u2588\u2588\u2588\u2588\u2584\u2588\u2588                        *\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588      *\n.......\u2588 \u2588   \u2588 \u2588..........................................\n\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  Detected a custom API key in your environment\n\n  ANTHROPIC_API_KEY: sk-ant-...AAAAAAAAAAAAAAAAAAAA\n\n  Do you want to use this API key?\n\n    Yes\n  \u276f No (recommended)\n\n  Enter to confirm \u00b7 Esc to cancel\n",
+    "notes": "Welcome to Claude Code v2.1.289\n..........................................................\n\n     *                                       \u2588\u2588\u2588\u2588\u2588\u2593\u2593\u2591\n                                 *         \u2588\u2588\u2588\u2593\u2591     \u2591\u2591\n            \u2591\u2591\u2591\u2591\u2591\u2591                        \u2588\u2588\u2588\u2593\u2591\n    \u2591\u2591\u2591   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591                      \u2588\u2588\u2588\u2593\u2591\n   \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591    *                \u2588\u2588\u2593\u2591\u2591      \u2593\n                                             \u2591\u2593\u2593\u2588\u2588\u2588\u2593\u2593\u2591\n *                                 \u2591\u2591\u2591\u2591\n                                 \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n                               \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588                                        *\n      \u2588\u2588\u2584\u2588\u2588\u2588\u2588\u2588\u2584\u2588\u2588                        *\n       \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588      *\n.......\u2588 \u2588   \u2588 \u2588..........................................\n\n Security notes:\n\n 1. Claude can make mistakes.\n    You're responsible for Claude's actions and should always\n    review them, especially when running code.\n\n 2. Due to prompt injection risks, only use it with code you trust\n    Learn more: https://code.claude.com/docs/en/security\n\n Press Enter to continue\u2026\n",
+    "trust": "\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n Accessing workspace:\n\n /work\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n project, or work from your team). If not, take a moment to review what's in this folder first.\n\n Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n \u276f No, exit\n   Yes, I trust this folder\n\n Enter to confirm \u00b7 Esc to cancel\n"
+  },
+  "order": [
+    "theme",
+    "login",
+    "api_key",
+    "notes",
+    "trust"
+  ],
+  "states": {
+    "started": {
+      "firstStartTime": "2026-10-11T00:19:20.473Z",
+      "firstStartVersion": "2.1.289",
+      "opusProMigrationComplete": true,
+      "sonnet1m45MigrationComplete": true,
+      "seenNotifications": {},
+      "hasResetAutoModeOptInForDefaultOffer": true,
+      "migrationVersion": 14,
+      "changelogLastFetched": 1791677960693
+    },
+    "onboarded": {
+      "customApiKeyResponses": {
+        "approved": [
+          "AAAAAAAAAAAAAAAAAAAA"
+        ],
+        "rejected": []
+      },
+      "firstStartTime": "2026-10-11T00:19:48.839Z",
+      "firstStartVersion": "2.1.289",
+      "opusProMigrationComplete": true,
+      "sonnet1m45MigrationComplete": true,
+      "seenNotifications": {},
+      "hasResetAutoModeOptInForDefaultOffer": true,
+      "migrationVersion": 14,
+      "changelogLastFetched": 1791677989161,
+      "hasCompletedOnboarding": true,
+      "lastOnboardingVersion": "2.1.289"
+    },
+    "trusted": {
+      "numStartups": 1,
+      "customApiKeyResponses": {
+        "approved": [
+          "AAAAAAAAAAAAAAAAAAAA"
+        ],
+        "rejected": []
+      },
+      "firstStartTime": "2026-10-11T00:19:48.839Z",
+      "firstStartVersion": "2.1.289",
+      "opusProMigrationComplete": true,
+      "sonnet1m45MigrationComplete": true,
+      "seenNotifications": {},
+      "hasResetAutoModeOptInForDefaultOffer": true,
+      "migrationVersion": 14,
+      "changelogLastFetched": 1791677989161,
+      "hasCompletedOnboarding": true,
+      "lastOnboardingVersion": "2.1.289",
+      "projects": {
+        "/work": {
+          "allowedTools": [],
+          "mcpContextUris": [],
+          "mcpServers": {},
+          "enabledMcpjsonServers": [],
+          "disabledMcpjsonServers": [],
+          "hasTrustDialogAccepted": true,
+          "hasClaudeMdExternalIncludesApproved": false,
+          "hasClaudeMdExternalIncludesWarningShown": false,
+          "lastGracefulShutdown": false,
+          "lastVersionBase": "2.1.289"
+        }
+      },
+      "lastReleaseNotesSeen": "2.1.289",
+      "hasSeenAutoDefaultNotice": true,
+      "pluginUsage": {
+        "cc-plugin-agents-md@builtin": {
+          "usageCount": 0,
+          "lastUsedAt": 1791678021791,
+          "lastUsedNumStartups": 1
+        },
+        "cc-plugin-telemetry@builtin": {
+          "usageCount": 0,
+          "lastUsedAt": 1791678021791,
+          "lastUsedNumStartups": 1
+        },
+        "cc-plugin-plugin-authoring@builtin": {
+          "usageCount": 0,
+          "lastUsedAt": 1791678021791,
+          "lastUsedNumStartups": 1
+        },
+        "cc-plugin-diff@builtin": {
+          "usageCount": 0,
+          "lastUsedAt": 1791678021791,
+          "lastUsedNumStartups": 1
+        }
+      },
+      "closedIssuesLastChecked": 1791678021772,
+      "officialMarketplaceAutoInstallAttempted": true,
+      "officialMarketplaceAutoInstalled": true
+    }
+  },
+  "notes": "Without ANTHROPIC_API_KEY, the login screen follows the theme and the run waits on the browser; with one, the API key question is asked in its place. hasCompletedOnboarding is written once the notes are passed, before the trust question; the trust answer is written into projects under the directory it ran in, and its first choice is No, exit."
+}

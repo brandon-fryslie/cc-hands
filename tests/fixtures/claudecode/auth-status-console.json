@@ -1,0 +1,11 @@
+{
+  "version": "2.1.289",
+  "source": "not captured: no Console login was at hand. Transcribed from what the tests' stand-ins said 2.1.289 answers for one, in the shape of the captured auth-status-claude-ai. Replace with a capture.",
+  "argv": [
+    "auth",
+    "status"
+  ],
+  "exit": 0,
+  "stdout": "{\n  \"loggedIn\": true,\n  \"authMethod\": \"api_key\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/config/projects\",\n  \"configDirectory\": \"/config\",\n  \"email\": \"person@example.com\",\n  \"apiKeySource\": \"/login managed key\"\n}\n",
+  "stderr": ""
+}

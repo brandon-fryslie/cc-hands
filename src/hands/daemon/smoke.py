@@ -40,7 +40,7 @@ from hands.core.session import Membership, SessionId
 from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.terminals import process_table
 from hands.daemon import readiness
-from hands.sessions import audit, heartbeat
+from hands.sessions import audit, claudecode, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import SMOKE, Home
 from hands.sessions.membership import parse_membership
@@ -285,15 +285,15 @@ async def until[T](stage: Stage, seconds: float, found: Callable[[], Awaitable[T
     return seen
 
 
-async def smoke(home: Home, environment: Mapping[str, str]) -> int:
-    """Run the test, printing each stage as it is reached; 0 once every stage is, 1 at the first that is not."""
+async def smoke(claude_code: claudecode.ClaudeCode, home: Home, environment: Mapping[str, str]) -> int:
+    """Run the test, printing each stage as it is reached, Claude Code asked through `claude_code`; 0 once every stage is, 1 at the first that is not."""
     word = random.choice(WORDS)
     folder = home.smoke.resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
     smoked = Run(home, word, offset)
     try:
-        await _stages(smoked, folder, environment)
+        await _stages(claude_code, smoked, folder, environment)
     except NotReached as missed:
         smoked.read()
         said = errors(smoked.lines)
@@ -307,7 +307,7 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> int:
     return 0
 
 
-async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> None:
+async def _stages(claude_code: claudecode.ClaudeCode, smoked: Run, folder: Path, environment: Mapping[str, str]) -> None:
     home = smoked.home
     verdict = heartbeat.look(home.status, datetime.now(UTC))
     match verdict:
@@ -320,7 +320,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         raise NotReached("joined", "there is no `claude` on PATH")
     # [LAW:one-source-of-truth] the check `hands check` makes of this folder: a session that would open on a first-run
     # question or with no login never takes what is typed into it, so the run stops before it loads anything.
-    match await asyncio.to_thread(readiness.first_run, home, environment):
+    match await asyncio.to_thread(readiness.first_run, claude_code, home, environment):
         case readiness.Missing(said=said) | readiness.Unknown(said=said):
             raise NotReached("joined", said)
         case readiness.Ready():
@@ -499,6 +499,6 @@ async def _synthesized(text: str) -> bytes:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(home: Home) -> int:
+def run_smoke(claude_code: claudecode.ClaudeCode, home: Home) -> int:
     """`hands smoke`, as the CLI runs it."""
-    return asyncio.run(smoke(home, os.environ))
+    return asyncio.run(smoke(claude_code, home, os.environ))

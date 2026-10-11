@@ -34,7 +34,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.daemon.config import OwnModel, Settings
-from hands.sessions import heartbeat, tmux
+from hands.sessions import claudecode, heartbeat, tmux
 from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
@@ -124,12 +124,12 @@ class Configured:
     settings: Settings
 
 
-def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
+def configured_from(claude_code: claudecode.ClaudeCode, home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
     """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
-    CannotStart where hands cannot run on them."""
+    CannotStart where hands cannot run on them, its brain's Claude Code, asked through `claude_code`, unreachable among them."""
     try:
-        llm = backend(settings.config.llm, home, environment)
-    except Rejected as error:
+        llm = backend(claude_code, settings.config.llm, home, environment)
+    except (Rejected, claudecode.Unreachable) as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake), settings)
 

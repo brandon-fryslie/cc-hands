@@ -1,7 +1,6 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
-import json
 import os
 import stat
 import subprocess
@@ -132,18 +131,21 @@ def fritter() -> Path:
     return PACKAGED
 
 
-def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}', trusted: bool = True) -> None:
-    """A brain home Claude Code has been through its onboarding on, holding `settings`; the directory it runs in trusted, as
-    Claude Code trusts it, by a directory above it, unless not `trusted`."""
-    brain.mkdir(parents=True)
-    projects = {str(brain.resolve().parent): {"hasTrustDialogAccepted": trusted}}
-    (brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": projects}))
-    (brain / "settings.json").write_bytes(settings)
+@pytest.fixture
+def found_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A `claude` first on PATH that is there only to be found: the fake ClaudeCode answers for it, and nothing runs it."""
+    found = tmp_path / "found" / "claude"
+    found.parent.mkdir()
+    found.write_text("#!/bin/sh\nexit 99\n")
+    found.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{found.parent}{os.pathsep}{os.environ['PATH']}")
+    return found
 
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` and --settings alone, forcing the login they name, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console` or a first run forced to it, holding what 2.1.289 says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
+    """A `claude` first on PATH that is the brain as Claude Code at a keyboard: its login and first run are the fake
+    ClaudeCode's (claudecode_fake). It
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
@@ -152,32 +154,6 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
 import itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
-first_run = sys.argv[1:4] == ["--setting-sources", "user", "--settings"] and len(sys.argv) == 5
-if sys.argv[1:2] == ["auth"] or first_run:
-    login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
-# `auth login`, or a first run, its screens answered and its login made at its keyboard; one that fails finishes neither.
-if sys.argv[1:3] == ["auth", "login"] or first_run:
-    os.makedirs(os.environ["CLAUDE_CONFIG_DIR"], exist_ok=True)
-    if os.environ.get("LOGIN_EXIT", "0") != "0":
-        sys.exit(int(os.environ["LOGIN_EXIT"]))
-    # FIRST_RUN_LOGIN=0: a first run on screens other than its login, which makes none.
-    if not (first_run and os.environ.get("FIRST_RUN_LOGIN") == "0"):
-      with open(login, "w") as made:
-        json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd(), "settings": os.path.exists(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json")), "credentials": sorted(set(os.environ) & {{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}})}}, made)
-    # LOGIN_UNANSWERED: quit before its last screen, which Claude Code exits 0 on as on any other.
-    if first_run and not os.environ.get("LOGIN_UNANSWERED"):
-        with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], ".claude.json"), "w") as state:
-            settings = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json")
-            key = json.load(open(settings)).get("env", {{}}).get("ANTHROPIC_API_KEY") if os.path.exists(settings) else None
-            json.dump({{"hasCompletedOnboarding": True, "projects": {{os.getcwd(): {{"hasTrustDialogAccepted": True}}}}, "customApiKeyResponses": {{"approved": [key[-20:]] if key else [], "rejected": []}}}}, state)
-    sys.exit(0)
-if sys.argv[1:3] == ["auth", "status"]:
-    argv = json.load(open(login))["argv"] if os.path.exists(login) else []
-    console = "--console" in argv or argv[2:3] == ["--settings"] and json.loads(argv[3]).get("forceLoginMethod") == "console"
-    method = "api_key" if console else os.environ.get("AUTH_METHOD", "claude.ai")
-    holder = {{"claude.ai": {{"email": "brain@example.com"}}, "api_key": {{"email": "brain@example.com", "apiKeySource": "/login managed key"}}, "oauth_token": {{}}}}[method]
-    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": method, "apiProvider": os.environ.get("API_PROVIDER", "firstParty"), **holder}}))
-    sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
 session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
 def post(event, **fields):
@@ -343,7 +319,6 @@ while True:
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     monkeypatch.setenv("LATER_SECONDS", "1")
     return script

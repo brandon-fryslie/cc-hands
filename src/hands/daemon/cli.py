@@ -6,7 +6,6 @@ import fcntl
 import os
 import signal
 import struct
-import subprocess
 import sys
 import termios
 import threading
@@ -27,7 +26,7 @@ from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edi
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Held, Start, again, invocation, refuse, start
 from hands.core.tmux import Keyboard
-from hands.sessions import audit, firstrun, heartbeat, marketplace, recall, tmux, wide, wrapper
+from hands.sessions import audit, claudecode, firstrun, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.startsession import as_from_a_terminal
 from hands.sessions.hookconfig import MARKETPLACE, PLUGIN_ID
@@ -39,7 +38,6 @@ from hands.threads import off_loop
 if TYPE_CHECKING:
     from loguru import Message, Record
 
-    from hands.brain.process import Method
 
 # Every C0 and C1 control, DEL, the line and paragraph separators, and bidi embedding, override, and isolate, written as
 # its JSON escape: a line's text
@@ -149,6 +147,12 @@ CRASHED = 70
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """hands' composition root: it builds the adapters to the outside world and does nothing else (docs/testing.md)."""
+    return command_line(argv, claudecode.Installed())
+
+
+def command_line(argv: Sequence[str] | None, claude_code: claudecode.ClaudeCode) -> int:
+    """The command `argv` names, run against these adapters; its exit code."""
     parser = argparse.ArgumentParser(prog="hands", epilog=f"A command other than run that crashes prints its traceback and exits {CRASHED}, an exit no command gives its own meaning.")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -188,11 +192,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     match arguments.command:
         case "run":
-            return run_daemon(home, arguments.restarted, arguments.model)
+            return run_daemon(claude_code, home, arguments.restarted, arguments.model)
         case "tmux-status":
             return show_segment(home)
         case _:
-            return commanded(home, arguments)
+            return commanded(claude_code, home, arguments)
 
 
 def model_id(text: str) -> str:
@@ -202,7 +206,7 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
+def run_daemon(claude_code: claudecode.ClaudeCode, home: Home, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -232,7 +236,7 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
             refuse(cannot, held)
             return cannot.exit
         try:
-            ending, shown = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+            ending, shown = run_here(claude_code, home, restarted, after_crash, settings, heart, audit_log, run_start)
         except CannotStart as cannot:
             # The run's launch ended the start, failed with this reason, on the edge the settings chose.
             refuse(cannot, heart)
@@ -246,7 +250,7 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
                 again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(home: Home, arguments: argparse.Namespace) -> int:
+def commanded(claude_code: claudecode.ClaudeCode, home: Home, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -260,7 +264,7 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
         with wide.unit("hands.command", record):
             # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
             wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-            code = dispatch(home, arguments, record)
+            code = dispatch(claude_code, home, arguments, record)
             wide.annotate(exit_code=code)
             if code != 0:
                 wide.fail(f"exited {code}")
@@ -290,7 +294,7 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) -> int:
+def dispatch(claude_code: claudecode.ClaudeCode, home: Home, arguments: argparse.Namespace, record: audit.Record) -> int:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
     match arguments.command:
         case "status":
@@ -302,7 +306,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             # over its findings; a read that broke still prints, as an error.
             logger.remove()
             to_terminal(sys.stderr)
-            return check(home, talkkey.granted())
+            return check(claude_code, home, talkkey.granted())
         case "log":
             return tail_log(home, arguments.lines)
         case "recall":
@@ -310,13 +314,13 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
         case "phone":
             return show_phone(home)
         case "login":
-            return login(home, arguments.method, record)
+            return login(claude_code, home, arguments.method, sys.stdin.isatty(), told, record)
         case "install-fritter":
             return install_fritter(home, record)
         case "install-plugin":
-            return install_plugin(record)
+            return install_plugin(claude_code, told, record)
         case "first-run":
-            return first_run(home, record)
+            return first_run(claude_code, home, sys.stdin.isatty(), told, record)
         case "grant":
             # Imported here so that no other command loads Quartz.
             from hands.voice import grant
@@ -330,7 +334,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             # Imported here so that no other command loads aiortc.
             from hands.daemon.smoke import run_smoke
 
-            return run_smoke(home)
+            return run_smoke(claude_code, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -431,7 +435,7 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
+def run_here(claude_code: claudecode.ClaudeCode, home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
@@ -449,7 +453,9 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     exports = Exports(audit_log.record, lambda: datetime.now(UTC))
     with exporting(settings.config.collector, exports.record) as exported:
         record = said_failed(exported)
-        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
+        ending = asyncio.run(
+            launch(lambda: loaded(claude_code, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, claude_code, home), settings), record, run_start)
+        )
     return ending, shown
 
 
@@ -519,14 +525,17 @@ async def launch(
     return ending
 
 
-def reachable(home: Home, settings: Config) -> None:
+def reachable(claude_code: claudecode.ClaudeCode, home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit hands could not start on, its brain logged out among them, is refused and
     outlived, not restarted on."""
-    backend(settings.llm, home, os.environ)
+    try:
+        backend(claude_code, settings.llm, home, os.environ)
+    except claudecode.Unreachable as error:
+        raise Rejected(str(error)) from error
 
 
-def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
+def loaded(claude_code: claudecode.ClaudeCode, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -541,9 +550,11 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing(f"hands cannot start on its settings: {error}")
-        survey(readiness.check(home, os.environ, True, reached, running, keyboards))
+        survey(readiness.check(claude_code, home, os.environ, True, reached, running, keyboards))
 
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
+    return lambda quit_event: run(
+        lambda environment: configured_from(claude_code, home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, claude_code, home))
+    )
 
 
 def start_indicator(home: Home) -> int:
@@ -643,9 +654,9 @@ def show_segment(home: Home) -> int:
     return 0
 
 
-def check(home: Home, granted: bool) -> int:
-    reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ, granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
+def check(claude_code: claudecode.ClaudeCode, home: Home, granted: bool) -> int:
+    reached = readiness.configured(claude_code, home, os.environ)
+    findings = readiness.check(claude_code, home, os.environ, granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
     wide.annotate(findings=tuple(findings))
     for finding in findings:
         print(f"{display(finding)[0]:<8} {finding.said}")
@@ -695,7 +706,7 @@ def audit_log_of(home: Home) -> audit.AuditLog:
     return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
 
 
-def login(home: Home, method: "Method | None", record: audit.Record) -> int:
+def login(claude_code: claudecode.ClaudeCode, home: Home, method: claudecode.Method | None, terminal: bool, told: Callable[[str], None], record: audit.Record) -> int:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import Kept, LoginFailed, Made, NotLoggedIn, Unasked, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
@@ -705,15 +716,15 @@ def login(home: Home, method: "Method | None", record: audit.Record) -> int:
     # it kept the login held or made one, through the first run and `claude auth login` when either ran, and the account
     # it ended on. Exits 1 when Claude Code ran and did not finish, as when the person quits, or left the brain on another
     # login than the one asked for; 2 when Claude Code could not be asked, or `claude auth status` says what no login
-    # mends, which asking again does not mend either.
-    terminal = sys.stdin.isatty()
+    # mends, which asking again does not mend either. `terminal` is whether the person is at one to be asked, and `told`
+    # says what Claude Code is about to ask there.
     with wide.unit("brain.login", record):
         wide.annotate(asked=method, terminal=terminal)
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
-            wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(home.brain, UPSTREAM, os.environ, method, terminal, told)
-        except (Unasked, Unstartable, NotLoggedIn) as error:
+            wide.annotate(settings_written=starting_settings(claude_code, home.brain))
+            signed = brain_login(claude_code, home.brain, UPSTREAM, os.environ, method, terminal, told)
+        except (Unasked, Unstartable, NotLoggedIn, claudecode.Unreachable) as error:
             return not_logged_in(str(error), 2)
         except (LoginFailed, OSError) as error:
             return not_logged_in(str(error), 1)
@@ -766,14 +777,16 @@ def install_fritter(home: Home, record: audit.Record) -> int:
                 return 1
 
 
-def install_plugin(record: audit.Record) -> int:
+def install_plugin(claude_code: claudecode.ClaudeCode, told: Callable[[str], None], record: audit.Record) -> int:
     # [LAW:nothing-unseen] an install is a unit of work: what Claude Code said of the plugin before, whether the
     # marketplace it comes from was there or added, what its install exited with when it asked, and what it said after.
     # Exits 1 when Claude Code asked and the plugin is not there after, as when the person declines; 2 when Claude Code
-    # could not be asked, which asking again does not mend.
+    # could not be asked, which asking again does not mend. `told` says what Claude Code is about to ask.
     path = os.environ.get("PATH", "")
+    # The claude a session would run, as readiness asks it: the shim runs the real one, since nothing here is a session.
+    claude = claudecode.Instance("claude", {**os.environ, "PATH": path})
     with wide.unit("plugin.install", record):
-        before = readiness.plugin(path)
+        before = readiness.plugin(claude_code, path)
         wide.annotate(before=type(before).__name__.lower())
         match before:
             case readiness.Ready(said=said):
@@ -785,23 +798,29 @@ def install_plugin(record: audit.Record) -> int:
                 pass
         # A marketplace the person added from a checkout is theirs: Claude Code refuses to add the same name again
         # from another source.
-        source = readiness.marketplace(path)
+        source = readiness.marketplace(claude_code, path)
         wide.annotate(marketplace=type(source).__name__.lower())
         match source:
             case readiness.Unknown(said=said):
                 return not_installed(said, 2)
             case readiness.Missing():
-                added = subprocess.run(["claude", "plugin", "marketplace", "add", MARKETPLACE])
-                wide.annotate(marketplace_add_exit=added.returncode)
-                if added.returncode != 0:
-                    return not_installed(f"`claude plugin marketplace add {MARKETPLACE}` failed ({added.returncode})", 2)
+                try:
+                    added = claude_code.add_marketplace(claude, MARKETPLACE)
+                except claudecode.Unreachable as error:
+                    return not_installed(str(error), 2)
+                wide.annotate(marketplace_add_exit=added)
+                if added != 0:
+                    return not_installed(f"`claude plugin marketplace add {MARKETPLACE}` failed ({added})", 2)
             case readiness.Ready():
                 pass
         told(f"Claude Code now shows the command `hands plugin`, which installs {PLUGIN_ID}, and asks whether to run it: answer y")
         # Over an install that is disabled, this enables it again and asks nothing (Claude Code 2.1.289).
-        installed = subprocess.run(["claude", "plugin", "install", "--scope", "user", PLUGIN_ID])
-        wide.annotate(install_exit=installed.returncode)
-        after = readiness.plugin(path)
+        try:
+            installed = claude_code.install_plugin(claude, PLUGIN_ID)
+        except claudecode.Unreachable as error:
+            return not_installed(str(error), 2)
+        wide.annotate(install_exit=installed)
+        after = readiness.plugin(claude_code, path)
         wide.annotate(after=type(after).__name__.lower())
         match after:
             case readiness.Ready(said=said):
@@ -820,47 +839,48 @@ def typed_ahead_dropped() -> None:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
 
 
-def first_run(home: Home, record: audit.Record) -> int:
+def first_run(claude_code: claudecode.ClaudeCode, home: Home, terminal: bool, told: Callable[[str], None], record: audit.Record) -> int:
     # [LAW:nothing-unseen] a first run is a unit of work: what Claude Code would have asked and whether it held a login
     # before, what its first run and its login exited with when they ran, and what is left after. Exits 1 when it ran and
     # something is still unanswered, as when the person quits before the last question; 2 when Claude Code could not be
     # asked, which asking again does not mend.
     # [LAW:one-source-of-truth] the environment `hands smoke` starts its session in, so the questions answered here are
-    # the ones that session would ask; first_run_state looks in the same one.
+    # the ones that session would ask; first_run_state looks in the same one. `terminal` is whether the person is at one
+    # to be asked, and `told` says what Claude Code is about to ask there.
     environment = as_from_a_terminal(os.environ)
     with wide.unit("claude.first_run", record):
-        before = readiness.first_run_state(home, environment)
-        wide.annotate(before=before, terminal=sys.stdin.isatty())
+        before = readiness.first_run_state(claude_code, home, environment)
+        wide.annotate(before=before, terminal=terminal)
         try:
             match before:
                 case readiness.Unknown(said=said):
                     return not_first_run(said, 2)
                 case readiness.FirstRun(unanswered=None, logged_in=True):
                     pass
-                case readiness.FirstRun() if not sys.stdin.isatty():
+                case readiness.FirstRun() if not terminal:
                     # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
                     return not_first_run("Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one", 2)
                 case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
                     home.smoke.mkdir(parents=True, exist_ok=True)
                     told(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit")
-                    ran = subprocess.run([claude], cwd=home.smoke, env=environment)
-                    wide.annotate(first_run_exit=ran.returncode)
+                    ran = claude_code.first_run(claudecode.Instance(claude, environment, home.smoke), None)
+                    wide.annotate(first_run_exit=ran)
                 case readiness.FirstRun():
                     pass
-            between = readiness.first_run_state(home, environment)
+            between = readiness.first_run_state(claude_code, home, environment)
             match between:
                 case readiness.Unknown(said=said):
                     return not_first_run(said, 2)
                 # Only after a first run that finished: one quit part-way was walked away from, login and all.
                 case readiness.FirstRun(claude=claude, unanswered=None, logged_in=False):
                     told("Claude Code now logs in with its own login: it opens your browser, or prints a link to open, for your Claude account")
-                    signed = subprocess.run([claude, "auth", "login"], env=environment)
-                    wide.annotate(login_exit=signed.returncode)
+                    signed = claude_code.auth_login(claudecode.Instance(claude, environment), None)
+                    wide.annotate(login_exit=signed)
                 case readiness.FirstRun():
                     pass
-        except OSError as error:
+        except claudecode.Unreachable as error:
             return not_first_run(f"Claude Code could not be started to ask: {error}", 2)
-        after = readiness.first_run(home, environment)
+        after = readiness.first_run(claude_code, home, environment)
         wide.annotate(after=after)
         match after:
             case readiness.Ready(said=said):
