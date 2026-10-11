@@ -408,16 +408,18 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
-# The pid of the app the person is using: the one in front, while it is active. loginwindow in front is a machine no one
-# is using, locked or a CI runner, and an activation macOS grants there takes the front from no one.
-IN_USE = """ObjC.import("AppKit");
+# The pid of the app in front while it is active.
+FRONT = """ObjC.import("AppKit");
 const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
-front.isNil() || !front.active || ObjC.unwrap(front.bundleIdentifier) === "com.apple.loginwindow" ? "" : String(front.processIdentifier)"""
+front.isNil() || !front.active ? "" : String(front.processIdentifier)"""
 
 
 def in_use() -> int | None:
-    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", IN_USE], check=True, capture_output=True, text=True).stdout.strip()
-    return int(said) if said else None
+    """The pid of the app the person is using: the active app in front, with a window among the apps on screen. A
+    machine no one is using has none: a locked screen's loginwindow, or a CI runner's Finder with only its desktop, and
+    an activation macOS grants there takes the front from no one."""
+    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", FRONT], check=True, capture_output=True, text=True).stdout.strip()
+    return int(said) if said and 0 in layers(int(said)) else None
 
 
 def named(pid: int | None) -> str:
