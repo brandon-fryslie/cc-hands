@@ -100,7 +100,7 @@ final class Setup: NSObject, NSWindowDelegate {
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
-        NSApp.activate()
+        inSight(window)
         window.makeKeyAndOrderFront(nil)
     }
 

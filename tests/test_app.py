@@ -408,6 +408,48 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
+def front() -> str:
+    """The app macOS has in front, as `lsappinfo` names it."""
+    return subprocess.run(["lsappinfo", "front"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def unlicensed(tmp_path: Path) -> None:
+    (tmp_path / "license.json").unlink()
+
+
+def unpermitted(tmp_path: Path) -> None:
+    permitted(tmp_path, "Microphone denied\nListenEvent undecided\n")
+
+
+def as_opened(tmp_path: Path) -> None:
+    pass
+
+
+@pytest.mark.parametrize(
+    ("arranged", "hands", "shown"),
+    [
+        (unlicensed, "exit 0", "license: asking for a key: "),
+        (unpermitted, "exit 0", "permissions: showing the Microphone step"),
+        (as_opened, "exit 3", "stopped: hands exited 3."),
+    ],
+    ids=["license", "setup", "failure"],
+)
+def test_a_window_put_up_behind_the_app_in_use_leaves_that_app_in_front(
+    opened: Open, tmp_path: Path, arranged: Callable[[Path], None], hands: str, shown: str
+) -> None:
+    arranged(tmp_path)
+    using = front()
+    app = opened("", hands)
+    logged(tmp_path, shown)
+    # Activation lands after the window is put up; a window that takes the front has taken it well within this.
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        assert front() == using, "the app took the front from the app in use"
+        time.sleep(0.05)
+    app.send_signal(signal.SIGTERM)
+    assert app.wait(timeout=5) == 0
+
+
 @pytest.mark.parametrize(
     ("answer", "told"),
     [
