@@ -112,6 +112,9 @@ final class Setup: NSObject, NSWindowDelegate {
         // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
         // System Settings list the request just opened. One request after another is safe: each lists hands again.
         next.isEnabled = false
+        // Below what macOS opens for the request, so it never covers the switch the person turns on; the next step's
+        // show() floats the window back into sight.
+        window.level = .normal
         ask(["request", permission.service]) { ended, _, errors in
             // A request that ends after its step was left has nothing to say about the step now shown.
             guard self.shown == step else { return }
