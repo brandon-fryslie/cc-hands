@@ -408,11 +408,15 @@ def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, t
     assert "started hands run" not in logged(tmp_path, "permissions: ")
 
 
-def front() -> int:
-    """The pid of the app macOS has in front."""
-    asn = subprocess.run(["lsappinfo", "front"], check=True, capture_output=True, text=True).stdout.strip()
-    said = subprocess.run(["lsappinfo", "info", "-only", "pid", asn], check=True, capture_output=True, text=True).stdout
-    return int(said.split("=")[1])
+FRONT = """ObjC.import("AppKit");
+const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+front.isNil() ? "" : String(front.processIdentifier)"""
+
+
+def front() -> int | None:
+    """The pid of the app macOS has in front, if it has one."""
+    said = subprocess.run(["osascript", "-l", "JavaScript", "-e", FRONT], check=True, capture_output=True, text=True).stdout.strip()
+    return int(said) if said else None
 
 
 # What a window macOS has on screen is above: the layer of every window `pid` has there.
@@ -447,7 +451,7 @@ def test_a_window_the_person_must_answer_floats_in_sight_and_the_app_never_takes
     raised = False
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
-        assert front() != app.pid, "the app took the front from the app in use"
+        assert (now := front()) != app.pid, f"the app, pid {now}, took the front from the app in use"
         raised = raised or any(layer > 0 for layer in layers(app.pid))
         time.sleep(0.05)
     assert raised, f"no window of the app was above the apps on screen: its layers are {layers(app.pid)}"
